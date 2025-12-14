@@ -9,7 +9,11 @@
       "Bash(pwsh.exe -Command \"conda activate py310_env; conda remove -y pathlib\")",
       "Bash(pwsh.exe -Command \"conda activate py310_env; pip uninstall -y pathlib\")",
       "Bash(pwsh.exe -Command:*)",
-      "Bash(cmd.exe /c build.bat)"
+      "Bash(cmd.exe /c build.bat)",
+      "mcp__serena__list_dir",
+      "mcp__serena__get_symbols_overview",
+      "Bash(build.bat)",
+      "Bash(cmd.exe /c \"cd /d D:\\vscode_workspace\\downLoad_project && build.bat\")"
     ]
   }
 }

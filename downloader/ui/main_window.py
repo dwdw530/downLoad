@@ -442,7 +442,7 @@ class CloseConfirmDialog(ctk.CTkToplevel):
         # 创建UI
         self._create_ui()
 
-        # 这破弹窗别整得跟全屏似的：固定一个紧凑尺寸，直接变窄变好看
+        # 这破弹窗别整得跟全屏似的：固定一个紧凑尺寸 + 居中，别再飘到角落里丢人
         self._apply_compact_geometry(parent)
 
         # 键盘快捷键：别让用户找不到“确定/取消”
@@ -451,76 +451,118 @@ class CloseConfirmDialog(ctk.CTkToplevel):
         self.focus_force()
 
     def _apply_compact_geometry(self, parent):
-        """应用紧凑窗口尺寸（优先“变窄”，别搞一堆空白）"""
-        self.update_idletasks()
-
-        # 目标尺寸：你要“窄一点”，那就直接给个窄的；高DPI下会自动缩放
-        width = 300
-        height = 220
-
-        # winfo_* 返回的是“实际像素”，geometry 需要“逻辑尺寸”，要按缩放换算，不然弹窗能飘到屏幕外去
-        scale = ctk.ScalingTracker.get_window_scaling(parent)
-        parent_x = int(parent.winfo_x() / scale)
-        parent_y = int(parent.winfo_y() / scale)
-        parent_w = int(parent.winfo_width() / scale)
-        parent_h = int(parent.winfo_height() / scale)
-
-        x = parent_x + (parent_w - width) // 2
-        y = parent_y + (parent_h - height) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        """应用紧凑窗口尺寸并居中到父窗口"""
+        # 固定尺寸：内容别忽胖忽瘦，用户一眼就烦
+        width = 360
+        height = 240
         self.minsize(width, height)
         self.maxsize(width, height)
 
+        # 先让Tk把尺寸算明白，不然 winfo_* 可能全是 1，居中就会跑偏
+        parent.update_idletasks()
+        self.update_idletasks()
+
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+
+        x = parent_x + (parent_w - width) // 2
+        y = parent_y + (parent_h - height) // 2
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = max(0, min(x, screen_w - width))
+        y = max(0, min(y, screen_h - height))
+
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
     def _create_ui(self):
         """创建UI"""
-        # CTkFrame 默认会给个巨大的固定尺寸（高DPI下更离谱），不手动压成0会导致弹窗肥得像头猪
-        main_frame = ctk.CTkFrame(self, width=0, height=0)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        title_font = ctk.CTkFont(size=16, weight="bold")
+        body_font = ctk.CTkFont(size=13)
+        option_font = ctk.CTkFont(size=12)
+        note_font = ctk.CTkFont(size=11)
+
+        main_frame = ctk.CTkFrame(
+            self,
+            corner_radius=12,
+            border_width=1,
+            border_color=("gray70", "gray25"),
+        )
+        main_frame.pack(fill="both", expand=True, padx=14, pady=14)
+
+        title_label = ctk.CTkLabel(main_frame, text="退出确认", font=title_font)
+        title_label.pack(anchor="w", pady=(2, 10))
 
         # 提示信息
-        msg_label = ctk.CTkLabel(main_frame, text="确定要关闭老王下载器吗？", font=("Arial", 12))
-        msg_label.pack(pady=(4, 3))
+        msg_label = ctk.CTkLabel(
+            main_frame,
+            text="确定要关闭老王下载器吗？",
+            font=body_font,
+            justify="left",
+            wraplength=320,
+        )
+        msg_label.pack(anchor="w")
 
         # 选项
         self.action_var = ctk.StringVar(value="minimize")
 
+        options_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        options_frame.pack(fill="x", pady=(14, 0))
+
         minimize_radio = ctk.CTkRadioButton(
-            main_frame,
-            text="最小化（继续下载）",
+            options_frame,
+            text="最小化到任务栏（继续下载）",
             variable=self.action_var,
             value="minimize",
-            font=("Arial", 10)
+            font=option_font,
         )
-        minimize_radio.pack(anchor="w", pady=1)
+        minimize_radio.pack(anchor="w", pady=(0, 6))
 
         exit_radio = ctk.CTkRadioButton(
-            main_frame,
-            text="退出（停止下载）",
+            options_frame,
+            text="退出程序（停止所有下载）",
             variable=self.action_var,
             value="exit",
-            font=("Arial", 10)
+            font=option_font,
         )
-        exit_radio.pack(anchor="w", pady=1)
+        exit_radio.pack(anchor="w")
 
         # 记住选择
         self.remember_var = ctk.BooleanVar(value=False)
         remember_check = ctk.CTkCheckBox(
             main_frame,
-            text="记住选择，下次不提示",
+            text="记住我的选择，下次不提示",
             variable=self.remember_var,
-            font=("Arial", 9)
+            font=note_font,
         )
-        remember_check.pack(pady=(3, 0))
+        remember_check.pack(anchor="w", pady=(12, 0))
 
         # 按钮
         button_frame = ctk.CTkFrame(main_frame, fg_color="transparent", width=0, height=0)
-        button_frame.pack(pady=(6, 0))
+        button_frame.pack(fill="x", pady=(16, 0))
 
-        self.confirm_btn = ctk.CTkButton(button_frame, text="确定", command=self._on_confirm, width=76, height=24)
-        self.confirm_btn.pack(side="left", padx=6)
+        cancel_btn = ctk.CTkButton(
+            button_frame,
+            text="取消",
+            command=self._on_cancel,
+            width=96,
+            height=28,
+            text_color=("gray10", "gray90"),
+            fg_color=("gray85", "gray25"),
+            hover_color=("gray80", "gray30"),
+        )
+        cancel_btn.pack(side="right")
 
-        cancel_btn = ctk.CTkButton(button_frame, text="取消", command=self._on_cancel, width=76, height=24)
-        cancel_btn.pack(side="left", padx=6)
+        self.confirm_btn = ctk.CTkButton(
+            button_frame,
+            text="确定",
+            command=self._on_confirm,
+            width=96,
+            height=28,
+        )
+        self.confirm_btn.pack(side="right", padx=(0, 10))
 
         # 默认把焦点给“确定”，键盘一回车就能走
         self.after(0, lambda: self.confirm_btn.focus_set())

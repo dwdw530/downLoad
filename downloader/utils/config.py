@@ -5,7 +5,22 @@
 """
 import json
 import os
+import sys
 from typing import Any, Dict
+
+
+def get_app_root() -> str:
+    """
+    获取应用根目录（支持打包后运行）
+    艹，打包后路径会变，得动态判断！
+    """
+    if getattr(sys, 'frozen', False):
+        # 打包后的exe环境
+        # sys.executable是exe的路径，取其目录作为根目录
+        return os.path.dirname(sys.executable)
+    else:
+        # 开发环境，返回项目根目录（main.py所在目录）
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class ConfigManager:
@@ -28,12 +43,15 @@ class ConfigManager:
         "close_behavior": "ask",  # 关闭行为：ask|minimize|exit
     }
 
-    def __init__(self, config_path: str = "data/config.json"):
+    def __init__(self, config_path: str = None):
         """
         初始化配置管理器
         Args:
-            config_path: 配置文件路径
+            config_path: 配置文件路径（如果为None，使用默认路径）
         """
+        if config_path is None:
+            # 使用应用根目录下的data/config.json
+            config_path = os.path.join(get_app_root(), "data", "config.json")
         self.config_path = config_path
         self._config = {}
         self._ensure_config_dir()
@@ -103,8 +121,12 @@ class ConfigManager:
 
     @property
     def temp_dir(self) -> str:
-        """临时文件目录"""
-        return self._config.get("temp_dir", "temp")
+        """临时文件目录（返回绝对路径）"""
+        temp_dir = self._config.get("temp_dir", "temp")
+        # 如果是相对路径，转换为应用根目录下的绝对路径
+        if not os.path.isabs(temp_dir):
+            temp_dir = os.path.join(get_app_root(), temp_dir)
+        return temp_dir
 
     @property
     def thread_count(self) -> int:
