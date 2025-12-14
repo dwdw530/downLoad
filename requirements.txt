@@ -1,6 +1,0 @@
-# 老王的下载器依赖清单
-# GUI框架
-customtkinter>=5.2.0
-
-# HTTP请求库
-requests>=2.31.0
