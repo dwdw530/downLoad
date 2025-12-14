@@ -12,5 +12,6 @@
         "http": "",
         "https": ""
     },
-    "close_behavior": "ask"
+    "close_behavior": "ask",
+    "speed_limit": 0
 }

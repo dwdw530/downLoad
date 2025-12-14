@@ -41,6 +41,7 @@ class ConfigManager:
             "https": ""
         },
         "close_behavior": "ask",  # 关闭行为：ask|minimize|exit
+        "speed_limit": 0,  # 速度限制（字节/秒），0表示不限速
     }
 
     def __init__(self, config_path: str = None):
@@ -160,3 +161,13 @@ class ConfigManager:
     def user_agent(self) -> str:
         """User-Agent"""
         return self._config.get("user_agent", "PyDownloader/1.0")
+
+    @property
+    def speed_limit(self) -> int:
+        """速度限制（字节/秒），0表示不限速"""
+        return self._config.get("speed_limit", 0)
+
+    @speed_limit.setter
+    def speed_limit(self, value: int):
+        """设置速度限制"""
+        self._config["speed_limit"] = max(0, value)  # 不能为负数

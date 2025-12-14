@@ -201,7 +201,8 @@ class DownloadEngine:
                 temp_file=chunk['temp_file'],
                 timeout=self.config.timeout,
                 retry_times=self.config.retry_times,
-                user_agent=self.config.user_agent
+                user_agent=self.config.user_agent,
+                speed_limit=self.config.speed_limit
             )
             # 设置进度回调
             downloader.set_progress_callback(self._on_chunk_progress)
@@ -276,7 +277,8 @@ class DownloadEngine:
             temp_file=temp_file,
             timeout=self.config.timeout,
             retry_times=self.config.retry_times,
-            user_agent=self.config.user_agent
+            user_agent=self.config.user_agent,
+            speed_limit=self.config.speed_limit
         )
         downloader.set_progress_callback(self._on_chunk_progress)
         self.active_downloaders[task_id] = [downloader]

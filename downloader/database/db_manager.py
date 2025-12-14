@@ -336,3 +336,17 @@ class DatabaseManager:
             rows = cursor.fetchall()
             conn.close()
             return [dict(row) for row in rows]
+
+    def clear_history(self) -> bool:
+        """清空下载历史记录"""
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM download_history')
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"[错误] 清空历史记录失败: {e}")
+                return False

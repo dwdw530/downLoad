@@ -81,6 +81,19 @@ class SettingsDialog(ctk.CTkToplevel):
         self.timeout_entry = ctk.CTkEntry(main_frame, width=200)
         self.timeout_entry.grid(row=3, column=1, sticky="w", pady=10, padx=10)
 
+        # 速度限制设置
+        speed_limit_label = ctk.CTkLabel(main_frame, text="速度限制(KB/s):", font=("Arial", 12))
+        speed_limit_label.grid(row=4, column=0, sticky="w", pady=10)
+
+        speed_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        speed_frame.grid(row=4, column=1, sticky="ew", pady=10, padx=10)
+
+        self.speed_limit_entry = ctk.CTkEntry(speed_frame, width=120, placeholder_text="0=不限速")
+        self.speed_limit_entry.pack(side="left", padx=5)
+
+        speed_hint_label = ctk.CTkLabel(speed_frame, text="(0表示不限速)", font=("Arial", 10), text_color="gray")
+        speed_hint_label.pack(side="left")
+
         # 按钮区域
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(fill="x", padx=20, pady=10)
@@ -105,6 +118,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self.concurrent_slider.set(self.config.max_concurrent_downloads)
         self.concurrent_value_label.configure(text=str(self.config.max_concurrent_downloads))
         self.timeout_entry.insert(0, str(self.config.timeout))
+        # 速度限制：字节转KB显示
+        speed_limit_kb = self.config.speed_limit // 1024 if self.config.speed_limit > 0 else 0
+        self.speed_limit_entry.insert(0, str(speed_limit_kb))
 
     def _browse_directory(self):
         """浏览目录"""
@@ -139,11 +155,20 @@ class SettingsDialog(ctk.CTkToplevel):
                 return
             timeout = int(timeout_str)
 
+            # 速度限制验证：KB转字节存储
+            speed_limit_str = self.speed_limit_entry.get().strip()
+            if speed_limit_str and not speed_limit_str.isdigit():
+                messagebox.showerror("错误", "速度限制必须是数字！", parent=self)
+                return
+            speed_limit_kb = int(speed_limit_str) if speed_limit_str else 0
+            speed_limit_bytes = speed_limit_kb * 1024  # KB转字节
+
             # 保存配置
             self.config.download_dir = download_dir
             self.config.thread_count = thread_count
             self.config.max_concurrent_downloads = concurrent_count
             self.config.set('timeout', timeout)
+            self.config.speed_limit = speed_limit_bytes
             self.config.save()
 
             messagebox.showinfo("成功", "设置已保存！", parent=self)
@@ -169,4 +194,7 @@ class SettingsDialog(ctk.CTkToplevel):
             self.concurrent_value_label.configure(text=str(self.config.max_concurrent_downloads))
             self.timeout_entry.delete(0, "end")
             self.timeout_entry.insert(0, str(self.config.timeout))
+            # 速度限制重置
+            self.speed_limit_entry.delete(0, "end")
+            self.speed_limit_entry.insert(0, "0")
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

@@ -13,7 +13,10 @@
       "mcp__serena__list_dir",
       "mcp__serena__get_symbols_overview",
       "Bash(build.bat)",
-      "Bash(cmd.exe /c \"cd /d D:\\vscode_workspace\\downLoad_project && build.bat\")"
+      "Bash(cmd.exe /c \"cd /d D:\\vscode_workspace\\downLoad_project && build.bat\")",
+      "Skill(context-save)",
+      "Skill(context-resume)",
+      "mcp__serena__find_symbol"
     ]
   }
 }

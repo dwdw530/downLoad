@@ -9,13 +9,60 @@ import time
 from typing import Callable, Optional
 
 
+class SpeedLimiter:
+    """
+    速度限制器（令牌桶算法）
+    老王说：限速这事儿得用令牌桶，简单又好使！
+    """
+
+    def __init__(self, bytes_per_second: int = 0):
+        """
+        Args:
+            bytes_per_second: 每秒允许的字节数，0表示不限速
+        """
+        self.bytes_per_second = bytes_per_second
+        self._last_time = time.time()
+        self._tokens = 0  # 当前可用令牌（字节数）
+
+    def set_limit(self, bytes_per_second: int):
+        """动态设置限速"""
+        self.bytes_per_second = bytes_per_second
+
+    def acquire(self, bytes_count: int):
+        """
+        获取令牌（会阻塞直到有足够令牌）
+        Args:
+            bytes_count: 需要的字节数
+        """
+        if self.bytes_per_second <= 0:
+            return  # 不限速，直接返回
+
+        now = time.time()
+        elapsed = now - self._last_time
+        self._last_time = now
+
+        # 补充令牌（按时间比例）
+        self._tokens += elapsed * self.bytes_per_second
+        # 令牌上限为1秒的量，防止积攒太多导致突发流量
+        self._tokens = min(self._tokens, self.bytes_per_second)
+
+        # 如果令牌不够，等待
+        if bytes_count > self._tokens:
+            wait_time = (bytes_count - self._tokens) / self.bytes_per_second
+            time.sleep(wait_time)
+            self._tokens = 0
+        else:
+            self._tokens -= bytes_count
+
+
 class ChunkDownloader:
     """单个分块下载器"""
 
     def __init__(self, chunk_id: int, task_id: str, url: str,
                  start_byte: int, end_byte: int, temp_file: str,
                  timeout: int = 30, retry_times: int = 3,
-                 user_agent: str = "PyDownloader/1.0"):
+                 user_agent: str = "PyDownloader/1.0",
+                 speed_limit: int = 0):
         """
         初始化分块下载器
         Args:
@@ -28,6 +75,7 @@ class ChunkDownloader:
             timeout: 请求超时
             retry_times: 重试次数
             user_agent: User-Agent
+            speed_limit: 速度限制（字节/秒），0表示不限速
         """
         self.chunk_id = chunk_id
         self.task_id = task_id
@@ -42,6 +90,9 @@ class ChunkDownloader:
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
         self.is_cancelled = False  # 取消标志
+
+        # 速度限制器
+        self.speed_limiter = SpeedLimiter(speed_limit)
 
         # 进度回调函数
         self.progress_callback: Optional[Callable] = None
@@ -131,6 +182,9 @@ class ChunkDownloader:
 
                 # 写入数据
                 if data:
+                    # 限速：在写入前获取令牌
+                    self.speed_limiter.acquire(len(data))
+
                     f.write(data)
                     self.downloaded_bytes += len(data)
 

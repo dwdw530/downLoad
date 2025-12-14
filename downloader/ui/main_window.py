@@ -11,6 +11,7 @@ from tkinter import messagebox, filedialog
 from typing import Dict
 from downloader.core.task_manager import TaskManager
 from downloader.utils.file_utils import format_speed
+from downloader.ui.tray_manager import TrayManager
 
 
 class MainWindow(ctk.CTk):
@@ -47,17 +48,45 @@ class MainWindow(ctk.CTk):
         # 绑定窗口关闭事件
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
+        # 初始化系统托盘
+        self._init_tray()
+
+    def _init_tray(self):
+        """初始化系统托盘"""
+        self.tray_manager = TrayManager("老王下载器")
+        self.tray_manager.set_show_window_callback(self._show_from_tray)
+        self.tray_manager.set_exit_callback(self._exit_app)
+        self.tray_manager.start()
+
+    def _show_from_tray(self):
+        """从托盘恢复窗口"""
+        # 在主线程中执行UI操作
+        self.after(0, self._restore_window)
+
+    def _restore_window(self):
+        """恢复窗口显示"""
+        self.deiconify()  # 取消最小化
+        self.lift()  # 置顶
+        self.focus_force()  # 获取焦点
+
     def _minimize_app(self):
-        """最小化窗口（继续后台下载）"""
+        """最小化到托盘（继续后台下载）"""
         try:
-            # 任务栏最小化，比“啥也不干”强一万倍
-            self.iconify()
+            # 如果托盘可用，隐藏到托盘；否则普通最小化
+            if hasattr(self, 'tray_manager') and self.tray_manager.available:
+                self.withdraw()
+            else:
+                self.iconify()
         except Exception as e:
             print(f"[错误] 最小化失败: {e}")
+            self.iconify()
 
     def _exit_app(self):
         """退出程序（停止下载并释放资源）"""
         try:
+            # 停止托盘
+            if hasattr(self, 'tray_manager'):
+                self.tray_manager.stop()
             # 退出不清理线程？那就是找骂：ThreadPoolExecutor能把进程吊到天荒地老
             self.task_manager.shutdown()
         except Exception as e:
@@ -91,6 +120,10 @@ class MainWindow(ctk.CTk):
         # 设置按钮
         settings_btn = ctk.CTkButton(toolbar, text="⚙ 设置", command=self._on_settings, width=100)
         settings_btn.pack(side="right", padx=5)
+
+        # 历史按钮
+        history_btn = ctk.CTkButton(toolbar, text="📜 历史", command=self._on_history, width=100)
+        history_btn.pack(side="right", padx=5)
 
         # 任务列表区域（使用Scrollable Frame）
         self.task_list_frame = ctk.CTkScrollableFrame(self, label_text="下载任务列表")
@@ -135,6 +168,12 @@ class MainWindow(ctk.CTk):
         """打开设置对话框"""
         from downloader.ui.settings_dialog import SettingsDialog
         dialog = SettingsDialog(self, self.task_manager.engine.config)
+        self.wait_window(dialog)
+
+    def _on_history(self):
+        """打开下载历史对话框"""
+        from downloader.ui.history_dialog import HistoryDialog
+        dialog = HistoryDialog(self, self.task_manager.db)
         self.wait_window(dialog)
 
     def _load_existing_tasks(self):
@@ -313,6 +352,12 @@ class MainWindow(ctk.CTk):
     def _on_task_status_changed(self, task_id: str, status: str, message: str):
         """任务状态变更回调"""
         self.after(0, lambda: self._update_task_status(task_id, status))
+
+        # 下载完成时发送托盘通知
+        if status == 'completed':
+            task = self.task_manager.get_task(task_id)
+            if task and hasattr(self, 'tray_manager'):
+                self.tray_manager.notify_download_complete(task['filename'])
 
     def _on_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """任务进度回调"""
