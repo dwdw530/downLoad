@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash:*)",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; python --version\")",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; python scripts/generate_icon.py\")",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; pip install pyinstaller\")",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; pyinstaller --onefile --windowed --icon=assets/icon.ico --name=''老王下载器'' main.py\")",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; conda remove -y pathlib\")",
+      "Bash(pwsh.exe -Command \"conda activate py310_env; pip uninstall -y pathlib\")",
+      "Bash(pwsh.exe -Command:*)",
+      "Bash(cmd.exe /c build.bat)"
+    ]
+  }
+}

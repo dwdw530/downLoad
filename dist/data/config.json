@@ -1,0 +1,16 @@
+{
+    "download_dir": "C:\\Users\\lenovo\\Downloads\\老王下载器",
+    "temp_dir": "temp",
+    "thread_count": 8,
+    "max_concurrent_downloads": 3,
+    "retry_times": 3,
+    "chunk_size": 1048576,
+    "timeout": 30,
+    "user_agent": "PyDownloader/1.0",
+    "proxy": {
+        "enabled": false,
+        "http": "",
+        "https": ""
+    },
+    "close_behavior": "ask"
+}
