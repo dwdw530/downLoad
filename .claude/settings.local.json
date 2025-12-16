@@ -16,7 +16,9 @@
       "Bash(cmd.exe /c \"cd /d D:\\vscode_workspace\\downLoad_project && build.bat\")",
       "Skill(context-save)",
       "Skill(context-resume)",
-      "mcp__serena__find_symbol"
+      "mcp__serena__find_symbol",
+      "mcp__serena__get_current_config",
+      "mcp__serena__list_memories"
     ]
   }
 }

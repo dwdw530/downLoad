@@ -12,7 +12,7 @@ from typing import Optional, Callable
 from downloader.core.chunk_downloader import ChunkDownloader
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir
+from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
 
 
 class DownloadEngine:
@@ -60,7 +60,13 @@ class DownloadEngine:
         """
         try:
             headers = {'User-Agent': self.config.user_agent}
-            response = requests.head(url, headers=headers, timeout=self.config.timeout, allow_redirects=True)
+            response = requests.head(
+                url,
+                headers=headers,
+                timeout=self.config.timeout,
+                allow_redirects=True,
+                proxies=self.config.proxies  # 代理支持
+            )
 
             # 获取文件大小
             total_size = int(response.headers.get('Content-Length', 0))
@@ -75,13 +81,17 @@ class DownloadEngine:
             return False, 0
 
     def create_download_task(self, url: str, filename: Optional[str] = None,
-                            save_path: Optional[str] = None) -> Optional[str]:
+                            save_path: Optional[str] = None,
+                            expected_hash: Optional[str] = None,
+                            hash_type: str = "md5") -> Optional[str]:
         """
         创建下载任务
         Args:
             url: 下载链接
             filename: 文件名（可选，不提供则从URL提取）
             save_path: 保存路径（可选，不提供则使用默认下载目录）
+            expected_hash: 预期哈希值（可选，用于下载后校验）
+            hash_type: 哈希类型（md5/sha256）
         Returns:
             任务ID，失败返回None
         """
@@ -122,6 +132,10 @@ class DownloadEngine:
 
         if not success:
             return None
+
+        # 如果提供了预期哈希值，保存到数据库
+        if expected_hash:
+            self.db.set_expected_hash(task_id, expected_hash, hash_type)
 
         # 如果支持分块，创建分块记录
         if support_range and thread_count > 1:
@@ -202,7 +216,8 @@ class DownloadEngine:
                 timeout=self.config.timeout,
                 retry_times=self.config.retry_times,
                 user_agent=self.config.user_agent,
-                speed_limit=self.config.speed_limit
+                speed_limit=self.config.speed_limit,
+                proxies=self.config.proxies  # 代理支持
             )
             # 设置进度回调
             downloader.set_progress_callback(self._on_chunk_progress)
@@ -278,7 +293,8 @@ class DownloadEngine:
             timeout=self.config.timeout,
             retry_times=self.config.retry_times,
             user_agent=self.config.user_agent,
-            speed_limit=self.config.speed_limit
+            speed_limit=self.config.speed_limit,
+            proxies=self.config.proxies  # 代理支持
         )
         downloader.set_progress_callback(self._on_chunk_progress)
         self.active_downloaders[task_id] = [downloader]
@@ -296,14 +312,8 @@ class DownloadEngine:
                 ensure_dir(os.path.dirname(task['save_path']))
                 os.replace(temp_file, task['save_path'])
 
-                # 更新任务状态
-                elapsed_time = time.time() - start_time
-                avg_speed = task['total_size'] / elapsed_time if elapsed_time > 0 else 0
-                self.db.update_task_status(task_id, 'completed')
-                self.db.add_history(task_id, task['filename'], task['total_size'], elapsed_time, avg_speed)
-
-                if self.status_callback:
-                    self.status_callback(task_id, 'completed', '下载完成')
+                # 校验并完成任务（复用相同逻辑）
+                self._verify_and_finish(task_id, task['save_path'])
             else:
                 self.db.update_task_status(task_id, 'failed', '下载失败')
                 if self.status_callback:
@@ -333,21 +343,73 @@ class DownloadEngine:
             print(f"[成功] 文件已保存到: {save_path}")
             print(f"[检查] 文件是否存在: {os.path.exists(save_path)}")
 
-            # 获取任务信息计算统计数据
-            task = self.db.get_task(task_id)
-            if task:
-                elapsed_time = time.time() - time.mktime(time.strptime(task['started_at'], '%Y-%m-%d %H:%M:%S'))
-                avg_speed = task['total_size'] / elapsed_time if elapsed_time > 0 else 0
-                self.db.add_history(task_id, task['filename'], task['total_size'], elapsed_time, avg_speed)
-
-            self.db.update_task_status(task_id, 'completed')
-            if self.status_callback:
-                self.status_callback(task_id, 'completed', '下载完成')
+            # 校验并完成任务
+            self._verify_and_finish(task_id, save_path)
         else:
             print(f"[错误] 文件合并失败！")
             self.db.update_task_status(task_id, 'failed', '文件合并失败')
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '合并失败')
+
+    def _verify_and_finish(self, task_id: str, save_path: str):
+        """
+        校验文件并完成任务
+        老王说：校验这步很重要，下载了个假文件还不自知那才叫蠢！
+        """
+        task = self.db.get_task(task_id)
+        if not task:
+            return
+
+        expected_hash = task.get('expected_hash')
+        hash_type = task.get('expected_hash_type', 'md5') or 'md5'
+
+        # 更新状态为verifying
+        self.db.update_task_status(task_id, 'verifying')
+        if self.status_callback:
+            self.status_callback(task_id, 'verifying', '正在校验...')
+
+        # 计算文件哈希
+        print(f"[校验] 开始计算{hash_type.upper()}哈希...")
+        actual_hash = calculate_file_hash(save_path, hash_type)
+
+        if actual_hash:
+            print(f"[校验] 文件哈希: {actual_hash}")
+            # 有预期哈希值，进行对比
+            if expected_hash:
+                if actual_hash == expected_hash.lower():
+                    # 校验通过
+                    print(f"[校验] 校验通过！")
+                    self.db.update_task_hash(task_id, actual_hash, 1)
+                    self._finish_task(task_id, save_path, 'completed', '下载完成，校验通过')
+                else:
+                    # 校验失败
+                    print(f"[校验] 校验失败！期望:{expected_hash}, 实际:{actual_hash}")
+                    self.db.update_task_hash(task_id, actual_hash, -1)
+                    self._finish_task(task_id, save_path, 'verify_failed',
+                                      f'校验失败：期望{expected_hash[:8]}...，实际{actual_hash[:8]}...')
+            else:
+                # 没有预期哈希值，只记录实际哈希
+                self.db.update_task_hash(task_id, actual_hash, 0)
+                self._finish_task(task_id, save_path, 'completed', '下载完成')
+        else:
+            # 哈希计算失败，也标记完成（但记录问题）
+            print(f"[警告] 哈希计算失败，跳过校验")
+            self._finish_task(task_id, save_path, 'completed', '下载完成（哈希计算失败）')
+
+    def _finish_task(self, task_id: str, save_path: str, status: str, message: str):
+        """完成任务的公共逻辑"""
+        task = self.db.get_task(task_id)
+        if task and task.get('started_at'):
+            try:
+                elapsed_time = time.time() - time.mktime(time.strptime(task['started_at'], '%Y-%m-%d %H:%M:%S'))
+                avg_speed = task['total_size'] / elapsed_time if elapsed_time > 0 else 0
+                self.db.add_history(task_id, task['filename'], task['total_size'], elapsed_time, avg_speed)
+            except Exception as e:
+                print(f"[警告] 添加历史记录失败: {e}")
+
+        self.db.update_task_status(task_id, status)
+        if self.status_callback:
+            self.status_callback(task_id, status, message)
 
     def _on_chunk_progress(self, chunk_id: int, downloaded_bytes: int):
         """分块进度回调"""

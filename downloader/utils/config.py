@@ -171,3 +171,47 @@ class ConfigManager:
     def speed_limit(self, value: int):
         """设置速度限制"""
         self._config["speed_limit"] = max(0, value)  # 不能为负数
+
+    # ==================== 代理配置 ====================
+
+    @property
+    def proxy(self) -> dict:
+        """代理配置"""
+        return self._config.get("proxy", {"enabled": False, "http": "", "https": ""})
+
+    @property
+    def proxy_enabled(self) -> bool:
+        """代理是否启用"""
+        return self.proxy.get("enabled", False)
+
+    @property
+    def proxies(self) -> dict | None:
+        """
+        获取requests可用的proxies字典
+        Returns:
+            {"http": "...", "https": "..."} 或 None（不使用代理）
+        老王说：代理不启用就返回None，别瞎传空字典！
+        """
+        if not self.proxy_enabled:
+            return None
+        proxy_cfg = self.proxy
+        result = {}
+        if proxy_cfg.get("http"):
+            result["http"] = proxy_cfg["http"]
+        if proxy_cfg.get("https"):
+            result["https"] = proxy_cfg["https"]
+        return result if result else None
+
+    def set_proxy(self, enabled: bool, http: str = "", https: str = ""):
+        """
+        设置代理配置
+        Args:
+            enabled: 是否启用代理
+            http: HTTP代理地址，如 http://127.0.0.1:7890
+            https: HTTPS代理地址，如 http://127.0.0.1:7890
+        """
+        self._config["proxy"] = {
+            "enabled": enabled,
+            "http": http.strip(),
+            "https": https.strip()
+        }

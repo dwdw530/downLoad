@@ -96,6 +96,17 @@ class DatabaseManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_chunk_task ON download_chunks(task_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_chunk_status ON download_chunks(task_id, status)')
 
+            # 兼容老版本数据库：检查并添加校验相关字段
+            # 老王说：不做兼容处理，老用户更新后数据库就炸了！
+            try:
+                cursor.execute("SELECT expected_hash FROM download_tasks LIMIT 1")
+            except sqlite3.OperationalError:
+                # 字段不存在，添加它们
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN expected_hash TEXT")
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN expected_hash_type TEXT")
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN actual_hash TEXT")
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN hash_verified INTEGER DEFAULT 0")
+
             conn.commit()
             conn.close()
 
@@ -201,6 +212,55 @@ class DatabaseManager:
                 return True
             except Exception as e:
                 print(f"[错误] 更新任务进度失败: {e}")
+                return False
+
+    def update_task_hash(self, task_id: str, actual_hash: str, hash_verified: int) -> bool:
+        """
+        更新任务哈希校验结果
+        Args:
+            task_id: 任务ID
+            actual_hash: 计算出的哈希值
+            hash_verified: 校验结果 (0=未校验, 1=匹配, -1=不匹配)
+        老王说：校验结果得存下来，不然用户想看都看不到！
+        """
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE download_tasks
+                    SET actual_hash = ?, hash_verified = ?
+                    WHERE task_id = ?
+                ''', (actual_hash, hash_verified, task_id))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"[错误] 更新哈希失败: {e}")
+                return False
+
+    def set_expected_hash(self, task_id: str, expected_hash: str, hash_type: str) -> bool:
+        """
+        设置预期哈希值
+        Args:
+            task_id: 任务ID
+            expected_hash: 预期哈希值
+            hash_type: 哈希类型 (md5/sha256)
+        """
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE download_tasks
+                    SET expected_hash = ?, expected_hash_type = ?
+                    WHERE task_id = ?
+                ''', (expected_hash.lower() if expected_hash else None, hash_type.lower() if hash_type else None, task_id))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"[错误] 设置预期哈希失败: {e}")
                 return False
 
     def delete_task(self, task_id: str) -> bool:

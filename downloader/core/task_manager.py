@@ -43,18 +43,22 @@ class TaskManager:
         self.task_status_changed_callback = callback
 
     def add_task(self, url: str, filename: Optional[str] = None,
-                 save_path: Optional[str] = None) -> Optional[str]:
+                 save_path: Optional[str] = None,
+                 expected_hash: Optional[str] = None,
+                 hash_type: str = "md5") -> Optional[str]:
         """
         添加下载任务
         Args:
             url: 下载链接
             filename: 文件名（可选）
             save_path: 保存路径（可选）
+            expected_hash: 预期哈希值（可选，用于下载后校验）
+            hash_type: 哈希类型（md5/sha256）
         Returns:
             任务ID，失败返回None
         """
         # 创建任务
-        task_id = self.engine.create_download_task(url, filename, save_path)
+        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type)
         if not task_id:
             return None
 

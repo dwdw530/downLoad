@@ -18,7 +18,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("500x400")
+        self.geometry("500x520")  # 加高给代理设置腾位置
         self.resizable(False, False)
 
         # 模态对话框
@@ -81,12 +81,43 @@ class SettingsDialog(ctk.CTkToplevel):
         self.timeout_entry = ctk.CTkEntry(main_frame, width=200)
         self.timeout_entry.grid(row=3, column=1, sticky="w", pady=10, padx=10)
 
-        # 速度限制设置
+        # ========== 代理设置 ==========
+        proxy_label = ctk.CTkLabel(main_frame, text="代理设置:", font=("Arial", 12))
+        proxy_label.grid(row=4, column=0, sticky="nw", pady=10)
+
+        proxy_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        proxy_frame.grid(row=4, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+
+        # 代理开关
+        self.proxy_enabled_var = ctk.BooleanVar(value=False)
+        self.proxy_switch = ctk.CTkSwitch(
+            proxy_frame,
+            text="启用代理",
+            variable=self.proxy_enabled_var,
+            command=self._on_proxy_toggle
+        )
+        self.proxy_switch.pack(anchor="w")
+
+        # HTTP代理输入
+        http_proxy_frame = ctk.CTkFrame(proxy_frame, fg_color="transparent")
+        http_proxy_frame.pack(fill="x", pady=(5, 0))
+        ctk.CTkLabel(http_proxy_frame, text="HTTP:", width=60).pack(side="left")
+        self.http_proxy_entry = ctk.CTkEntry(http_proxy_frame, width=250, placeholder_text="http://127.0.0.1:7890")
+        self.http_proxy_entry.pack(side="left", padx=5)
+
+        # HTTPS代理输入
+        https_proxy_frame = ctk.CTkFrame(proxy_frame, fg_color="transparent")
+        https_proxy_frame.pack(fill="x", pady=(5, 0))
+        ctk.CTkLabel(https_proxy_frame, text="HTTPS:", width=60).pack(side="left")
+        self.https_proxy_entry = ctk.CTkEntry(https_proxy_frame, width=250, placeholder_text="http://127.0.0.1:7890")
+        self.https_proxy_entry.pack(side="left", padx=5)
+
+        # 速度限制设置（row改为5）
         speed_limit_label = ctk.CTkLabel(main_frame, text="速度限制(KB/s):", font=("Arial", 12))
-        speed_limit_label.grid(row=4, column=0, sticky="w", pady=10)
+        speed_limit_label.grid(row=5, column=0, sticky="w", pady=10)
 
         speed_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        speed_frame.grid(row=4, column=1, sticky="ew", pady=10, padx=10)
+        speed_frame.grid(row=5, column=1, sticky="ew", pady=10, padx=10)
 
         self.speed_limit_entry = ctk.CTkEntry(speed_frame, width=120, placeholder_text="0=不限速")
         self.speed_limit_entry.pack(side="left", padx=5)
@@ -121,6 +152,12 @@ class SettingsDialog(ctk.CTkToplevel):
         # 速度限制：字节转KB显示
         speed_limit_kb = self.config.speed_limit // 1024 if self.config.speed_limit > 0 else 0
         self.speed_limit_entry.insert(0, str(speed_limit_kb))
+        # 代理配置
+        proxy_cfg = self.config.proxy
+        self.proxy_enabled_var.set(proxy_cfg.get("enabled", False))
+        self.http_proxy_entry.insert(0, proxy_cfg.get("http", ""))
+        self.https_proxy_entry.insert(0, proxy_cfg.get("https", ""))
+        self._on_proxy_toggle()  # 根据开关状态设置输入框状态
 
     def _browse_directory(self):
         """浏览目录"""
@@ -136,6 +173,13 @@ class SettingsDialog(ctk.CTkToplevel):
     def _on_concurrent_slider_change(self, value):
         """并发数滑块变化"""
         self.concurrent_value_label.configure(text=str(int(value)))
+
+    def _on_proxy_toggle(self):
+        """代理开关切换"""
+        enabled = self.proxy_enabled_var.get()
+        state = "normal" if enabled else "disabled"
+        self.http_proxy_entry.configure(state=state)
+        self.https_proxy_entry.configure(state=state)
 
     def _on_save(self):
         """保存设置"""
@@ -169,6 +213,11 @@ class SettingsDialog(ctk.CTkToplevel):
             self.config.max_concurrent_downloads = concurrent_count
             self.config.set('timeout', timeout)
             self.config.speed_limit = speed_limit_bytes
+            # 保存代理配置
+            proxy_enabled = self.proxy_enabled_var.get()
+            http_proxy = self.http_proxy_entry.get().strip()
+            https_proxy = self.https_proxy_entry.get().strip()
+            self.config.set_proxy(proxy_enabled, http_proxy, https_proxy)
             self.config.save()
 
             messagebox.showinfo("成功", "设置已保存！", parent=self)
@@ -197,4 +246,9 @@ class SettingsDialog(ctk.CTkToplevel):
             # 速度限制重置
             self.speed_limit_entry.delete(0, "end")
             self.speed_limit_entry.insert(0, "0")
+            # 代理配置重置
+            self.proxy_enabled_var.set(False)
+            self.http_proxy_entry.delete(0, "end")
+            self.https_proxy_entry.delete(0, "end")
+            self._on_proxy_toggle()
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

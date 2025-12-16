@@ -4,8 +4,9 @@
 老王说:  文件操作要稳，一个不小心就炸了！
 """
 import os
+import hashlib
 import threading
-from typing import List
+from typing import List, Callable, Optional
 from urllib.parse import urlparse, unquote
 
 
@@ -138,6 +139,66 @@ def get_file_size(file_path: str) -> int:
         return 0
     except Exception:
         return 0
+
+
+def calculate_file_hash(file_path: str,
+                        hash_type: str = "md5",
+                        progress_callback: Optional[Callable[[int, int], None]] = None) -> str:
+    """
+    计算文件哈希值
+    Args:
+        file_path: 文件路径
+        hash_type: 哈希类型，支持 md5/sha256
+        progress_callback: 进度回调 callback(processed_bytes, total_bytes)
+    Returns:
+        哈希值字符串（小写16进制），失败返回空字符串
+
+    老王说：大文件哈希计算得分块读，不然内存会爆炸！
+    """
+    hash_type = hash_type.lower()
+    if hash_type == "md5":
+        hasher = hashlib.md5()
+    elif hash_type == "sha256":
+        hasher = hashlib.sha256()
+    else:
+        print(f"[错误] 不支持的哈希类型: {hash_type}")
+        return ""
+
+    try:
+        total_size = os.path.getsize(file_path)
+        processed = 0
+        chunk_size = 8 * 1024 * 1024  # 8MB一块，平衡速度和内存
+
+        with open(file_path, 'rb') as f:
+            while True:
+                data = f.read(chunk_size)
+                if not data:
+                    break
+                hasher.update(data)
+                processed += len(data)
+                if progress_callback:
+                    progress_callback(processed, total_size)
+
+        return hasher.hexdigest().lower()
+    except Exception as e:
+        print(f"[错误] 计算哈希失败: {e}")
+        return ""
+
+
+def verify_file_hash(file_path: str, expected_hash: str, hash_type: str = "md5") -> bool:
+    """
+    验证文件哈希
+    Args:
+        file_path: 文件路径
+        expected_hash: 预期哈希值
+        hash_type: 哈希类型
+    Returns:
+        True表示匹配，False表示不匹配
+    """
+    actual = calculate_file_hash(file_path, hash_type)
+    if not actual:
+        return False
+    return actual == expected_hash.lower()
 
 
 class FileLock:

@@ -62,7 +62,8 @@ class ChunkDownloader:
                  start_byte: int, end_byte: int, temp_file: str,
                  timeout: int = 30, retry_times: int = 3,
                  user_agent: str = "PyDownloader/1.0",
-                 speed_limit: int = 0):
+                 speed_limit: int = 0,
+                 proxies: dict = None):
         """
         初始化分块下载器
         Args:
@@ -76,6 +77,7 @@ class ChunkDownloader:
             retry_times: 重试次数
             user_agent: User-Agent
             speed_limit: 速度限制（字节/秒），0表示不限速
+            proxies: 代理配置，格式 {"http": "...", "https": "..."} 或 None
         """
         self.chunk_id = chunk_id
         self.task_id = task_id
@@ -86,6 +88,7 @@ class ChunkDownloader:
         self.timeout = timeout
         self.retry_times = retry_times
         self.user_agent = user_agent
+        self.proxies = proxies  # 代理配置
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -159,7 +162,13 @@ class ChunkDownloader:
         }
 
         # 发起请求
-        response = requests.get(self.url, headers=headers, stream=True, timeout=self.timeout)
+        response = requests.get(
+            self.url,
+            headers=headers,
+            stream=True,
+            timeout=self.timeout,
+            proxies=self.proxies  # 代理支持
+        )
 
         # 检查状态码（206是部分内容，200是完整内容）
         if response.status_code not in (200, 206):

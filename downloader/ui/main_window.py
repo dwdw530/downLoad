@@ -138,17 +138,17 @@ class MainWindow(ctk.CTk):
 
     def _on_add_task(self):
         """添加任务对话框"""
-        dialog = ctk.CTkInputDialog(text="请输入下载链接:", title="添加下载任务")
-        url = dialog.get_input()
+        dialog = AddTaskDialog(self)
+        self.wait_window(dialog)
 
-        if url:
-            # 询问保存位置
-            save_dir = filedialog.askdirectory(title="选择保存位置")
-            if not save_dir:
-                save_dir = None  # 使用默认目录
-
-            # 添加任务
-            task_id = self.task_manager.add_task(url, save_path=save_dir)
+        if dialog.confirmed:
+            # 添加任务（带哈希校验参数）
+            task_id = self.task_manager.add_task(
+                url=dialog.url,
+                save_path=dialog.save_dir,
+                expected_hash=dialog.expected_hash,
+                hash_type=dialog.hash_type
+            )
             if task_id:
                 messagebox.showinfo("成功", "任务添加成功！")
             else:
@@ -428,7 +428,8 @@ class MainWindow(ctk.CTk):
             'paused': '已暂停',
             'completed': '已完成',
             'failed': '失败',
-            'cancelled': '已取消'
+            'cancelled': '已取消',
+            'verifying': '校验中'
         }
         return status_map.get(status, status)
 
@@ -702,5 +703,136 @@ class DeleteTaskDialog(ctk.CTkToplevel):
 
     def _on_cancel(self):
         """取消按钮"""
+        self.confirmed = False
+        self.destroy()
+
+
+class AddTaskDialog(ctk.CTkToplevel):
+    """添加任务对话框 - 支持哈希校验"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self.confirmed = False
+        self.url = ""
+        self.save_dir = ""
+        self.expected_hash = ""
+        self.hash_type = "md5"
+
+        # 设置窗口
+        self.title("添加下载任务")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        # 模态对话框
+        self.transient(parent)
+        self.grab_set()
+
+        # 创建UI
+        self._create_ui()
+
+        # 居中显示
+        self._center_window(parent, 500, 320)
+
+        # 快捷键
+        self.bind("<Escape>", lambda _: self._on_cancel())
+        self.bind("<Return>", lambda _: self._on_confirm())
+        self.focus_force()
+
+    def _center_window(self, parent, width, height):
+        """居中显示"""
+        self.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - height) // 2
+        x = max(0, x)
+        y = max(0, y)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _create_ui(self):
+        """创建UI"""
+        main_frame = ctk.CTkFrame(self)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # URL输入
+        url_label = ctk.CTkLabel(main_frame, text="下载链接:", font=("Arial", 12))
+        url_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
+
+        self.url_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="请输入下载链接")
+        self.url_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        self.url_entry.focus_set()
+
+        # 保存位置
+        save_label = ctk.CTkLabel(main_frame, text="保存位置:", font=("Arial", 12))
+        save_label.grid(row=2, column=0, sticky="w", pady=(0, 5))
+
+        save_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        save_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+
+        self.save_entry = ctk.CTkEntry(save_frame, width=330, placeholder_text="留空使用默认下载目录")
+        self.save_entry.pack(side="left")
+
+        browse_btn = ctk.CTkButton(save_frame, text="浏览", width=60, command=self._on_browse)
+        browse_btn.pack(side="left", padx=(10, 0))
+
+        # 哈希校验（可选）
+        hash_label = ctk.CTkLabel(main_frame, text="文件校验 (可选):", font=("Arial", 12))
+        hash_label.grid(row=4, column=0, sticky="w", pady=(0, 5))
+
+        hash_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        hash_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+
+        # 哈希类型选择
+        self.hash_type_var = ctk.StringVar(value="md5")
+        hash_type_menu = ctk.CTkOptionMenu(
+            hash_frame,
+            values=["md5", "sha256"],
+            variable=self.hash_type_var,
+            width=80
+        )
+        hash_type_menu.pack(side="left")
+
+        # 哈希值输入
+        self.hash_entry = ctk.CTkEntry(hash_frame, width=310, placeholder_text="预期哈希值（留空跳过校验）")
+        self.hash_entry.pack(side="left", padx=(10, 0))
+
+        # 按钮区域
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.grid(row=6, column=0, columnspan=2, pady=(10, 0))
+
+        confirm_btn = ctk.CTkButton(button_frame, text="添加", command=self._on_confirm, width=100)
+        confirm_btn.pack(side="left", padx=10)
+
+        cancel_btn = ctk.CTkButton(
+            button_frame, text="取消", command=self._on_cancel, width=100,
+            fg_color=("gray85", "gray25"), hover_color=("gray80", "gray30"),
+            text_color=("gray10", "gray90")
+        )
+        cancel_btn.pack(side="left", padx=10)
+
+    def _on_browse(self):
+        """浏览保存位置"""
+        from tkinter import filedialog
+        directory = filedialog.askdirectory(title="选择保存位置")
+        if directory:
+            self.save_entry.delete(0, "end")
+            self.save_entry.insert(0, directory)
+
+    def _on_confirm(self):
+        """确定"""
+        url = self.url_entry.get().strip()
+        if not url:
+            from tkinter import messagebox
+            messagebox.showerror("错误", "请输入下载链接！", parent=self)
+            return
+
+        self.confirmed = True
+        self.url = url
+        self.save_dir = self.save_entry.get().strip() or None
+        self.expected_hash = self.hash_entry.get().strip() or None
+        self.hash_type = self.hash_type_var.get()
+        self.destroy()
+
+    def _on_cancel(self):
+        """取消"""
         self.confirmed = False
         self.destroy()
