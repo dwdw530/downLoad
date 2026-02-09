@@ -1,2 +1,5 @@
 .idea
 .claude
+_pycache_/*
+/downloader/__pycache__/*
+
