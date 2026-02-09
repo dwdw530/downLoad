@@ -6,6 +6,7 @@
 import customtkinter as ctk
 from typing import List, Dict
 from datetime import datetime
+from downloader.utils.file_utils import format_speed
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -32,16 +33,6 @@ def format_duration(seconds: float) -> str:
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
         return f"{hours}小时{minutes}分"
-
-
-def format_speed(speed: float) -> str:
-    """格式化速度"""
-    if speed < 1024:
-        return f"{speed:.1f} B/s"
-    elif speed < 1024 * 1024:
-        return f"{speed / 1024:.1f} KB/s"
-    else:
-        return f"{speed / (1024 * 1024):.2f} MB/s"
 
 
 class HistoryDialog(ctk.CTkToplevel):

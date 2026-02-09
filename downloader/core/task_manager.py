@@ -31,8 +31,17 @@ class TaskManager:
         self.task_added_callback: Optional[Callable] = None
         self.task_status_changed_callback: Optional[Callable] = None
 
+        # 艹，程序重启后必须先把遗留downloading纠偏成paused，不然僵尸任务会把队列拖死
+        self._recover_stale_downloading_tasks()
+
         # 设置引擎的状态回调
         self.engine.set_status_callback(self._on_engine_status_change)
+
+    def _recover_stale_downloading_tasks(self):
+        """启动时恢复遗留下载中任务"""
+        stale_tasks = self.db.get_all_tasks(status='downloading')
+        for task in stale_tasks:
+            self.db.update_task_status(task['task_id'], 'paused', '程序重启自动纠偏：下载状态已重置为暂停')
 
     def set_task_added_callback(self, callback: Callable):
         """设置任务添加回调"""
@@ -84,8 +93,16 @@ class TaskManager:
             return False
 
         # 检查任务状态
-        if task['status'] not in ('pending', 'paused', 'failed'):
+        if task['status'] not in ('pending', 'paused', 'failed', 'verify_failed'):
             return False
+
+        # 校验失败重试要先把进度清零，不然UI会出现“没开始就100%”这种离谱显示
+        if task['status'] == 'verify_failed':
+            self.db.update_task_progress(task_id, 0, 0)
+            if task.get('support_range') and task.get('thread_count', 1) > 1:
+                chunks = self.db.get_chunks(task_id)
+                for chunk in chunks:
+                    self.db.update_chunk_progress(chunk['chunk_id'], 0, 'pending')
 
         # 检查并发限制
         with self._lock:
@@ -107,11 +124,33 @@ class TaskManager:
 
     def pause_task(self, task_id: str) -> bool:
         """暂停任务"""
-        return self.engine.pause_download(task_id)
+        success = self.engine.pause_download(task_id)
+        if success:
+            # 艹，暂停任务不能继续霸占并发槽位，不然队列永远起不来
+            with self._lock:
+                self._running_tasks.discard(task_id)
+            self._try_start_next_task()
+        return success
 
     def resume_task(self, task_id: str) -> bool:
         """继续任务"""
-        return self.engine.resume_download(task_id)
+        task = self.db.get_task(task_id)
+        if not task or task['status'] != 'paused':
+            return False
+
+        with self._lock:
+            # 艹，恢复任务也得走并发门禁，不能偷偷绕过最大并发
+            if task_id not in self._running_tasks and len(self._running_tasks) >= self.max_concurrent:
+                print(f"[提示] 已达到最大并发数，任务继续等待: {task_id}")
+                return False
+            self._running_tasks.add(task_id)
+
+        success = self.engine.resume_download(task_id)
+        if not success:
+            with self._lock:
+                self._running_tasks.discard(task_id)
+
+        return success
 
     def cancel_task(self, task_id: str) -> bool:
         """取消任务"""
@@ -193,7 +232,8 @@ class TaskManager:
     def _on_engine_status_change(self, task_id: str, status: str, message: str):
         """引擎状态变更回调"""
         # 如果任务完成或失败，从运行集合中移除
-        if status in ('completed', 'failed', 'cancelled'):
+        if status in ('completed', 'failed', 'cancelled', 'verify_failed', 'paused'):
+            # 艹，verify_failed和paused都算终态/非运行态，必须立刻释放槽位
             with self._lock:
                 self._running_tasks.discard(task_id)
 

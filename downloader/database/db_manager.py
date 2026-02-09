@@ -33,6 +33,8 @@ class DatabaseManager:
     def _get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # 艹，SQLite默认外键是关的，不显式打开级联删除就是摆设
+        conn.execute('PRAGMA foreign_keys = ON')
         conn.row_factory = sqlite3.Row  # 返回字典形式的查询结果
         return conn
 
@@ -120,20 +122,70 @@ class DatabaseManager:
             True表示创建成功，False表示失败
         """
         with self._lock:
+            conn = None
             try:
                 conn = self._get_connection()
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO download_tasks
-                    (task_id, url, filename, save_path, total_size, support_range, thread_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
-                conn.commit()
-                conn.close()
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO download_tasks
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
                 return True
             except Exception as e:
                 print(f"[错误] 创建任务失败: {e}")
                 return False
+            finally:
+                if conn:
+                    conn.close()
+
+    def create_task_with_chunks(self, task_id: str, url: str, filename: str, save_path: str,
+                                total_size: int = 0, support_range: bool = True, thread_count: int = 8,
+                                chunks: Optional[List[Tuple[int, int, int, str]]] = None,
+                                expected_hash: Optional[str] = None, hash_type: str = "md5") -> bool:
+        """
+        原子创建任务与分块（可选带预期哈希）
+        老王说：任务和分块必须一锅端，要么全成要么全回滚，别搞半截子烂账。
+        """
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO download_tasks
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
+
+                    if expected_hash:
+                        # 艹，预期哈希也跟任务一起落库，避免事务外更新导致脏状态
+                        cursor.execute('''
+                            UPDATE download_tasks
+                            SET expected_hash = ?, expected_hash_type = ?
+                            WHERE task_id = ?
+                        ''', (
+                            expected_hash.lower() if expected_hash else None,
+                            hash_type.lower() if hash_type else None,
+                            task_id
+                        ))
+
+                    if chunks:
+                        cursor.executemany('''
+                            INSERT INTO download_chunks
+                            (task_id, chunk_index, start_byte, end_byte, temp_file)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', [(task_id, chunk_index, start_byte, end_byte, temp_file)
+                              for chunk_index, start_byte, end_byte, temp_file in chunks])
+                return True
+            except Exception as e:
+                print(f"[错误] 原子创建任务失败: {e}")
+                return False
+            finally:
+                if conn:
+                    conn.close()
 
     def get_task(self, task_id: str) -> Optional[Dict]:
         """获取任务详情"""
@@ -152,49 +204,57 @@ class DatabaseManager:
             status: 可选，筛选特定状态的任务
         """
         with self._lock:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            if status:
-                cursor.execute('SELECT * FROM download_tasks WHERE status = ? ORDER BY created_at DESC', (status,))
-            else:
-                cursor.execute('SELECT * FROM download_tasks ORDER BY created_at DESC')
-            rows = cursor.fetchall()
-            conn.close()
-            return [dict(row) for row in rows]
+            conn = None
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                if status:
+                    # 艹，队列必须FIFO，按创建时间升序取任务，不然越新的越先跑
+                    cursor.execute('SELECT * FROM download_tasks WHERE status = ? ORDER BY created_at ASC', (status,))
+                else:
+                    cursor.execute('SELECT * FROM download_tasks ORDER BY created_at ASC')
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+            finally:
+                # 艹，这里必须finally关连接，异常路径不关库连接迟早把句柄耗死
+                if conn:
+                    conn.close()
 
     def update_task_status(self, task_id: str, status: str, error_message: Optional[str] = None) -> bool:
         """更新任务状态"""
         with self._lock:
+            conn = None
             try:
                 conn = self._get_connection()
-                cursor = conn.cursor()
+                with conn:
+                    cursor = conn.cursor()
 
-                # 根据状态更新时间戳
-                if status == 'downloading':
-                    cursor.execute('''
-                        UPDATE download_tasks
-                        SET status = ?, started_at = CURRENT_TIMESTAMP, error_message = ?
-                        WHERE task_id = ?
-                    ''', (status, error_message, task_id))
-                elif status == 'completed':
-                    cursor.execute('''
-                        UPDATE download_tasks
-                        SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ?
-                        WHERE task_id = ?
-                    ''', (status, error_message, task_id))
-                else:
-                    cursor.execute('''
-                        UPDATE download_tasks
-                        SET status = ?, error_message = ?
-                        WHERE task_id = ?
-                    ''', (status, error_message, task_id))
-
-                conn.commit()
-                conn.close()
+                    # 根据状态更新时间戳
+                    if status == 'downloading':
+                        cursor.execute('''
+                            UPDATE download_tasks
+                            SET status = ?, started_at = CURRENT_TIMESTAMP, error_message = ?
+                            WHERE task_id = ?
+                        ''', (status, error_message, task_id))
+                    elif status == 'completed':
+                        cursor.execute('''
+                            UPDATE download_tasks
+                            SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ?
+                            WHERE task_id = ?
+                        ''', (status, error_message, task_id))
+                    else:
+                        cursor.execute('''
+                            UPDATE download_tasks
+                            SET status = ?, error_message = ?
+                            WHERE task_id = ?
+                        ''', (status, error_message, task_id))
                 return True
             except Exception as e:
                 print(f"[错误] 更新任务状态失败: {e}")
                 return False
+            finally:
+                if conn:
+                    conn.close()
 
     def update_task_progress(self, task_id: str, downloaded_size: int, speed: float) -> bool:
         """更新任务进度"""

@@ -29,6 +29,7 @@ class DownloadEngine:
         self.config = config_manager
         self.active_downloaders = {}  # {task_id: [ChunkDownloader, ...]}
         self.thread_pools = {}  # {task_id: ThreadPoolExecutor}
+        self.cancelled_tasks = set()  # 艹，取消标记必须单独维护，不然后台线程会把状态回写炸掉
 
         # 回调函数
         self.progress_callback: Optional[Callable] = None
@@ -118,30 +119,48 @@ class DownloadEngine:
 
         # 确定线程数
         thread_count = self.config.thread_count if support_range else 1
+        if support_range:
+            # 艹，小文件线程数绝不能比字节数大，不然分块区间会出现 end=-1 这种脏数据
+            thread_count = max(1, min(thread_count, total_size))
 
-        # 创建任务记录
-        success = self.db.create_task(
+        # 先构建分块数据，后面要和任务创建一起进事务，防止半拉子脏任务
+        chunks = []
+        if support_range and thread_count > 1:
+            chunks = self._build_chunks(task_id, total_size, thread_count)
+
+        # 艹，任务+分块必须放在同一个事务里，不然中途失败就是数据库烂尾
+        success = self.db.create_task_with_chunks(
             task_id=task_id,
             url=url,
             filename=filename,
             save_path=save_path,
             total_size=total_size,
             support_range=support_range,
-            thread_count=thread_count
+            thread_count=thread_count,
+            chunks=chunks,
+            expected_hash=expected_hash,
+            hash_type=hash_type
         )
 
         if not success:
             return None
 
-        # 如果提供了预期哈希值，保存到数据库
-        if expected_hash:
-            self.db.set_expected_hash(task_id, expected_hash, hash_type)
-
-        # 如果支持分块，创建分块记录
-        if support_range and thread_count > 1:
-            self._create_chunks(task_id, url, total_size, thread_count)
-
         return task_id
+
+    def _build_chunks(self, task_id: str, total_size: int, thread_count: int) -> list[tuple[int, int, int, str]]:
+        """构建分块区间（不写数据库）"""
+        # 艹，这里再兜一层，任何入口传来的线程数都必须合法
+        valid_thread_count = max(1, min(thread_count, total_size))
+        chunk_size = total_size // valid_thread_count
+        chunks = []
+
+        for i in range(valid_thread_count):
+            start_byte = i * chunk_size
+            end_byte = (i + 1) * chunk_size - 1 if i < valid_thread_count - 1 else total_size - 1
+            temp_file = os.path.join(self.config.temp_dir, f"{task_id}.part{i}")
+            chunks.append((i, start_byte, end_byte, temp_file))
+
+        return chunks
 
     def _create_chunks(self, task_id: str, url: str, total_size: int, thread_count: int):
         """
@@ -152,15 +171,8 @@ class DownloadEngine:
             total_size: 文件总大小
             thread_count: 线程数
         """
-        chunk_size = total_size // thread_count
-        chunks = []
-
-        for i in range(thread_count):
-            start_byte = i * chunk_size
-            end_byte = (i + 1) * chunk_size - 1 if i < thread_count - 1 else total_size - 1
-            temp_file = os.path.join(self.config.temp_dir, f"{task_id}.part{i}")
-            chunks.append((i, start_byte, end_byte, temp_file))
-
+        # 艹，统一复用分块构建逻辑，避免两个地方算区间出现偏差
+        chunks = self._build_chunks(task_id, total_size, thread_count)
         self.db.create_chunks(task_id, chunks)
 
     def start_download(self, task_id: str, resume: bool = False) -> bool:
@@ -179,6 +191,7 @@ class DownloadEngine:
             return False
 
         # 更新任务状态为downloading
+        self.cancelled_tasks.discard(task_id)
         self.db.update_task_status(task_id, 'downloading')
         if self.status_callback:
             self.status_callback(task_id, 'downloading', '开始下载')
@@ -247,8 +260,13 @@ class DownloadEngine:
             all_success = True
             for future in as_completed(futures):
                 downloader = futures[future]
+                if self._is_task_cancelled(task_id):
+                    # 艹，已经取消就别再碰状态了，后台线程老实收尾就行
+                    continue
                 try:
                     success = future.result()
+                    if self._is_task_cancelled(task_id):
+                        continue
                     if success:
                         self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes, 'completed')
                     else:
@@ -256,7 +274,8 @@ class DownloadEngine:
                         self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes, 'failed')
                 except Exception as e:
                     print(f"[错误] 分块下载异常: {e}")
-                    all_success = False
+                    if not self._is_task_cancelled(task_id):
+                        all_success = False
 
             # 关闭线程池
             thread_pool.shutdown(wait=False)
@@ -264,6 +283,9 @@ class DownloadEngine:
                 del self.thread_pools[task_id]
             if task_id in self.active_downloaders:
                 del self.active_downloaders[task_id]
+
+            if self._is_task_cancelled(task_id):
+                return
 
             # 合并文件
             if all_success:
@@ -296,7 +318,33 @@ class DownloadEngine:
             speed_limit=self.config.speed_limit,
             proxies=self.config.proxies  # 代理支持
         )
-        downloader.set_progress_callback(self._on_chunk_progress)
+
+        # 艹，单线程也得走实时进度链路，不然UI速度和进度全是死的
+        progress_state = {
+            'last_time': time.time(),
+            'last_downloaded': 0
+        }
+
+        if resume and os.path.exists(temp_file):
+            progress_state['last_downloaded'] = os.path.getsize(temp_file)
+
+        # 先把当前已下载量推给UI，断点续传时进度不会从0假装重新开始
+        self.db.update_task_progress(task_id, progress_state['last_downloaded'], 0)
+        if self.progress_callback:
+            self.progress_callback(task_id, progress_state['last_downloaded'], task['total_size'], 0)
+
+        def on_single_progress(_chunk_id: int, downloaded_bytes: int):
+            now = time.time()
+            elapsed = max(now - progress_state['last_time'], 1e-6)
+            speed = max(0, (downloaded_bytes - progress_state['last_downloaded']) / elapsed)
+            progress_state['last_time'] = now
+            progress_state['last_downloaded'] = downloaded_bytes
+
+            self.db.update_task_progress(task_id, downloaded_bytes, speed)
+            if self.progress_callback:
+                self.progress_callback(task_id, downloaded_bytes, task['total_size'], speed)
+
+        downloader.set_progress_callback(on_single_progress)
         self.active_downloaders[task_id] = [downloader]
 
         # 在后台线程下载
@@ -306,6 +354,9 @@ class DownloadEngine:
 
             if task_id in self.active_downloaders:
                 del self.active_downloaders[task_id]
+
+            if self._is_task_cancelled(task_id):
+                return
 
             if success:
                 # 移动文件到目标位置
@@ -325,6 +376,10 @@ class DownloadEngine:
 
     def _merge_and_finish(self, task_id: str, save_path: str, chunks: list):
         """合并文件并完成任务"""
+        if self._is_task_cancelled(task_id):
+            # 艹，任务都取消了还合并个锤子，直接撤
+            return
+
         print(f"[合并] 开始合并文件，目标路径: {save_path}")
 
         # 确保目标目录存在
@@ -347,6 +402,8 @@ class DownloadEngine:
             self._verify_and_finish(task_id, save_path)
         else:
             print(f"[错误] 文件合并失败！")
+            if self._is_task_cancelled(task_id):
+                return
             self.db.update_task_status(task_id, 'failed', '文件合并失败')
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '合并失败')
@@ -358,6 +415,10 @@ class DownloadEngine:
         """
         task = self.db.get_task(task_id)
         if not task:
+            return
+
+        if self._is_task_cancelled(task_id):
+            # 艹，取消后禁止进入校验/终态覆盖流程
             return
 
         expected_hash = task.get('expected_hash')
@@ -385,6 +446,7 @@ class DownloadEngine:
                     # 校验失败
                     print(f"[校验] 校验失败！期望:{expected_hash}, 实际:{actual_hash}")
                     self.db.update_task_hash(task_id, actual_hash, -1)
+                    # 艹，verify_failed 也是终态，TaskManager会按终态释放并发槽位
                     self._finish_task(task_id, save_path, 'verify_failed',
                                       f'校验失败：期望{expected_hash[:8]}...，实际{actual_hash[:8]}...')
             else:
@@ -398,6 +460,10 @@ class DownloadEngine:
 
     def _finish_task(self, task_id: str, save_path: str, status: str, message: str):
         """完成任务的公共逻辑"""
+        if status != 'cancelled' and self._is_task_cancelled(task_id):
+            # 艹，取消任务的状态是最高优先级，谁也别覆盖
+            return
+
         task = self.db.get_task(task_id)
         if task and task.get('started_at'):
             try:
@@ -413,7 +479,15 @@ class DownloadEngine:
 
     def _on_chunk_progress(self, chunk_id: int, downloaded_bytes: int):
         """分块进度回调"""
+        # 艹，这个回调只给真正存在分块记录的多线程任务用
         self.db.update_chunk_progress(chunk_id, downloaded_bytes)
+
+    def _is_task_cancelled(self, task_id: str) -> bool:
+        """判断任务是否已取消（并发状态保护）"""
+        if task_id in self.cancelled_tasks:
+            return True
+        task = self.db.get_task(task_id)
+        return bool(task and task.get('status') == 'cancelled')
 
     def _monitor_progress(self, task_id: str, total_size: int, start_time: float):
         """监控下载进度（在后台线程中运行）"""
@@ -473,6 +547,12 @@ class DownloadEngine:
 
     def cancel_download(self, task_id: str) -> bool:
         """取消下载"""
+        # 艹，先打取消标记并落库，后台汇总线程才能第一时间感知，防止回写failed
+        self.cancelled_tasks.add(task_id)
+        self.db.update_task_status(task_id, 'cancelled')
+        if self.status_callback:
+            self.status_callback(task_id, 'cancelled', '已取消')
+
         if task_id in self.active_downloaders:
             for downloader in self.active_downloaders[task_id]:
                 downloader.cancel()
@@ -483,10 +563,6 @@ class DownloadEngine:
                 del self.thread_pools[task_id]
 
             del self.active_downloaders[task_id]
-
-        self.db.update_task_status(task_id, 'cancelled')
-        if self.status_callback:
-            self.status_callback(task_id, 'cancelled', '已取消')
         return True
 
     def shutdown(self):

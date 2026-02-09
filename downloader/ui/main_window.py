@@ -167,8 +167,44 @@ class MainWindow(ctk.CTk):
     def _on_settings(self):
         """打开设置对话框"""
         from downloader.ui.settings_dialog import SettingsDialog
-        dialog = SettingsDialog(self, self.task_manager.engine.config)
+        dialog = SettingsDialog(
+            self,
+            self.task_manager.engine.config,
+            on_save_callback=self._on_settings_saved,
+        )
         self.wait_window(dialog)
+
+    def _on_settings_saved(self, settings: Dict):
+        """设置保存回调（让运行时配置立即生效）"""
+
+        def apply_runtime_settings():
+            config = self.task_manager.engine.config
+
+            # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
+            if 'download_dir' in settings:
+                config.download_dir = settings['download_dir']
+            if 'thread_count' in settings:
+                config.thread_count = settings['thread_count']
+            if 'timeout' in settings:
+                config.set('timeout', settings['timeout'])
+            if 'speed_limit' in settings:
+                config.speed_limit = settings['speed_limit']
+
+            proxy_cfg = settings.get('proxy')
+            if isinstance(proxy_cfg, dict):
+                config.set_proxy(
+                    proxy_cfg.get('enabled', False),
+                    proxy_cfg.get('http', ''),
+                    proxy_cfg.get('https', ''),
+                )
+
+            # 并发数不马上同步，队列就会装死给你看，这里必须立刻刷新
+            max_concurrent = settings.get('max_concurrent_downloads')
+            if max_concurrent is not None:
+                self.task_manager.set_max_concurrent(max_concurrent)
+
+        # 兜一层after，保证控件操作和队列调度都在主线程触发
+        self.after(0, apply_runtime_settings)
 
     def _on_history(self):
         """打开下载历史对话框"""
@@ -180,7 +216,15 @@ class MainWindow(ctk.CTk):
         """加载现有任务"""
         tasks = self.task_manager.get_all_tasks()
         for task in tasks:
-            self._add_task_widget(task)
+            task_for_ui = dict(task)
+
+            # 启动时数据库里残留的downloading其实没在跑，UI别装蒜，直接按已暂停展示
+            if task_for_ui.get('status') == 'downloading':
+                # 顺手把后端状态也拍平为paused，避免按钮显示能点、点了却没反应
+                self.task_manager.db.update_task_status(task_for_ui['task_id'], 'paused')
+                task_for_ui['status'] = 'paused'
+
+            self._add_task_widget(task_for_ui)
 
     def _add_task_widget(self, task: Dict):
         """添加任务UI组件"""
@@ -228,15 +272,9 @@ class MainWindow(ctk.CTk):
         button_frame = ctk.CTkFrame(task_frame, fg_color="transparent")
         button_frame.pack(fill="x", padx=10, pady=5)
 
-        # 开始/暂停按钮
-        if task['status'] == 'downloading':
-            action_btn = ctk.CTkButton(button_frame, text="⏸ 暂停", width=80,
-                                      command=lambda: self._on_pause_task(task_id))
-        elif task['status'] in ('paused', 'failed', 'pending'):
-            action_btn = ctk.CTkButton(button_frame, text="▶ 开始", width=80,
-                                      command=lambda: self._on_start_task(task_id))
-        else:
-            action_btn = ctk.CTkButton(button_frame, text="✓ 完成", width=80, state="disabled")
+        # 操作按钮（统一走状态配置，避免初始化和回调逻辑打架）
+        action_btn = ctk.CTkButton(button_frame, text="▶ 开始", width=80)
+        self._configure_action_button(task_id, task['status'], action_btn)
 
         action_btn.pack(side="left", padx=5)
 
@@ -260,6 +298,24 @@ class MainWindow(ctk.CTk):
             'action_btn': action_btn,
             'location_btn': location_btn,
         }
+
+    def _configure_action_button(self, task_id: str, status: str, action_btn: ctk.CTkButton):
+        """根据任务状态配置操作按钮"""
+        if status == 'downloading':
+            action_btn.configure(text="⏸ 暂停", command=lambda: self._on_pause_task(task_id), state="normal")
+        elif status == 'paused':
+            action_btn.configure(text="▶ 继续", command=lambda: self._on_start_task(task_id), state="normal")
+        elif status == 'pending':
+            action_btn.configure(text="▶ 开始", command=lambda: self._on_start_task(task_id), state="normal")
+        elif status in ('failed', 'verify_failed'):
+            action_btn.configure(text="▶ 重试", command=lambda: self._on_start_task(task_id), state="normal")
+        elif status == 'verifying':
+            action_btn.configure(text="⏳ 校验中", state="disabled")
+        elif status in ('completed', 'cancelled'):
+            action_btn.configure(text="✓ 完成", state="disabled")
+        else:
+            # 未知状态保守处理成可重试，至少别让用户点了半天没反应
+            action_btn.configure(text="▶ 重试", command=lambda: self._on_start_task(task_id), state="normal")
 
     def _on_start_task(self, task_id: str):
         """开始/继续任务"""
@@ -373,14 +429,7 @@ class MainWindow(ctk.CTk):
 
         # 更新按钮
         action_btn = widgets['action_btn']
-        if status == 'downloading':
-            action_btn.configure(text="⏸ 暂停", command=lambda: self._on_pause_task(task_id), state="normal")
-        elif status in ('paused', 'failed'):
-            action_btn.configure(text="▶ 继续", command=lambda: self._on_start_task(task_id), state="normal")
-        elif status == 'pending':
-            action_btn.configure(text="▶ 开始", command=lambda: self._on_start_task(task_id), state="normal")
-        elif status in ('completed', 'cancelled'):
-            action_btn.configure(text="✓ 完成", state="disabled")
+        self._configure_action_button(task_id, status, action_btn)
 
     def _update_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """更新任务进度UI"""
@@ -429,7 +478,8 @@ class MainWindow(ctk.CTk):
             'completed': '已完成',
             'failed': '失败',
             'cancelled': '已取消',
-            'verifying': '校验中'
+            'verifying': '校验中',
+            'verify_failed': '校验失败',
         }
         return status_map.get(status, status)
 

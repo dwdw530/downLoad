@@ -5,16 +5,19 @@
 """
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+from typing import Callable, Optional
 from downloader.utils.config import ConfigManager
 
 
 class SettingsDialog(ctk.CTkToplevel):
     """设置对话框"""
 
-    def __init__(self, parent, config_manager: ConfigManager):
+    def __init__(self, parent, config_manager: ConfigManager,
+                 on_save_callback: Optional[Callable] = None):
         super().__init__(parent)
 
         self.config = config_manager
+        self.on_save_callback = on_save_callback
 
         # 设置窗口
         self.title("设置")
@@ -219,6 +222,22 @@ class SettingsDialog(ctk.CTkToplevel):
             https_proxy = self.https_proxy_entry.get().strip()
             self.config.set_proxy(proxy_enabled, http_proxy, https_proxy)
             self.config.save()
+
+            # 保存后通知外部：配置文件落地只是第一步，运行时也得马上同步，不然就是假保存
+            if self.on_save_callback:
+                runtime_settings = {
+                    'download_dir': download_dir,
+                    'thread_count': thread_count,
+                    'max_concurrent_downloads': concurrent_count,
+                    'timeout': timeout,
+                    'speed_limit': speed_limit_bytes,
+                    'proxy': {
+                        'enabled': proxy_enabled,
+                        'http': http_proxy,
+                        'https': https_proxy,
+                    }
+                }
+                self.on_save_callback(runtime_settings)
 
             messagebox.showinfo("成功", "设置已保存！", parent=self)
             self.destroy()

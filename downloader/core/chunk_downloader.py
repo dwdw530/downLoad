@@ -127,15 +127,20 @@ class ChunkDownloader:
         else:
             self.downloaded_bytes = 0
 
-        # 计算实际的起始位置
-        actual_start = self.start_byte + self.downloaded_bytes
-
-        # 如果已经下载完成，直接返回
-        if actual_start >= self.end_byte:
-            return True
-
         # 开始下载（带重试）
         for attempt in range(self.retry_times):
+            # 艹，每次重试都必须按当前临时文件重算偏移，不然会重复写导致分块烂掉
+            if os.path.exists(self.temp_file):
+                self.downloaded_bytes = os.path.getsize(self.temp_file)
+            else:
+                self.downloaded_bytes = 0
+
+            actual_start = self.start_byte + self.downloaded_bytes
+
+            # 艹，end_byte 是闭区间，只有超出 end 才算真下载完
+            if actual_start > self.end_byte:
+                return True
+
             try:
                 if self._download_chunk(actual_start):
                     return True
@@ -173,6 +178,18 @@ class ChunkDownloader:
         # 检查状态码（206是部分内容，200是完整内容）
         if response.status_code not in (200, 206):
             print(f"[错误] 分块{self.chunk_id}请求失败: HTTP {response.status_code}")
+            return False
+
+        if response.status_code == 200 and start > 0:
+            # 艹，断点续传时收到200说明服务端没按Range回，必须先把临时块清掉再从头来
+            if start != self.start_byte:
+                with open(self.temp_file, 'wb'):
+                    pass
+                self.downloaded_bytes = 0
+                print(f"[警告] 分块{self.chunk_id}收到200，已清空临时块准备从头重下")
+            else:
+                # 艹，块起点都大于0还返回200，说明服务端Range彻底不靠谱，继续写只会造脏数据
+                print(f"[错误] 分块{self.chunk_id}起始字节{start}收到HTTP 200，拒绝写入避免数据损坏")
             return False
 
         # 打开临时文件（追加模式）
