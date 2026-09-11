@@ -3,7 +3,7 @@
 _pycache_/*
 /downloader/__pycache__/*
 
-# Local caches and user runtime data (existing tracked artifacts stay untouched).
+# Local caches and user runtime data; the release EXE remains tracked.
 __pycache__/
 *.py[cod]
 .serena/
