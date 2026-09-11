@@ -4,6 +4,7 @@
 老王说：队列管理得井井有条，不然乱套了！
 """
 import threading
+import os
 from typing import List, Dict, Optional, Callable
 from downloader.core.download_engine import DownloadEngine
 from downloader.database.db_manager import DatabaseManager
@@ -26,6 +27,7 @@ class TaskManager:
 
         self._lock = threading.Lock()
         self._running_tasks = set()  # 正在下载的任务ID集合
+        self._scheduling_paused = False
 
         # 回调函数
         self.task_added_callback: Optional[Callable] = None
@@ -33,15 +35,79 @@ class TaskManager:
 
         # 艹，程序重启后必须先把遗留downloading纠偏成paused，不然僵尸任务会把队列拖死
         self._recover_stale_downloading_tasks()
+        # 艹，重启后必须按临时文件真实字节回填进度，不然UI会假装0%吓用户
+        self._reconcile_incomplete_tasks_progress()
 
         # 设置引擎的状态回调
         self.engine.set_status_callback(self._on_engine_status_change)
 
     def _recover_stale_downloading_tasks(self):
         """启动时恢复遗留下载中任务"""
-        stale_tasks = self.db.get_all_tasks(status='downloading')
+        stale_tasks = [task for task in self.db.get_all_tasks()
+                       if task['status'] in ('downloading', 'verifying')]
         for task in stale_tasks:
             self.db.update_task_status(task['task_id'], 'paused', '程序重启自动纠偏：下载状态已重置为暂停')
+
+    def _reconcile_incomplete_tasks_progress(self):
+        """启动时根据临时文件修正未完成任务进度"""
+        tasks = self.db.get_all_tasks()
+
+        for task in tasks:
+            status = task.get('status')
+            # 终态不碰，避免误改历史结果
+            if status in ('completed', 'verifying', 'verify_failed'):
+                continue
+
+            task_id = task['task_id']
+            total_size = int(task.get('total_size') or 0)
+
+            # 分块任务：以每个分块临时文件实际大小为准
+            if task.get('support_range') and task.get('thread_count', 1) > 1:
+                chunks = self.db.get_chunks(task_id)
+                if not chunks:
+                    continue
+
+                total_downloaded = 0
+                for chunk in chunks:
+                    actual_bytes = 0
+                    temp_file = chunk.get('temp_file')
+                    if temp_file and os.path.exists(temp_file):
+                        try:
+                            actual_bytes = os.path.getsize(temp_file)
+                        except Exception:
+                            actual_bytes = 0
+
+                    # 分块大小上限保护，防止脏数据污染总进度
+                    chunk_max = max(0, int(chunk.get('end_byte', 0)) - int(chunk.get('start_byte', 0)) + 1)
+                    if chunk_max > 0:
+                        actual_bytes = min(actual_bytes, chunk_max)
+
+                    total_downloaded += max(0, actual_bytes)
+
+                    if int(chunk.get('downloaded_bytes') or 0) != actual_bytes:
+                        self.db.update_chunk_progress(chunk['chunk_id'], actual_bytes)
+
+                if total_size > 0:
+                    total_downloaded = min(total_downloaded, total_size)
+
+                if int(task.get('downloaded_size') or 0) != total_downloaded:
+                    self.db.update_task_progress(task_id, total_downloaded, 0)
+
+            else:
+                # 单线程任务：按 .tmp 文件真实大小回填
+                temp_file = os.path.join(self.engine.config.temp_dir, f"{task_id}.tmp")
+                actual_bytes = 0
+                if os.path.exists(temp_file):
+                    try:
+                        actual_bytes = os.path.getsize(temp_file)
+                    except Exception:
+                        actual_bytes = 0
+
+                if total_size > 0:
+                    actual_bytes = min(actual_bytes, total_size)
+
+                if int(task.get('downloaded_size') or 0) != actual_bytes:
+                    self.db.update_task_progress(task_id, actual_bytes, 0)
 
     def set_task_added_callback(self, callback: Callable):
         """设置任务添加回调"""
@@ -93,7 +159,7 @@ class TaskManager:
             return False
 
         # 检查任务状态
-        if task['status'] not in ('pending', 'paused', 'failed', 'verify_failed'):
+        if task['status'] not in ('pending', 'paused', 'failed', 'verify_failed', 'cancelled'):
             return False
 
         # 校验失败重试要先把进度清零，不然UI会出现“没开始就100%”这种离谱显示
@@ -106,6 +172,8 @@ class TaskManager:
 
         # 检查并发限制
         with self._lock:
+            if self._scheduling_paused or task_id in self._running_tasks:
+                return False
             if len(self._running_tasks) >= self.max_concurrent:
                 print(f"[提示] 已达到最大并发数，任务将等待: {task_id}")
                 return False
@@ -113,8 +181,14 @@ class TaskManager:
             self._running_tasks.add(task_id)
 
         # 启动下载
-        resume = task['status'] in ('paused', 'failed')
-        success = self.engine.start_download(task_id, resume=resume)
+        # 艹，pending 也统一按“可续传启动”处理：新任务没临时文件会从0开始，已下载任务可继续
+        resume = task['status'] in ('pending', 'paused', 'failed', 'cancelled')
+        try:
+            success = self.engine.start_download(task_id, resume=resume)
+        except Exception as e:
+            self.db.update_task_status(task_id, 'failed', str(e))
+            self._on_engine_status_change(task_id, 'failed', str(e))
+            success = False
 
         if not success:
             with self._lock:
@@ -139,10 +213,15 @@ class TaskManager:
             return False
 
         with self._lock:
+            if self._scheduling_paused or task_id in self._running_tasks:
+                return False
             # 艹，恢复任务也得走并发门禁，不能偷偷绕过最大并发
             if task_id not in self._running_tasks and len(self._running_tasks) >= self.max_concurrent:
-                print(f"[提示] 已达到最大并发数，任务继续等待: {task_id}")
-                return False
+                print(f"[提示] 已达到最大并发数，任务转入等待队列: {task_id}")
+                self.db.update_task_status(task_id, 'pending', '等待可用下载槽位')
+                if self.task_status_changed_callback:
+                    self.task_status_changed_callback(task_id, 'pending', '等待可用下载槽位')
+                return True
             self._running_tasks.add(task_id)
 
         success = self.engine.resume_download(task_id)
@@ -193,16 +272,26 @@ class TaskManager:
 
     def pause_all(self) -> int:
         """
-        暂停所有下载中的任务
+        暂停下载中及等待中的任务，批量操作期间停止自动调度。
         Returns:
             暂停的任务数量
         """
-        downloading_tasks = self.get_downloading_tasks()
-        count = 0
-        for task in downloading_tasks:
-            if self.pause_task(task['task_id']):
-                count += 1
-        return count
+        with self._lock:
+            previous_scheduling_paused = self._scheduling_paused
+            self._scheduling_paused = True
+            runtime_task_ids = set(self._running_tasks)
+
+        try:
+            tasks = self.db.get_all_tasks()
+            count = 0
+            for task in tasks:
+                if task['status'] in ('downloading', 'pending') or task['task_id'] in runtime_task_ids:
+                    if self.pause_task(task['task_id']):
+                        count += 1
+            return count
+        finally:
+            with self._lock:
+                self._scheduling_paused = previous_scheduling_paused
 
     def resume_all(self) -> int:
         """
@@ -212,6 +301,10 @@ class TaskManager:
         """
         paused_tasks = self.db.get_all_tasks(status='paused')
         count = 0
+
+        # 艹，多任务恢复要严格按FIFO来，避免新任务抢占老任务导致“看起来没恢复”
+        paused_tasks = sorted(paused_tasks, key=lambda task: task.get('created_at') or '')
+
         for task in paused_tasks:
             if self.resume_task(task['task_id']):
                 count += 1
@@ -219,15 +312,13 @@ class TaskManager:
 
     def _try_start_next_task(self):
         """尝试启动下一个等待中的任务"""
-        with self._lock:
-            if len(self._running_tasks) >= self.max_concurrent:
+        while True:
+            with self._lock:
+                if self._scheduling_paused or len(self._running_tasks) >= self.max_concurrent:
+                    return
+            pending_tasks = self.get_pending_tasks()
+            if not pending_tasks or not self.start_task(pending_tasks[0]['task_id']):
                 return
-
-        # 获取等待中的任务
-        pending_tasks = self.get_pending_tasks()
-        if pending_tasks:
-            task = pending_tasks[0]
-            self.start_task(task['task_id'])
 
     def _on_engine_status_change(self, task_id: str, status: str, message: str):
         """引擎状态变更回调"""
@@ -291,13 +382,20 @@ class TaskManager:
 
         老王说：点了退出就得真退出，别让线程池把进程吊着不放，恶心！
         """
-        # 先取消所有正在活跃的下载（避免ThreadPoolExecutor线程阻塞进程退出）
-        active_task_ids = list(self.engine.active_downloaders.keys())
-        for task_id in active_task_ids:
+        with self._lock:
+            self._scheduling_paused = True
+        # 艹，退出时必须“自动暂停并保留进度”，不能把用户任务一刀切成cancelled
+        downloading_tasks = self.db.get_all_tasks(status='downloading')
+        for task in downloading_tasks:
+            task_id = task['task_id']
             try:
-                self.engine.cancel_download(task_id)
+                paused = self.engine.pause_download(task_id)
+                if not paused:
+                    # 兜底：即使下载器实例丢了，也要把状态拍平为paused，防止重启后僵尸状态
+                    self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
             except Exception as e:
-                print(f"[错误] 取消任务失败: {task_id}, err={e}")
+                print(f"[错误] 退出暂停任务失败: {task_id}, err={e}")
+                self.db.update_task_status(task_id, 'paused', '程序退出自动暂停（异常兜底）')
 
         # 再兜底清理引擎资源
         try:

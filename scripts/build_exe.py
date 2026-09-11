@@ -8,15 +8,10 @@ EXE 打包脚本（给 build.bat 调用）
 
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
 import sys
 from pathlib import Path
-
-
-def _safe_rmtree(path: Path):
-    if path.exists() and path.is_dir():
-        shutil.rmtree(path, ignore_errors=True)
 
 
 def main() -> int:
@@ -27,12 +22,10 @@ def main() -> int:
         print(f"[ERROR] Spec file not found: {spec_file}")
         return 1
 
-    build_dir = project_root / "build"
     dist_dir = project_root / "dist"
 
-    # 清理旧产物（不删 spec 文件！）
-    _safe_rmtree(build_dir)
-    _safe_rmtree(dist_dir)
+    # dist中可能已有用户配置、数据库和断点文件，不能整目录清理。
+    # 由PyInstaller清理自己的构建缓存并更新同名EXE。
 
     # 直接用 spec 文件打包，所有配置都在那里
     cmd = [
@@ -44,8 +37,15 @@ def main() -> int:
         str(spec_file),
     ]
 
+    # 直接运行环境内的python时，PATH仍可能指向Anaconda base。
+    # PyInstaller按PATH解析DLL，必须优先使用当前环境的Tcl/Tk等依赖。
+    build_env = os.environ.copy()
+    library_bin = Path(sys.prefix) / "Library" / "bin"
+    if library_bin.is_dir():
+        build_env["PATH"] = str(library_bin) + os.pathsep + build_env.get("PATH", "")
+
     print("[BUILD] Running:", " ".join(str(x) for x in cmd))
-    subprocess.check_call(cmd, cwd=str(project_root))
+    subprocess.check_call(cmd, cwd=str(project_root), env=build_env)
 
     exe_path = dist_dir / "老王下载器.exe"
     if exe_path.exists():

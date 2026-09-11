@@ -4,6 +4,7 @@
 老王说：这玩意儿是核心中的核心，写不好整个下载器都白搭！
 """
 import os
+import re
 import requests
 import time
 from typing import Callable, Optional
@@ -21,7 +22,7 @@ class SpeedLimiter:
             bytes_per_second: 每秒允许的字节数，0表示不限速
         """
         self.bytes_per_second = bytes_per_second
-        self._last_time = time.time()
+        self._last_time = time.monotonic()
         self._tokens = 0  # 当前可用令牌（字节数）
 
     def set_limit(self, bytes_per_second: int):
@@ -37,7 +38,7 @@ class SpeedLimiter:
         if self.bytes_per_second <= 0:
             return  # 不限速，直接返回
 
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - self._last_time
         self._last_time = now
 
@@ -50,6 +51,8 @@ class SpeedLimiter:
         if bytes_count > self._tokens:
             wait_time = (bytes_count - self._tokens) / self.bytes_per_second
             time.sleep(wait_time)
+            # 等待产生的额度已经用于本次写入，不能再次计入下一次请求。
+            self._last_time = time.monotonic()
             self._tokens = 0
         else:
             self._tokens -= bytes_count
@@ -63,7 +66,8 @@ class ChunkDownloader:
                  timeout: int = 30, retry_times: int = 3,
                  user_agent: str = "PyDownloader/1.0",
                  speed_limit: int = 0,
-                 proxies: dict = None):
+                 proxies: dict = None,
+                 use_range: bool = True):
         """
         初始化分块下载器
         Args:
@@ -78,6 +82,7 @@ class ChunkDownloader:
             user_agent: User-Agent
             speed_limit: 速度限制（字节/秒），0表示不限速
             proxies: 代理配置，格式 {"http": "...", "https": "..."} 或 None
+            use_range: 是否使用Range请求头
         """
         self.chunk_id = chunk_id
         self.task_id = task_id
@@ -89,6 +94,7 @@ class ChunkDownloader:
         self.retry_times = retry_times
         self.user_agent = user_agent
         self.proxies = proxies  # 代理配置
+        self.use_range = use_range  # 是否使用Range头
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -121,24 +127,34 @@ class ChunkDownloader:
         if temp_dir and not os.path.exists(temp_dir):
             os.makedirs(temp_dir, exist_ok=True)
 
-        # 如果是断点续传，获取已下载字节数
-        if resume and os.path.exists(self.temp_file):
-            self.downloaded_bytes = os.path.getsize(self.temp_file)
-        else:
-            self.downloaded_bytes = 0
+        expected_size = self.end_byte - self.start_byte + 1
+        # 重新下载和非Range请求都必须丢弃旧内容。
+        if os.path.exists(self.temp_file) and (not resume or not self.use_range):
+            with open(self.temp_file, 'wb'):
+                pass
+        self.downloaded_bytes = 0
 
         # 开始下载（带重试）
         for attempt in range(self.retry_times):
+            # 艹，暂停后不能继续疯狂重试，不然用户点了暂停还会被写成失败
+            if not self._wait_if_paused_or_cancelled():
+                return False
+
             # 艹，每次重试都必须按当前临时文件重算偏移，不然会重复写导致分块烂掉
             if os.path.exists(self.temp_file):
                 self.downloaded_bytes = os.path.getsize(self.temp_file)
             else:
                 self.downloaded_bytes = 0
 
+            # 超长临时文件不能当作完整分块；非Range重试也必须从头写入。
+            if self.downloaded_bytes > expected_size or (not self.use_range and self.downloaded_bytes):
+                with open(self.temp_file, 'wb'):
+                    pass
+                self.downloaded_bytes = 0
+
             actual_start = self.start_byte + self.downloaded_bytes
 
-            # 艹，end_byte 是闭区间，只有超出 end 才算真下载完
-            if actual_start > self.end_byte:
+            if self.downloaded_bytes == expected_size:
                 return True
 
             try:
@@ -161,64 +177,67 @@ class ChunkDownloader:
         Returns:
             True表示成功，False表示失败
         """
-        headers = {
-            'Range': f'bytes={start}-{self.end_byte}',
-            'User-Agent': self.user_agent
-        }
+        # 艹，非Range请求不允许带历史偏移，必须从块起点重下，避免重复拼接
+        if not self.use_range and start > self.start_byte:
+            start = self.start_byte
+            self.downloaded_bytes = 0
+
+        headers = {'User-Agent': self.user_agent, 'Accept-Encoding': 'identity'}
+        if self.use_range:
+            headers['Range'] = f'bytes={start}-{self.end_byte}'
+
+        # 艹，发请求前也要尊重暂停，不然会出现“明明暂停了还在重试打服务器”
+        if not self._wait_if_paused_or_cancelled():
+            return False
 
         # 发起请求
-        response = requests.get(
+        with requests.get(
             self.url,
             headers=headers,
             stream=True,
             timeout=self.timeout,
             proxies=self.proxies  # 代理支持
-        )
+        ) as response:
+            expected_status = 206 if self.use_range else 200
+            if response.status_code != expected_status:
+                print(f"[错误] 分块{self.chunk_id}请求失败: HTTP {response.status_code}")
+                return False
 
-        # 检查状态码（206是部分内容，200是完整内容）
-        if response.status_code not in (200, 206):
-            print(f"[错误] 分块{self.chunk_id}请求失败: HTTP {response.status_code}")
-            return False
+            if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
+                raise ValueError('服务器返回压缩内容，无法按字节范围保存')
+            if self.use_range:
+                content_range = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)',
+                                             response.headers.get('Content-Range', ''))
+                if (not content_range or int(content_range[1]) != start
+                        or int(content_range[2]) != self.end_byte):
+                    raise ValueError('服务器返回的Content-Range与请求不一致')
 
-        if response.status_code == 200 and start > 0:
-            # 艹，断点续传时收到200说明服务端没按Range回，必须先把临时块清掉再从头来
-            if start != self.start_byte:
-                with open(self.temp_file, 'wb'):
-                    pass
-                self.downloaded_bytes = 0
-                print(f"[警告] 分块{self.chunk_id}收到200，已清空临时块准备从头重下")
-            else:
-                # 艹，块起点都大于0还返回200，说明服务端Range彻底不靠谱，继续写只会造脏数据
-                print(f"[错误] 分块{self.chunk_id}起始字节{start}收到HTTP 200，拒绝写入避免数据损坏")
-            return False
-
-        # 打开临时文件（追加模式）
-        mode = 'ab' if self.downloaded_bytes > 0 else 'wb'
-        with open(self.temp_file, mode) as f:
-            for data in response.iter_content(chunk_size=8192):
-                # 检查取消标志
-                if self.is_cancelled:
-                    return False
-
-                # 检查暂停标志
-                while self.is_paused:
-                    time.sleep(0.1)
-                    if self.is_cancelled:
+            expected_size = self.end_byte - self.start_byte + 1
+            mode = 'ab' if self.downloaded_bytes > 0 else 'wb'
+            with open(self.temp_file, mode) as f:
+                for data in response.iter_content(chunk_size=8192):
+                    if not self._wait_if_paused_or_cancelled():
                         return False
+                    if data:
+                        if self.downloaded_bytes + len(data) > expected_size:
+                            raise ValueError('下载内容超过预期分块大小')
+                        self.speed_limiter.acquire(len(data))
+                        if not self._wait_if_paused_or_cancelled():
+                            return False
+                        f.write(data)
+                        self.downloaded_bytes += len(data)
+                        if self.progress_callback:
+                            self.progress_callback(self.chunk_id, self.downloaded_bytes)
 
-                # 写入数据
-                if data:
-                    # 限速：在写入前获取令牌
-                    self.speed_limiter.acquire(len(data))
+            return self.downloaded_bytes == expected_size
 
-                    f.write(data)
-                    self.downloaded_bytes += len(data)
-
-                    # 调用进度回调
-                    if self.progress_callback:
-                        self.progress_callback(self.chunk_id, self.downloaded_bytes)
-
-        return True
+    def _wait_if_paused_or_cancelled(self) -> bool:
+        """阻塞等待暂停结束；若任务被取消则返回False"""
+        while self.is_paused:
+            time.sleep(0.1)
+            if self.is_cancelled:
+                return False
+        return not self.is_cancelled
 
     def pause(self):
         """暂停下载"""

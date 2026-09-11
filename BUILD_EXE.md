@@ -19,25 +19,15 @@ pip install pyinstaller
 ### 2. 打包命令
 
 ```bash
-# 进入项目根目录
-cd D:\vscode_workspace\downDemo
-
-# 打包成单个exe文件（推荐）
-pyinstaller --onefile --windowed --icon=assets/icon.ico --name="老王下载器" main.py
-
-# 参数说明：
-# --onefile       打包成单个exe文件
-# --windowed      不显示控制台窗口（GUI程序必加）
-# --icon          指定图标文件
-# --name          exe文件名
+# 进入项目根目录，复用已验证的spec和Tcl/Tk依赖来源
+cd D:\vscode_workspace\downLoad_project
+python scripts/build_exe.py
 ```
 
-**如果打包失败或exe太大，使用下面这个命令（打包成文件夹）：**
+实际运行生成的EXE并验证下载功能：
 
 ```bash
-pyinstaller --windowed --icon=assets/icon.ico --name="老王下载器" main.py
-
-# 这样会生成一个包含exe和依赖dll的文件夹
+python -B scripts/smoke_exe.py
 ```
 
 ### 3. 找到生成的exe
@@ -46,7 +36,7 @@ pyinstaller --windowed --icon=assets/icon.ico --name="老王下载器" main.py
 - **单文件模式**: `dist/老王下载器.exe`
 - **文件夹模式**: `dist/老王下载器/老王下载器.exe`
 
-直接双击运行即可！
+直接双击运行即可。实际EXE测试会使用独立临时数据，执行按钮操作、下载、暂停、重启续传和正常退出，保留原有用户数据。
 
 ### 4. 常见问题
 
@@ -120,36 +110,15 @@ python -m nuitka --standalone --onefile --windows-disable-console \
 
 老王我给你写好了打包脚本，直接运行就行！
 
-创建 `build.bat` 文件：
+直接运行项目已有的 `build.bat`，或在项目根目录执行：
 
-```batch
-@echo off
-echo ====================================
-echo 老王下载器 - 打包脚本
-echo ====================================
-echo.
-
-echo [1/3] 清理旧文件...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-if exist "老王下载器.spec" del "老王下载器.spec"
-
-echo [2/3] 开始打包...
-pyinstaller --onefile --windowed --icon=assets/icon.ico --name="老王下载器" main.py
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [错误] 打包失败！
-    pause
-    exit /b 1
-)
-
-echo [3/3] 打包完成！
-echo.
-echo 生成的exe文件位置: dist\老王下载器.exe
-echo.
-pause
+```bash
+conda run -n py310_env python scripts/build_exe.py
 ```
+
+脚本使用 `老王下载器.spec` 收集GUI资源和依赖，更新 `dist/老王下载器.exe`。不要清空整个 `dist`：其中可能已有用户配置、数据库和未完成下载的断点文件。
+
+脚本会把当前Python环境的 `Library/bin` 放在构建子进程PATH首位。仅指定py310_env里的python.exe，仍可能让PyInstaller从Anaconda base打入其他版本的Tcl/Tk DLL，导致双击后退出。打包后必须实际启动并关闭EXE；源码GUI测试或包内代码一致性检查不能代替这一步。
 
 **使用方法：**
 1. 双击 `build.bat`

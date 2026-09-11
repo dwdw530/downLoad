@@ -8,18 +8,19 @@ import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import threading
+from downloader.utils.config import get_app_root
 
 
 class DatabaseManager:
     """SQLite数据库管理器"""
 
-    def __init__(self, db_path: str = "data/downloads.db"):
+    def __init__(self, db_path: Optional[str] = None):
         """
         初始化数据库管理器
         Args:
             db_path: 数据库文件路径
         """
-        self.db_path = db_path
+        self.db_path = db_path if db_path is not None else os.path.join(get_app_root(), 'data', 'downloads.db')
         self._lock = threading.Lock()  # 艹，多线程访问必须加锁
         self._ensure_db_dir()
         self._init_database()
@@ -273,6 +274,30 @@ class DatabaseManager:
             except Exception as e:
                 print(f"[错误] 更新任务进度失败: {e}")
                 return False
+
+    def mark_task_singlethread(self, task_id: str) -> bool:
+        """
+        将任务标记为单线程下载模式
+        老王说：服务端Range不靠谱时，必须立刻降级，别让分块把任务拖死。
+        """
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                with conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE download_tasks
+                        SET support_range = 0, thread_count = 1
+                        WHERE task_id = ?
+                    ''', (task_id,))
+                return True
+            except Exception as e:
+                print(f"[错误] 标记单线程模式失败: {e}")
+                return False
+            finally:
+                if conn:
+                    conn.close()
 
     def update_task_hash(self, task_id: str, actual_hash: str, hash_verified: int) -> bool:
         """

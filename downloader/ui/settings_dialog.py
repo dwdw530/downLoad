@@ -201,6 +201,9 @@ class SettingsDialog(ctk.CTkToplevel):
                 messagebox.showerror("错误", "超时时间必须是数字！", parent=self)
                 return
             timeout = int(timeout_str)
+            if timeout <= 0:
+                messagebox.showerror("错误", "超时时间必须大于0！", parent=self)
+                return
 
             # 速度限制验证：KB转字节存储
             speed_limit_str = self.speed_limit_entry.get().strip()
@@ -211,6 +214,7 @@ class SettingsDialog(ctk.CTkToplevel):
             speed_limit_bytes = speed_limit_kb * 1024  # KB转字节
 
             # 保存配置
+            previous_settings = self.config.get_all()
             self.config.download_dir = download_dir
             self.config.thread_count = thread_count
             self.config.max_concurrent_downloads = concurrent_count
@@ -221,7 +225,11 @@ class SettingsDialog(ctk.CTkToplevel):
             http_proxy = self.http_proxy_entry.get().strip()
             https_proxy = self.https_proxy_entry.get().strip()
             self.config.set_proxy(proxy_enabled, http_proxy, https_proxy)
-            self.config.save()
+            if not self.config.save():
+                for key, value in previous_settings.items():
+                    self.config.set(key, value)
+                messagebox.showerror("错误", "配置文件写入失败，请检查目录权限和可用空间。", parent=self)
+                return
 
             # 保存后通知外部：配置文件落地只是第一步，运行时也得马上同步，不然就是假保存
             if self.on_save_callback:
@@ -252,7 +260,11 @@ class SettingsDialog(ctk.CTkToplevel):
     def _on_reset(self):
         """恢复默认设置"""
         if messagebox.askyesno("确认", "确定要恢复默认设置吗？", parent=self):
-            self.config.reset()
+            if not self.config.reset():
+                messagebox.showerror("错误", "恢复默认设置失败，配置文件未能保存。", parent=self)
+                return
+            if self.on_save_callback:
+                self.on_save_callback(self.config.get_all())
             # 重新加载配置
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, self.config.download_dir)
@@ -267,6 +279,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self.speed_limit_entry.insert(0, "0")
             # 代理配置重置
             self.proxy_enabled_var.set(False)
+            self.http_proxy_entry.configure(state='normal')
+            self.https_proxy_entry.configure(state='normal')
             self.http_proxy_entry.delete(0, "end")
             self.https_proxy_entry.delete(0, "end")
             self._on_proxy_toggle()

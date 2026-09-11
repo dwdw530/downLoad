@@ -3,3 +3,14 @@
 _pycache_/*
 /downloader/__pycache__/*
 
+# Local caches and user runtime data (existing tracked artifacts stay untouched).
+__pycache__/
+*.py[cod]
+.serena/
+/build/
+/dist/data/
+/dist/temp/
+/dist/downloads/
+/temp/
+/downloads/
+

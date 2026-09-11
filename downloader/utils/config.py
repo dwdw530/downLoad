@@ -106,8 +106,12 @@ class ConfigManager:
 
     def reset(self):
         """重置为默认配置"""
+        previous_config = self._config
         self._config = self.DEFAULT_CONFIG.copy()
-        self.save()
+        if not self.save():
+            self._config = previous_config
+            return False
+        return True
 
     # ==================== 快捷访问方法 ====================
 

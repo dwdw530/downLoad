@@ -6,7 +6,7 @@ GUI主窗口
 import customtkinter as ctk
 import os
 import subprocess
-import threading
+from queue import Empty, SimpleQueue
 from tkinter import messagebox, filedialog
 from typing import Dict
 from downloader.core.task_manager import TaskManager
@@ -22,6 +22,7 @@ class MainWindow(ctk.CTk):
 
         self.task_manager = task_manager
         self.task_widgets = {}  # {task_id: widget}
+        self._ui_events = SimpleQueue()
 
         # 设置窗口
         self.title("老王下载器 v1.0")
@@ -42,7 +43,8 @@ class MainWindow(ctk.CTk):
         # 加载现有任务
         self._load_existing_tasks()
 
-        # 启动UI更新线程
+        # 由主线程处理下载回调，避免暂停时与工作线程互相等待。
+        self.after(50, self._drain_ui_events)
         self._start_ui_update_thread()
 
         # 绑定窗口关闭事件
@@ -55,13 +57,13 @@ class MainWindow(ctk.CTk):
         """初始化系统托盘"""
         self.tray_manager = TrayManager("老王下载器")
         self.tray_manager.set_show_window_callback(self._show_from_tray)
-        self.tray_manager.set_exit_callback(self._exit_app)
+        self.tray_manager.set_exit_callback(lambda: self._ui_events.put((self._exit_app, ())))
         self.tray_manager.start()
 
     def _show_from_tray(self):
         """从托盘恢复窗口"""
         # 在主线程中执行UI操作
-        self.after(0, self._restore_window)
+        self._ui_events.put((self._restore_window, ()))
 
     def _restore_window(self):
         """恢复窗口显示"""
@@ -189,6 +191,10 @@ class MainWindow(ctk.CTk):
                 config.set('timeout', settings['timeout'])
             if 'speed_limit' in settings:
                 config.speed_limit = settings['speed_limit']
+                for downloaders in list(self.task_manager.engine.active_downloaders.values()):
+                    limit = max(1, config.speed_limit // len(downloaders)) if config.speed_limit and downloaders else 0
+                    for downloader in downloaders:
+                        downloader.speed_limiter.set_limit(limit)
 
             proxy_cfg = settings.get('proxy')
             if isinstance(proxy_cfg, dict):
@@ -225,6 +231,14 @@ class MainWindow(ctk.CTk):
                 task_for_ui['status'] = 'paused'
 
             self._add_task_widget(task_for_ui)
+
+            # 艹，重启后必须立刻回填真实进度，不然UI全是0看起来像任务废了
+            self._update_task_progress(
+                task_for_ui['task_id'],
+                int(task_for_ui.get('downloaded_size') or 0),
+                int(task_for_ui.get('total_size') or 0),
+                float(task_for_ui.get('speed') or 0),
+            )
 
     def _add_task_widget(self, task: Dict):
         """添加任务UI组件"""
@@ -281,6 +295,7 @@ class MainWindow(ctk.CTk):
         # 取消按钮
         cancel_btn = ctk.CTkButton(button_frame, text="✗ 取消", width=80,
                                    command=lambda: self._on_cancel_task(task_id))
+        cancel_btn.configure(state='disabled' if task['status'] == 'completed' else 'normal')
         cancel_btn.pack(side="left", padx=5)
 
         # 删除按钮
@@ -296,6 +311,7 @@ class MainWindow(ctk.CTk):
             'speed_label': speed_label,
             'status_label': status_label,
             'action_btn': action_btn,
+            'cancel_btn': cancel_btn,
             'location_btn': location_btn,
         }
 
@@ -307,7 +323,7 @@ class MainWindow(ctk.CTk):
             action_btn.configure(text="▶ 继续", command=lambda: self._on_start_task(task_id), state="normal")
         elif status == 'pending':
             action_btn.configure(text="▶ 开始", command=lambda: self._on_start_task(task_id), state="normal")
-        elif status in ('failed', 'verify_failed'):
+        elif status in ('failed', 'verify_failed', 'cancelled'):
             action_btn.configure(text="▶ 重试", command=lambda: self._on_start_task(task_id), state="normal")
         elif status == 'verifying':
             action_btn.configure(text="⏳ 校验中", state="disabled")
@@ -351,22 +367,27 @@ class MainWindow(ctk.CTk):
 
             # 删除文件（如果用户选择了）
             if delete_file and task['save_path']:
+                # 等待工作线程释放文件句柄后再删除，避免Windows文件占用。
+                self.task_manager.cancel_task(task_id)
                 try:
                     if os.path.exists(task['save_path']):
                         os.remove(task['save_path'])
                         print(f"[删除] 文件已删除: {task['save_path']}")
 
-                    # 删除临时分块文件
-                    if task['support_range']:
-                        chunks = self.task_manager.db.get_chunks(task_id)
-                        for chunk in chunks:
-                            if chunk['temp_file'] and os.path.exists(chunk['temp_file']):
-                                os.remove(chunk['temp_file'])
+                    temporary_files = [chunk['temp_file'] for chunk in self.task_manager.db.get_chunks(task_id)]
+                    temporary_files.append(os.path.join(self.task_manager.engine.config.temp_dir, f'{task_id}.tmp'))
+                    for temporary_file in temporary_files:
+                        if temporary_file and os.path.exists(temporary_file):
+                            os.remove(temporary_file)
                 except Exception as e:
                     messagebox.showerror("错误", f"删除文件失败: {e}")
+                    return
 
             # 删除数据库记录
-            self.task_manager.delete_task(task_id)
+            delete_ok = self.task_manager.delete_task(task_id)
+            if not delete_ok:
+                messagebox.showerror("错误", "删除任务失败，可能仍有后台线程占用文件。请稍后重试。")
+                return
 
             # 移除UI组件
             if task_id in self.task_widgets:
@@ -403,11 +424,11 @@ class MainWindow(ctk.CTk):
         """任务添加回调"""
         task = self.task_manager.get_task(task_id)
         if task:
-            self.after(0, lambda: self._add_task_widget(task))
+            self._ui_events.put((self._add_task_widget, (task,)))
 
     def _on_task_status_changed(self, task_id: str, status: str, message: str):
         """任务状态变更回调"""
-        self.after(0, lambda: self._update_task_status(task_id, status))
+        self._ui_events.put((self._update_task_status, (task_id, status)))
 
         # 下载完成时发送托盘通知
         if status == 'completed':
@@ -417,7 +438,18 @@ class MainWindow(ctk.CTk):
 
     def _on_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """任务进度回调"""
-        self.after(0, lambda: self._update_task_progress(task_id, downloaded_size, total_size, speed))
+        self._ui_events.put((self._update_task_progress, (task_id, downloaded_size, total_size, speed)))
+
+    def _drain_ui_events(self):
+        """只在Tk主线程更新控件，工作线程只负责入队。"""
+        try:
+            while True:
+                callback, args = self._ui_events.get_nowait()
+                callback(*args)
+        except Empty:
+            pass
+        finally:
+            self.after(50, self._drain_ui_events)
 
     def _update_task_status(self, task_id: str, status: str):
         """更新任务状态UI"""
@@ -426,6 +458,10 @@ class MainWindow(ctk.CTk):
 
         widgets = self.task_widgets[task_id]
         widgets['status_label'].configure(text=self._get_status_text(status))
+        if status != 'downloading':
+            widgets['speed_label'].configure(text=format_speed(0))
+        if 'cancel_btn' in widgets:
+            widgets['cancel_btn'].configure(state='disabled' if status == 'completed' else 'normal')
 
         # 更新按钮
         action_btn = widgets['action_btn']
@@ -449,24 +485,16 @@ class MainWindow(ctk.CTk):
         widgets['speed_label'].configure(text=format_speed(speed))
 
     def _start_ui_update_thread(self):
-        """启动UI更新线程（更新状态栏）"""
+        """使用Tk定时器更新状态栏，窗口销毁后不再保留后台线程。"""
         def update_status_bar():
-            while True:
-                threading.Event().wait(1)  # 每秒更新一次
+            stats = self.task_manager.get_statistics()
+            downloading_tasks = self.task_manager.get_downloading_tasks()
+            total_speed = sum(task['speed'] for task in downloading_tasks)
+            status_text = f"总速度: {format_speed(total_speed)} | 下载中: {stats['downloading']} | 等待: {stats['pending']}"
+            self.status_label.configure(text=status_text)
+            self.after(1000, update_status_bar)
 
-                # 获取统计信息
-                stats = self.task_manager.get_statistics()
-                downloading_tasks = self.task_manager.get_downloading_tasks()
-
-                # 计算总速度
-                total_speed = sum(task['speed'] for task in downloading_tasks)
-
-                # 更新状态栏
-                status_text = f"总速度: {format_speed(total_speed)} | 下载中: {stats['downloading']} | 等待: {stats['pending']}"
-                self.after(0, lambda: self.status_label.configure(text=status_text))
-
-        thread = threading.Thread(target=update_status_bar, daemon=True)
-        thread.start()
+        self.after(1000, update_status_bar)
 
     @staticmethod
     def _get_status_text(status: str) -> str:
@@ -517,6 +545,11 @@ class MainWindow(ctk.CTk):
 
 class CloseConfirmDialog(ctk.CTkToplevel):
     """关闭确认对话框"""
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # CustomTkinter 5.2会延迟恢复标题栏，快速关闭时窗口可能已销毁。
+        if self.winfo_exists():
+            super()._revert_withdraw_after_windows_set_titlebar_color()
 
     def __init__(self, parent, config):
         super().__init__(parent)

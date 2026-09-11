@@ -5,7 +5,7 @@
 """
 import customtkinter as ctk
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from downloader.utils.file_utils import format_speed
 
 
@@ -171,6 +171,9 @@ class HistoryDialog(ctk.CTkToplevel):
             try:
                 # 解析SQLite时间戳格式
                 dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.astimezone()
                 completed_str = dt.strftime('%Y-%m-%d %H:%M')
             except Exception:
                 completed_str = completed_at[:16] if len(completed_at) >= 16 else completed_at
