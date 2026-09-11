@@ -120,6 +120,12 @@ conda run -n py310_env python scripts/build_exe.py
 
 脚本会把当前Python环境的 `Library/bin` 放在构建子进程PATH首位。仅指定py310_env里的python.exe，仍可能让PyInstaller从Anaconda base打入其他版本的Tcl/Tk DLL，导致双击后退出。打包后必须实际启动并关闭EXE；源码GUI测试或包内代码一致性检查不能代替这一步。
 
+### 已发生并修复：EXE双击打不开
+
+2026-09-11首版EXE因混入Anaconda base的Tcl/Tk 8.6.15 DLL与py310_env的8.6.12脚本，在创建主窗口时失败：`version conflict for package "Tcl": have 8.6.15, need exactly 8.6.12`。
+
+已通过上述构建子进程PATH修复并重新打包，验证实际EXE可以启动、下载、暂停、重启续传和正常退出。后续应使用 `scripts/build_exe.py` 构建，并运行 `python -B scripts/smoke_exe.py`；不要只根据源码测试通过或打包成功判断EXE可用。完整故障过程与验证记录见 [测试报告](docs/TEST_REPORT_2026-09-11.md#已修复的打包启动故障)。
+
 **使用方法：**
 1. 双击 `build.bat`
 2. 等待打包完成
