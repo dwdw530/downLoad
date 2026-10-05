@@ -53,7 +53,7 @@ class TaskManager:
         tasks = self.db.get_all_tasks()
 
         for task in tasks:
-            if task.get('download_type') == 'youtube':
+            if task.get('download_type') in ('youtube', 'x'):
                 continue
             status = task.get('status')
             # 终态不碰，避免误改历史结果
@@ -149,8 +149,8 @@ class TaskManager:
 
         return task_id
 
-    def add_youtube_task(self, url, filename, save_path, height=720):
-        task_id = self.engine.create_youtube_task(url, filename, save_path, height)
+    def add_youtube_task(self, url, filename, save_path, height=720, kind='youtube'):
+        task_id = self.engine.create_youtube_task(url, filename, save_path, height, kind)
         if task_id:
             if self.task_added_callback:
                 self.task_added_callback(task_id)

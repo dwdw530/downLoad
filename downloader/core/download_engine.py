@@ -17,7 +17,7 @@ from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
-from downloader.core.youtube_downloader import YoutubeDownloader, youtube_url, require_tools
+from downloader.core.youtube_downloader import YoutubeDownloader, video_page_url, require_tools
 
 
 class DownloadEngine:
@@ -220,8 +220,8 @@ class DownloadEngine:
         chunks = self._build_chunks(task_id, total_size, thread_count)
         self.db.create_chunks(task_id, chunks)
 
-    def create_youtube_task(self, url, filename, directory, height=720):
-        url = youtube_url(url)
+    def create_youtube_task(self, url, filename, directory, height=720, kind='youtube'):
+        url = video_page_url(url, kind)
         require_tools()
         if height not in (480, 720, 1080):
             raise ValueError('不支持的清晰度')
@@ -229,7 +229,7 @@ class DownloadEngine:
             raise ValueError('无效的视频文件名')
         task_id = str(uuid.uuid4())
         if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
-                total_size=0, support_range=False, thread_count=1, download_type='youtube', video_height=height):
+                total_size=0, support_range=False, thread_count=1, download_type=kind, video_height=height):
             return task_id
         return None
 
@@ -262,7 +262,7 @@ class DownloadEngine:
         self.thread_pools[task_id] = pool
         self.db.update_task_status(task_id, 'downloading')
         if self.status_callback:
-            self.status_callback(task_id, 'downloading', '正在解析并下载 YouTube 视频')
+            self.status_callback(task_id, 'downloading', '正在解析并下载视频')
         pool.submit(worker.run)
         return True
 
@@ -288,7 +288,7 @@ class DownloadEngine:
         # 每次启动都生成新的会话ID，后续所有回调/收尾都必须绑定它
         run_id = self._next_task_run_id(task_id)
 
-        if task.get('download_type') == 'youtube':
+        if task.get('download_type') in ('youtube', 'x'):
             return self._start_youtube_download(task, run_id)
 
         task['_request_context'] = unprotect(task['browser_context']) if task.get('browser_context') else None
@@ -744,7 +744,7 @@ class DownloadEngine:
             return False
 
         # 艹，分块任务暂停后走重建更稳；非分块任务保留活跃下载器，避免进度被重置到0
-        if task.get('support_range') or task.get('download_type') == 'youtube':
+        if task.get('support_range') or task.get('download_type') in ('youtube', 'x'):
             # 艹，暂停时要等线程池收敛，避免紧接着恢复时旧线程还在抢写临时文件
             self._stop_active_task_workers(task_id, wait=True)
         elif task_id in self.active_downloaders:

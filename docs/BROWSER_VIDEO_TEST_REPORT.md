@@ -1,6 +1,46 @@
 # 浏览器视频集成测试记录
 
-## 当前验收：YouTube 下载与完整发布包
+## 当前验收：X 帖子下载
+
+日期：2026-10-05（Asia/Shanghai）。接续聊天 `01a10acb-8ce7-7a73-82e8-5a8a4792b703`。
+
+### 问题与修复
+
+- 用户在 Edge 的 X 首页看到大量 `video.twimg.com` 流式资源及 M3U8，按钮全部禁用。根因是仅有 YouTube 页面解析，X 仍走通用分段媒体禁用路径；同 frame 的多个帖子资源还会混在一起。
+- 增加 X/Twitter 单帖子 URL 白名单与视频序号校验，复用现有 yt-dlp 工作线程、代理、限速、清晰度、队列、暂停/续传和持久化路径。不新增数据库列，不读取 X 账号 Cookie。
+- 内容脚本从播放器附近定位帖子；后台复核发送 frame 属于 X 后创建页面下载项。未知或歧义归属不回退到全页媒体列表；重用播放器节点时点击会重新识别，不提交旧帖子。
+- Native Host 和桌面端声明 `x` 能力，旧下载器会收到更新提示，不误发不支持的任务。重新打开面板清空旧回执。
+
+### 验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| Python 全量 | 71 项通过，79.607 秒；覆盖 X URL、无声视频、桥接去重、暂停、重启与取消 |
+| Node 逻辑 | 11 项通过；X/Twitter 规范化、视频序号、危险协议/主机/端口拒绝 |
+| 实际发布扩展 | Playwright Chromium 独立配置加载 `output/release-x/chrome-extension`；桌面 1280x900、窄视口 390x844、真实 popup、两个帖子分流、清晰度、旧桌面提示、播放器复用/未知归属通过 |
+| 既有浏览器路径 | 同一轮直链、HLS 禁用、iframe、blob 诊断、YouTube 清晰度/SPA/DRM 回归通过 |
+| 源码 X 实网 | 用户链接已完成，`output/x-validation-61b1f411/` |
+| 新包 X 实网 | 独立双 EXE 冷启动、重复消息只建一条任务、720p 下载、全片解码、正常退出通过 |
+| 视频内容 | H.264 1280x720 + AAC；46.021950 秒，3983395 字节；FFmpeg 解码退出 0、stderr 为空 |
+
+用户验收链接：`https://x.com/kyliaspeijcken/status/2106950444442595371/video/1`。
+实测文件：`output/x-exe-719c24b2/downloads/X-2106950444442595371-video-1.mp4`。
+SHA256：`7b842f0e8f85f1d1889a19026d4f04255b2f04024685a6c910b86427c4fbf870`。
+截图：`output/playwright/x-desktop.png`、`x-mobile.png`、`x-popup.png`；`output/x-exe-719c24b2/x-completed.png`。
+
+### 发布状态与边界
+
+- 新完整包：`output/release-x/`。主 EXE SHA256 `19aaa091431834e4748ed725956eabe2ca4e04a2df899f8b8a426491a980d75a`；桥接 EXE SHA256 `9a800db8238a19ca8f76d563f454f14cf722e3d5403673ba40fc059d61d45090`。
+- 首次因原 `dist` 的用户程序仍运行，直接构建返回 WinError 5，只完成独立包。用户反馈原目录仍不可用后，核对哈希确认其仍为旧版；在程序已退出的情况下，已成功重建原 `dist`，没有强杀用户程序或修改注册表。
+- 当前正式入口为 `dist`：主 EXE SHA256 `7feac93482f1704fd0bcf0e832af585b4eed7ad95c9d32dd48751effefd4c9e4`；桥接 EXE SHA256 `d82694ed7e12bcb42bd4f25c93798f6a1e30f88d25414f1233e73cd5bf363b62`。
+- 已从本次 `dist` 复制双 EXE 和组件到隔离目录，真实冷启动、下载同一 X 视频、重复请求去重、音视频检查、全片解码和正常退出全部通过。产物：`output/x-exe-7643aa78/downloads/X-2106950444442595371-video-1.mp4`，1280x720 H.264/AAC、46.021950 秒、3983395 字节。
+- 使用 `--dist` 加载正式扩展的完整浏览器回归通过，扩展与源码逐文件哈希一致。构建和测试前后 `dist/data/`、`dist/temp/` 全部现有文件哈希不变，包括配置、数据库及 YouTube 断点。用户仍需在 Edge 重新加载扩展并刷新视频页面。
+- 初次浏览器调用的 Playwright 与缓存浏览器不匹配，改用本机已安装的匹配版本。新增测试首轮误用隐藏关闭按钮的序号导致超时，修正测试选择器后源码及发布扩展均通过。
+- GUI 测试仍出现既有 CustomTkinter `bad window path name` 打印，测试结果通过；未扩展修改第三方库。
+- 浏览器验收使用构造的 X 多帖子页面与模拟 Native Messaging；实际用户链接由真实 Native Host/EXE 下载验收。未声称已自动操作用户 Edge 登录会话或验证 Edge 注册表到本地桥接的完整链路。
+- 本轮未重新进行 YouTube 长视频实网和普通 EXE 全工作流验收；它们的历史结果见下文。非公开、登录受限、直播、DRM 与通用 HLS/DASH 下载仍不支持。
+
+## 历史：YouTube 下载与完整发布包
 
 日期：2026-10-05（Asia/Shanghai）。接续原会话 `01a10997-3059-7060-b8de-a61f502048e8`。
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl} from '../chrome-extension/media.js';
+import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl, xUrl, isXPage} from '../chrome-extension/media.js';
 
 test('classifies MIME and URL while preserving signed query strings', () => {
   assert.equal(classify('https://cdn.test/stream?id=3', 'video/mp4; charset=binary'), 'mp4');
@@ -78,5 +78,19 @@ test('YouTube page URLs normalize to one video without timestamps or playlists',
     'https://user:secret@youtube.com/watch?v=ayl6TcSsre8', 'file:///ayl6TcSsre8',
     'https://youtube.com/playlist?list=abc', 'https://youtube.com/watch?v=bad']) {
     assert.equal(youtubeUrl(url), null);
+  }
+});
+
+test('X and Twitter post URLs preserve video index and reject unrelated or unsafe URLs', () => {
+  const url = 'https://x.com/kyliaspeijcken/status/2106950444442595371/video/1';
+  for (const input of [url, url.replace('/video/1', ''), url.replace('x.com', 'twitter.com') + '?s=20']) {
+    assert.equal(xUrl(input), url);
+  }
+  assert.equal(xUrl(url.replace('/video/1', '/video/2')), url.replace('/video/1', '/video/2'));
+  assert.equal(isXPage('https://x.com/home'), true);
+  for (const input of ['https://x.com/home', url.replace('x.com', 'x.com.evil.test'),
+    url.replace('x.com', 'user:secret@x.com'), url.replace('x.com', 'x.com:444'),
+    url.replace('/video/1', '/video/0'), url.replace('/video/1', '/photo/1'), url.replace('https:', 'file:')]) {
+    assert.equal(xUrl(input), null);
   }
 });

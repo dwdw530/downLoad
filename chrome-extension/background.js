@@ -1,4 +1,4 @@
-import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl} from "./media.js";
+import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage} from "./media.js";
 
 const HOST = "com.laowang.downloader";
 const tabLocks = new Map();
@@ -97,17 +97,17 @@ async function download(tabId, id, senderFrame) {
   const item = (await getItems(tabId)).find(i => i.id === id);
   if (!item || (senderFrame !== undefined && item.frameId !== senderFrame)) return {ok: false, error: "视频资源已过期，请重新播放"};
   if (item.protected) return {ok: false, error: "受保护视频不支持下载"};
-  if (!["mp4", "webm", "youtube"].includes(item.kind)) return {ok: false, error: "流式或分段媒体暂不支持下载"};
+  if (!["mp4", "webm", "youtube", "x"].includes(item.kind)) return {ok: false, error: "流式或分段媒体暂不支持下载"};
   const sendKey = `${tabId}:${id}`;
   if (sending.has(sendKey)) return sending.get(sendKey);
   const request = (async () => {
-    if (item.kind === "youtube") {
+    if (["youtube", "x"].includes(item.kind)) {
       const connection = await native({action: "ping"});
-      if (!connection.capabilities?.includes("youtube")) return {ok: false, error: "请更新并重启桌面下载器，YouTube 模块尚未就绪"};
+      if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: "请更新并重启桌面下载器，视频模块尚未就绪"};
       const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
       const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
-      return native({action: "download", request_id: `${item.id}-${height}`, url: youtubeUrl(item.url),
-        kind: "youtube", filename: item.name, height});
+      return native({action: "download", request_id: `${item.id}-${height}`,
+        url: item.kind === "x" ? xUrl(item.url) : youtubeUrl(item.url), kind: item.kind, filename: item.name, height});
     }
     const headers = {"User-Agent": navigator.userAgent};
     try {
@@ -177,25 +177,30 @@ async function handle(message, sender) {
     // MessageSender.url can retain the document's original URL after pushState.
     const page = popup ? await chrome.tabs.get(tabId)
       : {...await chrome.webNavigation.getFrame({tabId, frameId: sender.frameId}), title: sender.tab?.title};
-    const pageUrl = youtubeUrl(page.url);
+    const onX = isXPage(page.url);
+    const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl) : youtubeUrl(page.url);
+    const pageKind = onX ? "x" : "youtube";
     if (pageUrl && await setting()) {
       await serial(tabId, async () => {
         const frameId = popup ? 0 : sender.frameId;
         const frames = (await chrome.storage.session.get(`protected:${tabId}`))[`protected:${tabId}`] || [];
         const current = (await getItems(tabId)).filter(i => i.kind !== "youtube" || i.frameId !== frameId || i.url === pageUrl);
         await saveItems(tabId, upsert(current, {id: crypto.randomUUID(), url: pageUrl,
-          name: (page.title || `YouTube-${new URL(pageUrl).searchParams.get("v")}`).replace(/ - YouTube$/, "").slice(0, 140),
-          kind: "youtube", frameId, size: 0, protected: frames.includes(frameId)}));
+          name: onX ? `X-${new URL(pageUrl).pathname.split("/status/")[1].replaceAll("/", "-")}`
+            : (page.title || `YouTube-${new URL(pageUrl).searchParams.get("v")}`).replace(/ - YouTube$/, "").slice(0, 140),
+          kind: pageKind, frameId, size: 0, protected: frames.includes(frameId)}));
       });
     }
     const items = (await getItems(tabId)).filter(i => Date.now() - i.seen < 1800000);
     const states = await chrome.storage.session.get([`blob:${tabId}`, `protected:${tabId}`]);
     const applies = frames => frames?.some(frame => popup || frame === sender.frameId);
     const emptyMessage = applies(states[`protected:${tabId}`]) ? "检测到受保护视频，本版不支持下载"
+      : onX ? "未确认视频所属帖子，请打开该视频的帖子详情后重试"
       : applies(states[`blob:${tabId}`]) ? "检测到浏览器内视频源（blob），尚未获取可下载直链" : "当前页面尚未发现视频资源";
     const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
     return {ok: true, enabled: await setting(), emptyMessage, videoHeight,
-      items: items.filter(i => (popup || i.frameId === sender.frameId) && (!pageUrl || (i.kind === "youtube" && i.url === pageUrl))).map(publicItem)};
+      items: items.filter(i => (popup || i.frameId === sender.frameId) &&
+        (pageUrl ? i.kind === pageKind && i.url === pageUrl : onX ? popup && i.kind === "x" : true)).map(publicItem)};
   }
   if (message.action === "download") return download(tabId, message.id, popup ? undefined : sender.frameId);
   return {ok: false};

@@ -50,7 +50,33 @@
     state.panel.style.right = left + 132 < width + 10 ? `${left + 132 - width - 10}px` : "0px";
     state.panel.style.maxHeight = `${Math.max(90, Math.min(340, innerHeight - top - 54))}px`;
   }
+  function xPostFor(video) {
+    if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(location.hostname)) return null;
+    const valid = value => {
+      try {
+        const url = new URL(value, location.href);
+        return url.origin === location.origin && /^\/[A-Za-z0-9_]{1,15}\/status\/[0-9]{1,25}(?:\/video\/[1-4])?\/?$/.test(url.pathname)
+          ? url.origin + url.pathname : null;
+      } catch { return null; }
+    };
+    const linked = video.closest('a[href*="/status/"]');
+    if (linked && valid(linked.href)) return valid(linked.href);
+    const article = video.closest('article, [data-testid="tweet"]');
+    if (!article) return valid(location.href);
+    // Walk out from this player, not across the feed. Ambiguous quoted posts fail closed.
+    for (let parent = video.parentElement; parent; parent = parent.parentElement) {
+      const links = [...parent.querySelectorAll('a[href*="/status/"]')];
+      const videoLinks = links.filter(link => /\/video\/[1-4]\/?$/.test(new URL(link.href).pathname));
+      const candidates = videoLinks.length ? videoLinks : links.filter(link => link.querySelector('time'));
+      const urls = [...new Set(candidates.map(link => valid(link.href)).filter(Boolean))];
+      if (urls.length === 1) return urls[0];
+      if (urls.length > 1 || parent === article) return null;
+    }
+    return null;
+  }
   async function observe(video) {
+    const postUrl = xPostFor(video);
+    if (postUrl) await send({action: "list", postUrl});
     const sources = [{src: video.currentSrc || video.src, type: ""}, ...Array.from(video.querySelectorAll("source"), source => ({src: source.src, type: source.type}))];
     for (const source of sources) if (/^https?:\/\//i.test(source.src)) {
       await send({action: "observe", url: source.src, mime: source.type});
@@ -60,13 +86,16 @@
   }
   async function open(video, state) {
     const requestedPage = location.href;
+    const postUrl = xPostFor(video);
+    state.postUrl = postUrl;
     state.panel.hidden = false;
     state.host.setAttribute("data-open", "");
     state.trigger.setAttribute("aria-expanded", "true");
+    state.status.textContent = "";
     state.body.replaceChildren(text("div", "正在识别视频资源…", "notice"));
     await observe(video);
-    const result = await send({action: "list"});
-    if (!state.host.isConnected || location.href !== requestedPage) return;
+    const result = await send({action: "list", postUrl});
+    if (!state.host.isConnected || location.href !== requestedPage || xPostFor(video) !== postUrl) return;
     enabled = result.enabled !== false;
     if (!result.ok) { state.body.replaceChildren(text("div", result.error || "视频助手不可用", "notice error")); return; }
     let items = result.items || [];
@@ -78,14 +107,15 @@
       const row = text("div", "", "row");
       const info = text("div", "");
       info.append(text("div", item.name, "name"));
-      const reason = item.protected ? "受保护视频，不支持下载" : item.kind === "youtube" ? `最高 ${result.videoHeight || 720}p · MP4 音视频`
+      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${item.kind === "x" ? "视频" : "音视频"}`
         : !["mp4", "webm"].includes(item.kind) ? item.unsupportedReason : item.sizeLabel;
       info.append(text("div", `${item.kindLabel} · ${reason}`, "meta"));
       const button = text("button", "下载", "download");
       button.type = "button";
-      button.disabled = item.protected || !["mp4", "webm", "youtube"].includes(item.kind);
+      button.disabled = item.protected || !["mp4", "webm", "youtube", "x"].includes(item.kind);
       button.addEventListener("click", async event => {
         if (!event.isTrusted) return;
+        if (location.href !== requestedPage || xPostFor(video) !== postUrl) { await open(video, state); return; }
         button.disabled = true;
         button.textContent = "发送中";
         state.status.className = "notice";

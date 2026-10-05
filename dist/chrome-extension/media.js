@@ -11,6 +11,21 @@ export function youtubeUrl(value) {
   return /^[A-Za-z0-9_-]{11}$/.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
 }
 
+export function isXPage(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      (!url.port || ["80", "443"].includes(url.port)) &&
+      ["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(url.hostname);
+  } catch { return false; }
+}
+
+export function xUrl(value) {
+  if (typeof value !== "string" || value.length > 2048 || !isXPage(value)) return null;
+  const match = /^\/([A-Za-z0-9_]{1,15})\/status\/([0-9]{1,25})(?:\/video\/([1-4]))?\/?$/.exec(new URL(value).pathname);
+  return match ? `https://x.com/${match[1]}/status/${match[2]}/video/${match[3] || "1"}` : null;
+}
+
 export function classify(url, mime = "") {
   let parsed;
   try { parsed = new URL(url); } catch { return null; }

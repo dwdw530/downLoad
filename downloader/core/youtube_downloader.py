@@ -1,4 +1,4 @@
-"""YouTube page downloads through the upstream yt-dlp/FFmpeg toolchain."""
+"""Supported video pages downloaded through the upstream yt-dlp/FFmpeg toolchain."""
 import json
 import os
 from pathlib import Path
@@ -34,6 +34,29 @@ def youtube_url(value):
     return 'https://www.youtube.com/watch?v=' + video_id
 
 
+def x_url(value):
+    if not isinstance(value, str) or len(value) > 2048:
+        raise ValueError('无效的 X 帖子地址')
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or parsed.hostname not in ('x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com')):
+        raise ValueError('无效的 X 帖子地址')
+    match = re.fullmatch(r'/([A-Za-z0-9_]{1,15})/status/([0-9]{1,25})(?:/video/([1-4]))?/?', parsed.path)
+    if not match:
+        raise ValueError('仅接受单个 X 帖子视频地址')
+    user, post, index = match.groups()
+    return f'https://x.com/{user}/status/{post}/video/{index or "1"}'
+
+
+def video_page_url(value, kind='youtube'):
+    if kind == 'youtube':
+        return youtube_url(value)
+    if kind == 'x':
+        return x_url(value)
+    raise ValueError('不支持的视频站点')
+
+
 def tools_directory():
     root = Path(get_app_root())
     return root / 'video-tools' if getattr(sys, 'frozen', False) else root / 'vendor' / 'video'
@@ -43,18 +66,18 @@ def require_tools(directory=None):
     directory = Path(directory or tools_directory())
     if not all((directory / name).is_file() and (directory / name).stat().st_size > 0
                for name in ('yt-dlp.exe', 'ffmpeg.exe', 'ffprobe.exe', 'node.exe')):
-        raise ValueError('YouTube 下载组件缺失，请安装包含 video-tools 的完整更新包')
+        raise ValueError('视频下载组件缺失，请安装包含 video-tools 的完整更新包')
     return directory
 
 
 def failure_message(lines):
     text = '\n'.join(lines).lower()
-    if 'sign in' in text or 'not a bot' in text:
-        return 'YouTube 要求登录或验证，此版本不会读取账号 Cookie'
+    if any(word in text for word in ('sign in', 'not a bot', 'login', 'log in', 'authentication')):
+        return '网站要求登录或验证，此版本不会读取账号 Cookie'
     if 'private video' in text or 'video unavailable' in text:
         return '视频不可用、私有或当前地区无法访问'
     if '403' in text:
-        return 'YouTube 拒绝下载（403），请检查网络或更新视频组件'
+        return '网站拒绝下载（403），请检查网络或更新视频组件'
     if 'timed out' in text or 'unable to download' in text:
         return '视频下载网络失败，请检查代理或稍后重试'
     return '视频解析或合并失败，请检查网络、磁盘空间及视频组件'
@@ -73,7 +96,8 @@ class YoutubeDownloader:
         self.process = None
         self.lock = threading.Lock()
         self.tracks = {}
-        self.folder = Path(config.temp_dir) / 'youtube' / task['task_id']
+        self.kind = task.get('download_type', 'youtube')
+        self.folder = Path(config.temp_dir) / self.kind / task['task_id']
 
     def command(self):
         height = int(self.task.get('video_height') or 720)
@@ -94,7 +118,7 @@ class YoutubeDownloader:
         proxies = self.config.proxies or {}
         if proxies.get('https') or proxies.get('http'):
             command += ['--proxy', proxies.get('https') or proxies['http']]
-        return command + ['--', youtube_url(self.task['url'])]
+        return command + ['--', video_page_url(self.task['url'], self.kind)]
 
     def active(self):
         return not self.stop.is_set() and self.is_current()
@@ -144,7 +168,8 @@ class YoutubeDownloader:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             metadata = json.loads(probe.stdout)
             types = {stream.get('codec_type') for stream in metadata.get('streams', [])}
-            if probe.returncode or not {'video', 'audio'} <= types or float(metadata.get('format', {}).get('duration', 0)) <= 0:
+            required = {'video'} if self.kind == 'x' else {'video', 'audio'}
+            if probe.returncode or not required <= types or float(metadata.get('format', {}).get('duration', 0)) <= 0:
                 raise ValueError('合并结果缺少视频、音频或有效时长')
             if not self.active():
                 return

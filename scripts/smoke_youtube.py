@@ -16,13 +16,28 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
+from downloader.core.youtube_downloader import x_url
+
+
+def page_kind(url):
+    try:
+        x_url(url)
+        return 'x'
+    except ValueError:
+        return 'youtube'
+
+
+def page_filename(url):
+    from downloader.browser.bridge import video_filename
+    return video_filename({'kind': page_kind(url), 'url': url})
 
 
 def packaged(url, release):
     from downloader.browser.native_host import read_message, write_message
     from smoke_exe import app_windows, wait_for, user32, capture
 
-    directory = ROOT / 'output' / ('youtube-exe-' + uuid.uuid4().hex[:8])
+    kind = page_kind(url)
+    directory = ROOT / 'output' / (kind + '-exe-' + uuid.uuid4().hex[:8])
     app = directory / 'app'
     app.mkdir(parents=True)
     for name in ('BrowserBridge.exe', '\u8001\u738b\u4e0b\u8f7d\u5668.exe'):
@@ -48,13 +63,13 @@ def packaged(url, release):
 
     try:
         ping = native({'action': 'ping'})
-        assert ping.get('installed') and 'youtube' in ping.get('capabilities', []), ping
-        message = {'action': 'download', 'kind': 'youtube', 'url': url, 'height': 720,
-                   'filename': 'YouTube-ayl6TcSsre8.mp4', 'request_id': str(uuid.uuid4())}
+        assert ping.get('installed') and kind in ping.get('capabilities', []), ping
+        message = {'action': 'download', 'kind': kind, 'url': url, 'height': 720,
+                   'filename': page_filename(url), 'request_id': str(uuid.uuid4())}
         result = native(message)
         assert result['ok'], result
         assert native(message) == result
-        assert 'youtube' in native({'action': 'ping'})['capabilities']
+        assert kind in native({'action': 'ping'})['capabilities']
         db = DatabaseManager(str(app / 'data/downloads.db'))
         task = wait_for(lambda: (t if (t := db.get_task(result['task_id'])) and
             t['status'] in ('completed', 'failed', 'verify_failed') else None), timeout=900)
@@ -75,8 +90,8 @@ def packaged(url, release):
             creationflags=subprocess.CREATE_NO_WINDOW)
         assert decoded.returncode == 0 and not decoded.stderr, decoded.stderr
         window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '\u8001\u738b\u4e0b\u8f7d\u5668 v1.0'), None))
-        capture(window['hwnd'], directory / 'youtube-completed.png')
-        print('PASS: packaged native cold start, YouTube download, dedupe, audio/video and full decode', flush=True)
+        capture(window['hwnd'], directory / (kind + '-completed.png'))
+        print('PASS: packaged native cold start, video download, dedupe, audio/video and full decode', flush=True)
         print('Artifacts:', directory, flush=True)
     finally:
         for window in app_windows(exe):
@@ -95,7 +110,7 @@ def main():
     args = parser.parse_args()
     if args.exe:
         return packaged(args.url, args.release.resolve())
-    directory = ROOT / 'output' / 'youtube-validation'
+    directory = ROOT / 'output' / (page_kind(args.url) + '-validation-' + uuid.uuid4().hex[:8])
     directory.mkdir(parents=True, exist_ok=True)
     config = ConfigManager(str(directory / 'config.json'))
     config.download_dir = str(directory / 'downloads')
@@ -116,8 +131,8 @@ def main():
 
     engine.set_progress_callback(progress)
     try:
-        result = bridge.dispatch({'action':'download', 'kind':'youtube', 'url':args.url,
-            'filename':'YouTube-ayl6TcSsre8.mp4', 'height':720, 'request_id':str(uuid.uuid4())})
+        result = bridge.dispatch({'action':'download', 'kind':page_kind(args.url), 'url':args.url,
+            'filename':page_filename(args.url), 'height':720, 'request_id':str(uuid.uuid4())})
         assert result['ok'], result
         print(json.dumps(result), flush=True)
         deadline = time.monotonic() + 900

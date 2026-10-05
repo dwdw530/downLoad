@@ -11,7 +11,9 @@ async function main() {
   const output = path.join(root, 'output', 'playwright');
   await fs.mkdir(output, {recursive:true});
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'video-extension-'));
-  const extension = path.join(root, ...(process.argv.includes('--dist') ? ['dist', 'chrome-extension'] : ['chrome-extension']));
+  const releaseIndex = process.argv.indexOf('--release');
+  const extension = releaseIndex >= 0 ? path.resolve(process.argv[releaseIndex + 1], 'chrome-extension')
+    : path.join(root, ...(process.argv.includes('--dist') ? ['dist', 'chrome-extension'] : ['chrome-extension']));
   const context = await chromium.launchPersistentContext(profile, {
     channel:'chromium', headless:true, viewport:{width:1280,height:900},
     args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]
@@ -156,7 +158,7 @@ async function main() {
         return {onMessage:{addListener:fn=>listeners.push(fn)}, onDisconnect:{addListener:()=>{}},
           disconnect:()=>{}, postMessage:message=>{
             globalThis.nativeMessages.push(message);
-            const response=message.action==='ping' ? {ok:false,installed:true,capabilities:['youtube']}
+            const response=message.action==='ping' ? {ok:false,installed:true,capabilities:globalThis.testCapabilities || ['youtube', 'x']}
               : {ok:true,task_id:'fixture',filename:message.filename+'.mp4'};
             setTimeout(()=>listeners.forEach(fn=>fn(response)),0);
           }};
@@ -212,6 +214,77 @@ async function main() {
     assert(await page.getByRole('button',{name:'下载',exact:true}).isDisabled());
     assert.equal(errors.length,0,JSON.stringify(errors));
     console.log('PASS: YouTube page handoff, cold-start capabilities, quality persistence, SPA identity, narrow viewport and DRM guard');
+    // Two feed posts plus unrelated HLS evidence must never share an actionable list.
+    await context.route('https://x.com/**', route => route.fulfill({contentType:'text/html; charset=utf-8', body:`
+      <!doctype html><title>X feed fixture</title><style>body{margin:16px;font:16px sans-serif}article{max-width:760px;margin:auto}video{display:block;width:100%;height:240px;background:#182329}a{display:block;margin:12px 0}</style>
+      <article><a href="/kyliaspeijcken/status/2106950444442595371"><time>First post</time></a><video controls></video></article>
+      <article><a href="/other/status/123456789"><time>Second post</time></a><video controls></video></article>`}));
+    await page.setViewportSize({width:1280,height:900});
+    await page.goto('https://x.com/home');
+    await page.locator('video').evaluateAll((videos, bytes)=>videos.forEach(video=>{
+      video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
+    }),bytes);
+    await worker.evaluate(async id=>{
+      await chrome.storage.local.set({videoHeight:720});
+      const key=`media:${id}`, items=(await chrome.storage.session.get(key))[key]||[];
+      items.push({id:'unrelated',url:'https://video.twimg.com/unrelated.m3u8',kind:'hls',frameId:0,seen:Date.now()});
+      await chrome.storage.session.set({[key]:items});
+      globalThis.nativeMessages=[];
+    },tabId);
+    await page.getByRole('button',{name:'下载视频',exact:true}).first().click();
+    await page.getByText('X-2106950444442595371-video-1',{exact:true}).waitFor();
+    assert.equal(await page.locator('laowang-video-assistant .row').count(),1);
+    await page.screenshot({path:path.join(output,'x-desktop.png')});
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[0].url,'https://x.com/kyliaspeijcken/status/2106950444442595371/video/1');
+    assert.equal(messages[0].kind,'x');
+    assert.equal(messages[0].headers,undefined);
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).first().click();
+    await page.getByRole('button',{name:'下载视频',exact:true}).nth(1).click();
+    await page.getByText('X-123456789-video-1',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[1].url,'https://x.com/other/status/123456789/video/1');
+    const xPopup=await context.newPage();
+    await xPopup.goto(worker.url().replace('background.js','popup.html'));
+    await xPopup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
+    await xPopup.evaluate(async id=>{tabId=id;await refresh();},tabId);
+    assert.equal(await xPopup.locator('.row').count(),2);
+    await xPopup.locator('#quality').selectOption('480');
+    await xPopup.getByRole('button',{name:'下载',exact:true}).first().click();
+    await xPopup.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[2].height,480);
+    assert.notEqual(messages[2].request_id,messages[0].request_id);
+    await xPopup.screenshot({path:path.join(output,'x-popup.png')});
+    await xPopup.close();
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'下载视频',exact:true}).first().click();
+    await page.getByText('X · 最高 480p · MP4 视频',{exact:true}).waitFor();
+    const xBounds=await page.locator('laowang-video-assistant .panel').first().boundingBox();
+    assert(xBounds.x>=0 && xBounds.x+xBounds.width<=391,JSON.stringify(xBounds));
+    await page.screenshot({path:path.join(output,'x-mobile.png')});
+    // Old desktop builds must not receive an unsupported X task.
+    await worker.evaluate(()=>{globalThis.testCapabilities=['youtube'];globalThis.nativeMessages=[];});
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByText('请更新并重启桌面下载器，视频模块尚未就绪',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),0);
+    // Feed virtualization can reuse the same video node for a different post.
+    await page.locator('article a').first().evaluate(a=>a.href='/new/status/987654321');
+    await page.getByRole('button',{name:'重试',exact:true}).click();
+    await page.getByText('X-987654321-video-1',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),0);
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).first().click();
+    await page.locator('article a').first().evaluate(a=>a.remove());
+    await page.getByRole('button',{name:'下载视频',exact:true}).first().click();
+    await page.getByText('未确认视频所属帖子，请打开该视频的帖子详情后重试',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
+    assert.equal(errors.length,0,JSON.stringify(errors));
+    console.log('PASS: X feed per-player identity, popup, quality, narrow viewport, old desktop guard and recycled/unknown posts');
     console.log('Screenshots:',output);
   } catch(error) {
     await context.pages()[0]?.screenshot({path:path.join(output,'video-failure.png')});

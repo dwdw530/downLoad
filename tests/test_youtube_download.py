@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from downloader.core.youtube_downloader import YoutubeDownloader, require_tools, youtube_url
+from downloader.core.youtube_downloader import YoutubeDownloader, require_tools, youtube_url, x_url, video_page_url
+from downloader.browser.bridge import BridgeServer, video_filename
 from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
@@ -44,6 +45,66 @@ class YoutubeTests(unittest.TestCase):
                       'https://youtube.com/playlist?list=x', URL.replace('ayl6TcSsre8', 'bad')):
             with self.assertRaises(ValueError):
                 youtube_url(value)
+
+    def test_x_url_validation_and_video_selection(self):
+        expected = 'https://x.com/kyliaspeijcken/status/2106950444442595371/video/1'
+        for value in (expected, expected.replace('/video/1', ''),
+                      expected.replace('x.com', 'twitter.com') + '?s=20'):
+            self.assertEqual(x_url(value), expected)
+        self.assertTrue(x_url(expected.replace('/video/1', '/video/2')).endswith('/video/2'))
+        for value in ('https://x.com/home', 'https://x.com/u/status/no',
+                      expected.replace('x.com', 'x.com.evil.test'), expected.replace('https:', 'file:'),
+                      expected.replace('x.com', 'user:secret@x.com'), expected.replace('/video/1', '/video/0'),
+                      expected.replace('/video/1', '/photo/1'), expected.replace('x.com', 'x.com:444')):
+            with self.assertRaises(ValueError):
+                x_url(value)
+        with self.assertRaises(ValueError):
+            video_page_url(expected, 'hls')
+        self.assertEqual(video_filename({'kind': 'x', 'url': expected}), 'X-2106950444442595371-video-1.mp4')
+
+    def test_x_command_and_valid_silent_video(self):
+        self.task.update(download_type='x', url='https://x.com/u/status/123/video/1')
+        self.worker = YoutubeDownloader(self.task, self.config, self.progress, self.completed,
+                                        self.failed, lambda: True, self.tools)
+        command = self.worker.command()
+        self.assertEqual(command[-1], self.task['url'])
+        self.assertEqual(self.worker.folder.parent.name, 'x')
+        self.assertFalse(any('cookie' in arg.lower() for arg in command))
+        self.run_worker(streams=('video',))
+        self.completed.assert_called_once()
+        self.failed.assert_not_called()
+
+    def test_x_bridge_queue_dedupe_pause_restart_and_resume(self):
+        db = DatabaseManager(str(self.root / 'x.db'))
+        self.config.download_dir = str(self.root / 'out')
+        engine = DownloadEngine(db, self.config)
+        manager = TaskManager(engine, db)
+        self.addCleanup(manager.shutdown)
+        bridge = BridgeServer(manager, Mock(), self.root / 'endpoint')
+        self.addCleanup(bridge.close)
+        worker = Mock()
+        with patch('downloader.core.download_engine.require_tools'), \
+                patch('downloader.core.download_engine.YoutubeDownloader', return_value=worker):
+            message = {'action': 'download', 'kind': 'x', 'url': 'https://x.com/u/status/123/video/1',
+                       'request_id': 'x-request-123456789', 'height': 480, 'headers': {'Cookie': 'never-store'}}
+            result = bridge.dispatch(message)
+            self.assertTrue(result['ok'])
+            self.assertEqual(bridge.dispatch(message), result)
+            task_id = result['task_id']
+            task = db.get_task(task_id)
+            self.assertEqual(task['download_type'], 'x')
+            self.assertEqual(task['video_height'], 480)
+            self.assertFalse(task['browser_context'])
+            self.assertTrue(manager.pause_task(task_id))
+            worker.cancel.assert_called_once()
+            db.update_task_progress(task_id, 50, 0)
+            manager.shutdown()
+            restarted = TaskManager(DownloadEngine(db, self.config), db)
+            self.addCleanup(restarted.shutdown)
+            self.assertEqual(db.get_task(task_id)['downloaded_size'], 50)
+            self.assertTrue(restarted.resume_task(task_id))
+            self.assertTrue(restarted.cancel_task(task_id))
+            self.assertEqual(db.get_task(task_id)['status'], 'cancelled')
 
     def test_command_uses_local_tools_quality_proxy_and_no_account_cookies(self):
         command = self.worker.command()
