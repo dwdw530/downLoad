@@ -16,6 +16,8 @@ from downloader.core.chunk_downloader import ChunkDownloader
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
+from downloader.browser.security import browser_get, normalize_context, protect, unprotect
+from downloader.core.youtube_downloader import YoutubeDownloader, youtube_url, require_tools
 
 
 class DownloadEngine:
@@ -89,7 +91,7 @@ class DownloadEngine:
         """
         self.status_callback = callback
 
-    def check_url_support_range(self, url: str) -> tuple[bool, int]:
+    def check_url_support_range(self, url: str, request_context=None) -> tuple[bool, int]:
         """
         检查URL是否支持Range请求（分块下载）
         Args:
@@ -101,7 +103,8 @@ class DownloadEngine:
             # 一次流式GET同时确定Range支持和真实大小，也兼容禁用HEAD的站点。
             headers = {'User-Agent': self.config.user_agent,
                        'Range': 'bytes=0-0', 'Accept-Encoding': 'identity'}
-            with requests.get(url, headers=headers, stream=True,
+            get = requests.get if request_context is None else lambda url, **kw: browser_get(url, request_context, **kw)
+            with get(url, headers=headers, stream=True,
                               timeout=self.config.timeout, allow_redirects=True,
                               proxies=self.config.proxies) as response:
                 response.raise_for_status()
@@ -116,13 +119,14 @@ class DownloadEngine:
                     return False, max(0, int(response.headers.get('Content-Length', 0)))
                 return False, 0
         except Exception as e:
-            print(f"[错误] 检查URL失败: {e}")
+            detail = type(e).__name__ if request_context else str(e)
+            print(f"[错误] 检查URL失败: {detail}")
             return False, 0
 
     def create_download_task(self, url: str, filename: Optional[str] = None,
                             save_path: Optional[str] = None,
                             expected_hash: Optional[str] = None,
-                            hash_type: str = "md5") -> Optional[str]:
+                            hash_type: str = "md5", request_context=None) -> Optional[str]:
         """
         创建下载任务
         Args:
@@ -134,6 +138,7 @@ class DownloadEngine:
         Returns:
             任务ID，失败返回None
         """
+        request_context = normalize_context(url, request_context)
         # 生成任务ID
         task_id = str(uuid.uuid4())
 
@@ -148,7 +153,8 @@ class DownloadEngine:
             save_path = os.path.join(save_path, filename)
 
         # 检查URL支持情况
-        support_range, total_size = self.check_url_support_range(url)
+        support_range, total_size = (self.check_url_support_range(url, request_context)
+                                    if request_context else self.check_url_support_range(url))
 
         if total_size == 0:
             if self.status_callback:
@@ -177,7 +183,8 @@ class DownloadEngine:
             thread_count=thread_count,
             chunks=chunks,
             expected_hash=expected_hash,
-            hash_type=hash_type
+            hash_type=hash_type,
+            browser_context=protect(request_context) if request_context else None
         )
 
         if not success:
@@ -213,6 +220,52 @@ class DownloadEngine:
         chunks = self._build_chunks(task_id, total_size, thread_count)
         self.db.create_chunks(task_id, chunks)
 
+    def create_youtube_task(self, url, filename, directory, height=720):
+        url = youtube_url(url)
+        require_tools()
+        if height not in (480, 720, 1080):
+            raise ValueError('不支持的清晰度')
+        if os.path.basename(filename) != filename or not filename.lower().endswith('.mp4'):
+            raise ValueError('无效的视频文件名')
+        task_id = str(uuid.uuid4())
+        if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
+                total_size=0, support_range=False, thread_count=1, download_type='youtube', video_height=height):
+            return task_id
+        return None
+
+    def _start_youtube_download(self, task, run_id):
+        task_id = task['task_id']
+        current = lambda: self._is_current_task_run(task_id, run_id)
+
+        def progress(done, size, speed):
+            if current():
+                self.db.update_task_size(task_id, size)
+                self.db.update_task_progress(task_id, done, speed)
+                if self.progress_callback:
+                    self.progress_callback(task_id, done, size, speed)
+
+        def complete(size):
+            if current():
+                self.db.update_task_size(task_id, size)
+                self._verify_and_finish(task_id, task['save_path'], run_id=run_id)
+
+        def fail(message):
+            if current():
+                self.db.update_task_status(task_id, 'failed', message)
+                if self.status_callback:
+                    self.status_callback(task_id, 'failed', message)
+
+        worker = YoutubeDownloader(task, self.config, progress, complete, fail, current)
+        self.cancelled_tasks.discard(task_id)
+        self.active_downloaders[task_id] = [worker]
+        pool = ThreadPoolExecutor(max_workers=1)
+        self.thread_pools[task_id] = pool
+        self.db.update_task_status(task_id, 'downloading')
+        if self.status_callback:
+            self.status_callback(task_id, 'downloading', '正在解析并下载 YouTube 视频')
+        pool.submit(worker.run)
+        return True
+
     def start_download(self, task_id: str, resume: bool = False) -> bool:
         """
         开始下载任务
@@ -235,12 +288,20 @@ class DownloadEngine:
         # 每次启动都生成新的会话ID，后续所有回调/收尾都必须绑定它
         run_id = self._next_task_run_id(task_id)
 
+        if task.get('download_type') == 'youtube':
+            return self._start_youtube_download(task, run_id)
+
+        task['_request_context'] = unprotect(task['browser_context']) if task.get('browser_context') else None
+
         # 艹，下载启动前再做一次Range真探测，兜住历史任务和误判任务
         if task['support_range'] and task['thread_count'] > 1:
-            is_valid_range, _ = self.check_url_support_range(task['url'])
+            context = task['_request_context']
+            is_valid_range, _ = (self.check_url_support_range(task['url'], context)
+                                 if context else self.check_url_support_range(task['url']))
             if not is_valid_range:
                 self.db.mark_task_singlethread(task_id)
                 task = self.db.get_task(task_id) or task
+                task['_request_context'] = context
 
         # 更新任务状态为downloading
         self.cancelled_tasks.discard(task_id)
@@ -285,7 +346,8 @@ class DownloadEngine:
                 user_agent=self.config.user_agent,
                 speed_limit=chunk_speed_limit,
                 proxies=self.config.proxies,  # 代理支持
-                use_range=True
+                use_range=True,
+                request_context=task.get('_request_context')
             )
             # 设置进度回调
             downloader.set_progress_callback(self._on_chunk_progress)
@@ -435,7 +497,9 @@ class DownloadEngine:
             user_agent=self.config.user_agent,
             speed_limit=self.config.speed_limit,
             proxies=self.config.proxies,  # 代理支持
-            use_range=bool(task.get('support_range'))
+            use_range=bool(task.get('support_range')),
+            request_context=(task.get('_request_context') or
+                             (unprotect(task['browser_context']) if task.get('browser_context') else None))
         )
 
         # 艹，单线程也得走实时进度链路，不然UI速度和进度全是死的
@@ -544,7 +608,7 @@ class DownloadEngine:
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '合并失败')
 
-    def _verify_and_finish(self, task_id: str, save_path: str):
+    def _verify_and_finish(self, task_id: str, save_path: str, run_id=None):
         """
         校验文件并完成任务
         老王说：校验这步很重要，下载了个假文件还不自知那才叫蠢！
@@ -574,6 +638,8 @@ class DownloadEngine:
         # 计算文件哈希
         print(f"[校验] 开始计算{hash_type.upper()}哈希...")
         actual_hash = calculate_file_hash(save_path, hash_type)
+        if run_id is not None and not self._is_current_task_run(task_id, run_id):
+            return
 
         if actual_hash:
             print(f"[校验] 文件哈希: {actual_hash}")
@@ -678,7 +744,7 @@ class DownloadEngine:
             return False
 
         # 艹，分块任务暂停后走重建更稳；非分块任务保留活跃下载器，避免进度被重置到0
-        if task.get('support_range'):
+        if task.get('support_range') or task.get('download_type') == 'youtube':
             # 艹，暂停时要等线程池收敛，避免紧接着恢复时旧线程还在抢写临时文件
             self._stop_active_task_workers(task_id, wait=True)
         elif task_id in self.active_downloaders:

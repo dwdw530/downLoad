@@ -116,7 +116,9 @@ python -m nuitka --standalone --onefile --windows-disable-console \
 conda run -n py310_env python scripts/build_exe.py
 ```
 
-脚本使用 `老王下载器.spec` 收集GUI资源和依赖，更新 `dist/老王下载器.exe`。不要清空整个 `dist`：其中可能已有用户配置、数据库和未完成下载的断点文件。
+脚本使用 `老王下载器.spec` 和 `browser_bridge.spec` 生成主程序与浏览器桥接。首次构建 YouTube 版前先运行 `python -B scripts/setup_video_tools.py` 准备视频组件，构建会检查并复制 `video-tools/`、许可证、扩展与安装脚本。不要清空整个 `dist`：其中可能已有用户配置、数据库和未完成下载的断点文件。
+
+打包前完全退出下载器（包括托盘），否则 Windows 会拒绝覆盖正在使用的 EXE。需要独立构建时用 `python -B scripts/build_exe.py --dist-dir output/release-youtube`。
 
 脚本会把当前Python环境的 `Library/bin` 放在构建子进程PATH首位。仅指定py310_env里的python.exe，仍可能让PyInstaller从Anaconda base打入其他版本的Tcl/Tk DLL，导致双击后退出。打包后必须实际启动并关闭EXE；源码GUI测试或包内代码一致性检查不能代替这一步。
 
@@ -139,7 +141,7 @@ conda run -n py310_env python scripts/build_exe.py
 - ✅ 优点：只有一个exe，方便分发
 - ❌ 缺点：体积大（50-100MB），启动慢（第一次解压）
 
-**分发：** 直接把 `dist/老王下载器.exe` 发给用户
+**分发：** 仅普通文件下载可单独提供 `dist/老王下载器.exe`。浏览器/YouTube 版必须同时提供 `BrowserBridge.exe`、`chrome-extension/`、`video-tools/` 和安装脚本，不能只发送主 EXE。不要把自己的 `dist/data/`、`dist/temp/` 或下载文件打进用户发布包。
 
 ### 文件夹模式（推荐给技术用户）
 - ✅ 优点：启动快，体积相对小

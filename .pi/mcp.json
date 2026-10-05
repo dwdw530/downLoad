@@ -1,0 +1,49 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "D:/pycharm_workspace/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--project",
+        "D:/vscode_workspace/downLoad_project"
+      ],
+      "env": {},
+      "type": "stdio",
+      "timeout": 120,
+      "exposure": "direct"
+    },
+    "context7": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@upstash/context7-mcp",
+        "--api-key",
+        "ctx7sk-666e4b79-91d3-4b81-b350-1d2b02a21fc0"
+      ],
+      "env": {
+        "HTTP_PROXY": "http://127.0.0.1:7890",
+        "HTTPS_PROXY": "http://127.0.0.1:7890",
+        "NO_PROXY": "localhost,127.0.0.1"
+      },
+      "exposure": "direct"
+    },
+    "tavily": {
+      "url": "https://mcp.tavily.com/mcp/?tavilyApiKey=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",
+      "env": {
+        "TAVILY_EXTRACT_ENABLED": "true",
+        "HTTP_PROXY": "http://127.0.0.1:7890",
+        "HTTPS_PROXY": "http://127.0.0.1:7890",
+        "NO_PROXY": "localhost,127.0.0.1"
+      },
+      "exposure": "direct"
+    }
+  }
+}

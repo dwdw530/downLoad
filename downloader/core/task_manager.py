@@ -53,6 +53,8 @@ class TaskManager:
         tasks = self.db.get_all_tasks()
 
         for task in tasks:
+            if task.get('download_type') == 'youtube':
+                continue
             status = task.get('status')
             # 终态不碰，避免误改历史结果
             if status in ('completed', 'verifying', 'verify_failed'):
@@ -120,7 +122,7 @@ class TaskManager:
     def add_task(self, url: str, filename: Optional[str] = None,
                  save_path: Optional[str] = None,
                  expected_hash: Optional[str] = None,
-                 hash_type: str = "md5") -> Optional[str]:
+                 hash_type: str = "md5", request_context=None) -> Optional[str]:
         """
         添加下载任务
         Args:
@@ -133,7 +135,8 @@ class TaskManager:
             任务ID，失败返回None
         """
         # 创建任务
-        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type)
+        kwargs = {'request_context': request_context} if request_context is not None else {}
+        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type, **kwargs)
         if not task_id:
             return None
 
@@ -144,6 +147,14 @@ class TaskManager:
         # 尝试启动任务
         self._try_start_next_task()
 
+        return task_id
+
+    def add_youtube_task(self, url, filename, save_path, height=720):
+        task_id = self.engine.create_youtube_task(url, filename, save_path, height)
+        if task_id:
+            if self.task_added_callback:
+                self.task_added_callback(task_id)
+            self._try_start_next_task()
         return task_id
 
     def start_task(self, task_id: str) -> bool:

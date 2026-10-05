@@ -86,6 +86,8 @@ class MainWindow(ctk.CTk):
     def _exit_app(self):
         """退出程序（停止下载并释放资源）"""
         try:
+            if hasattr(self, 'browser_bridge'):
+                self.browser_bridge.close()
             # 停止托盘
             if hasattr(self, 'tray_manager'):
                 self.tray_manager.stop()
@@ -546,6 +548,12 @@ class MainWindow(ctk.CTk):
 class CloseConfirmDialog(ctk.CTkToplevel):
     """关闭确认对话框"""
 
+    def focus_set(self):
+        if self.winfo_exists():
+            super().focus_set()
+
+    focus = focus_set
+
     def _revert_withdraw_after_windows_set_titlebar_color(self):
         # CustomTkinter 5.2会延迟恢复标题栏，快速关闭时窗口可能已销毁。
         if self.winfo_exists():
@@ -792,6 +800,17 @@ class DeleteTaskDialog(ctk.CTkToplevel):
 
 class AddTaskDialog(ctk.CTkToplevel):
     """添加任务对话框 - 支持哈希校验"""
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # 与退出对话框相同：标题栏延迟回调可能晚于窗口销毁。
+        if self.winfo_exists():
+            super()._revert_withdraw_after_windows_set_titlebar_color()
+
+    def focus_set(self):
+        if self.winfo_exists():
+            super().focus_set()
+
+    focus = focus_set
 
     def __init__(self, parent):
         super().__init__(parent)

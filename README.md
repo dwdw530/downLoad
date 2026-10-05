@@ -38,6 +38,12 @@ downDemo/
 └── README.md
 ```
 
+## Chrome 视频下载助手
+
+网页视频识别和播放器悬浮下载按钮支持 MP4、WebM 直链，以及 YouTube 单视频页面下载。YouTube 使用 yt-dlp + FFmpeg 合并带声音的 MP4，可选最高 480p/720p/1080p。其他网站的 HLS/DASH 目前仅识别提示。
+
+安装需要完整发布目录，包括 `BrowserBridge.exe`、`chrome-extension/` 和 `video-tools/`，具体步骤、权限与限制见 [浏览器视频集成说明](docs/BROWSER_VIDEO.md)。本功能不自动接管 Chrome 的普通文件下载，也不读取 YouTube 账号 Cookie。更新后须完全退出并重启下载器，重新加载扩展及刷新视频页。
+
 ## 安装依赖
 
 **重要：使用py310_env环境！**

@@ -110,6 +110,14 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE download_tasks ADD COLUMN actual_hash TEXT")
                 cursor.execute("ALTER TABLE download_tasks ADD COLUMN hash_verified INTEGER DEFAULT 0")
 
+            columns = {row[1] for row in cursor.execute('PRAGMA table_info(download_tasks)')}
+            if 'browser_context' not in columns:
+                cursor.execute('ALTER TABLE download_tasks ADD COLUMN browser_context TEXT')
+            if 'download_type' not in columns:
+                cursor.execute("ALTER TABLE download_tasks ADD COLUMN download_type TEXT DEFAULT 'file'")
+            if 'video_height' not in columns:
+                cursor.execute('ALTER TABLE download_tasks ADD COLUMN video_height INTEGER DEFAULT 720')
+
             conn.commit()
             conn.close()
 
@@ -144,7 +152,9 @@ class DatabaseManager:
     def create_task_with_chunks(self, task_id: str, url: str, filename: str, save_path: str,
                                 total_size: int = 0, support_range: bool = True, thread_count: int = 8,
                                 chunks: Optional[List[Tuple[int, int, int, str]]] = None,
-                                expected_hash: Optional[str] = None, hash_type: str = "md5") -> bool:
+                                expected_hash: Optional[str] = None, hash_type: str = "md5",
+                                browser_context: Optional[str] = None, download_type: str = 'file',
+                                video_height: int = 720) -> bool:
         """
         原子创建任务与分块（可选带预期哈希）
         老王说：任务和分块必须一锅端，要么全成要么全回滚，别搞半截子烂账。
@@ -160,6 +170,13 @@ class DatabaseManager:
                         (task_id, url, filename, save_path, total_size, support_range, thread_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
+
+                    if download_type == 'youtube':
+                        cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
+                                       (download_type, video_height, task_id))
+                    if browser_context:
+                        cursor.execute('UPDATE download_tasks SET browser_context = ? WHERE task_id = ?',
+                                       (browser_context, task_id))
 
                     if expected_hash:
                         # 艹，预期哈希也跟任务一起落库，避免事务外更新导致脏状态
@@ -256,6 +273,15 @@ class DatabaseManager:
             finally:
                 if conn:
                     conn.close()
+
+    def update_task_size(self, task_id: str, total_size: int):
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn:
+                    conn.execute('UPDATE download_tasks SET total_size = ? WHERE task_id = ?', (total_size, task_id))
+            finally:
+                conn.close()
 
     def update_task_progress(self, task_id: str, downloaded_size: int, speed: float) -> bool:
         """更新任务进度"""

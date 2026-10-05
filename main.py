@@ -21,6 +21,16 @@ from downloader.ui.main_window import MainWindow
 
 def main():
     """主函数"""
+    from downloader.browser.bridge import BridgeServer, InstanceGuard, call_desktop
+    guard = InstanceGuard()
+    if not guard.primary:
+        try:
+            call_desktop({'action': 'activate'}, timeout=2)
+        except (OSError, ValueError):
+            pass
+        finally:
+            guard.close()
+        return
     print("[启动] 老王下载器正在启动...")
 
     # 初始化配置管理器
@@ -43,7 +53,21 @@ def main():
     # 创建并启动GUI
     print("[GUI] 启动图形界面...")
     app = MainWindow(task_manager)
-    app.mainloop()
+    bridge = BridgeServer(task_manager, app._show_from_tray) if os.name == 'nt' else None
+    try:
+        try:
+            if bridge:
+                bridge.start()
+                app.browser_bridge = bridge
+        except OSError:
+            from tkinter import messagebox
+            messagebox.showwarning('浏览器集成不可用', '无法创建本机通信端点，普通下载仍可使用。', parent=app)
+        app.mainloop()
+    finally:
+        if bridge:
+            bridge.close()
+        task_manager.shutdown()
+        guard.close()
 
     print("[退出] 老王下载器已关闭")
 

@@ -1,0 +1,1 @@
+& "D:\anaconda3\envs\py310_env\python.exe" -B "D:\vscode_workspace\downLoad_project\scripts\build_exe.py"

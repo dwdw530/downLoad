@@ -6,6 +6,7 @@
 import os
 import re
 import requests
+from downloader.browser.security import browser_get
 import time
 from typing import Callable, Optional
 
@@ -67,7 +68,7 @@ class ChunkDownloader:
                  user_agent: str = "PyDownloader/1.0",
                  speed_limit: int = 0,
                  proxies: dict = None,
-                 use_range: bool = True):
+                 use_range: bool = True, request_context=None):
         """
         初始化分块下载器
         Args:
@@ -95,6 +96,7 @@ class ChunkDownloader:
         self.user_agent = user_agent
         self.proxies = proxies  # 代理配置
         self.use_range = use_range  # 是否使用Range头
+        self.request_context = request_context
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -161,7 +163,8 @@ class ChunkDownloader:
                 if self._download_chunk(actual_start):
                     return True
             except Exception as e:
-                print(f"[错误] 分块{self.chunk_id}下载失败（尝试{attempt + 1}/{self.retry_times}）: {e}")
+                detail = type(e).__name__ if self.request_context else str(e)
+                print(f"[错误] 分块{self.chunk_id}下载失败（尝试{attempt + 1}/{self.retry_times}）: {detail}")
                 if attempt < self.retry_times - 1:
                     time.sleep(1)  # 重试前等待1秒
                 else:
@@ -191,7 +194,8 @@ class ChunkDownloader:
             return False
 
         # 发起请求
-        with requests.get(
+        get = requests.get if self.request_context is None else lambda url, **kw: browser_get(url, self.request_context, **kw)
+        with get(
             self.url,
             headers=headers,
             stream=True,

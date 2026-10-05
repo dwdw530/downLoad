@@ -64,6 +64,16 @@ class GuiFeatures(FeatureFixture):
             raise errors[0]
         self.pump()
 
+    def test_destroyed_dialogs_ignore_delayed_titlebar_and_focus_callbacks(self):
+        config = ConfigManager(str(self.root / 'dialog-config.json'))
+        for factory in (lambda: AddTaskDialog(self.app), lambda: CloseConfirmDialog(self.app, config)):
+            dialog = factory()
+            dialog.destroy()
+            dialog._revert_withdraw_after_windows_set_titlebar_color()
+            dialog.focus_set()
+            dialog.focus()
+        self.pump(0.5)
+
     def test_add_download_progress_history_and_delete_record(self):
         def fill(dialog):
             dialog.url_entry.insert(0, self.base_url + '/range')
