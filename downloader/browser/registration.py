@@ -32,9 +32,9 @@ def register(uninstall=False):
     if not getattr(sys, 'frozen', False):
         raise RuntimeError('Run BrowserBridge.exe --install from the release directory')
     extension = json.loads((root / 'chrome-extension' / 'manifest.json').read_text(encoding='utf-8'))
-    if not (root / '老王下载器.exe').is_file():
+    if not (root / 'daw下载器.exe').is_file():
         raise RuntimeError('Downloader EXE is missing')
-    manifest = {'name': HOST_NAME, 'description': 'LaoWang video download bridge',
+    manifest = {'name': HOST_NAME, 'description': 'daw video download bridge',
                 'path': str(Path(sys.executable).resolve()), 'type': 'stdio',
                 'allowed_origins': [f'chrome-extension://{extension_id(extension)}/']}
     path = root / 'browser-native-host.json'

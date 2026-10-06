@@ -9,7 +9,7 @@ from PyInstaller.utils.hooks import collect_all
 import customtkinter
 ctk_path = os.path.dirname(customtkinter.__file__)
 
-datas = [(ctk_path, 'customtkinter')]
+datas = [(ctk_path, 'customtkinter'), ('assets/icon.ico', 'assets'), ('assets/icon.png', 'assets')]
 binaries = []
 hiddenimports = ['pystray', 'PIL', 'plyer', 'customtkinter']
 
@@ -40,7 +40,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='老王下载器',
+    name='daw下载器',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

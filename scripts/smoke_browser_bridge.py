@@ -24,7 +24,7 @@ def main():
     workspace = Path(tempfile.mkdtemp(prefix='browser-bridge-exe-'))
     app_dir = workspace / 'app'
     app_dir.mkdir()
-    exe = app_dir / '老王下载器.exe'
+    exe = app_dir / 'daw下载器.exe'
     host = app_dir / 'BrowserBridge.exe'
     for binary in (exe, host):
         shutil.copy2(ROOT / 'dist' / binary.name, binary)
@@ -83,18 +83,18 @@ def main():
         assert 'test-secret' not in task['browser_context']
         assert native(message) == response
         assert len(db.get_all_tasks()) == 1
-        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title']=='老王下载器 v1.0'),None))
+        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title']=='daw下载器 v1.0'),None))
         capture(window['hwnd'], workspace / 'video-completed.png')
         second = subprocess.run([str(exe)], capture_output=True, timeout=20,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         assert second.returncode == 0
-        assert len([w for w in app_windows(exe) if w['title']=='老王下载器 v1.0']) == 1
+        assert len([w for w in app_windows(exe) if w['title']=='daw下载器 v1.0']) == 1
         print('PASS: packaged native framing, cold GUI start, authenticated video, byte equality, dedupe and single instance')
         print('Video SHA256:', hashlib.sha256(video).hexdigest())
         print('Artifacts:', workspace)
     finally:
         for window in app_windows(exe):
-            if window['title'] == '老王下载器 v1.0':
+            if window['title'] == 'daw下载器 v1.0':
                 user32.PostMessageW(window['hwnd'], 0x0010, 0, 0)
         wait_for(lambda: not app_windows(exe), timeout=30)
         server.shutdown()

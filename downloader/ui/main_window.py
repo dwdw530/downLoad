@@ -25,7 +25,9 @@ class MainWindow(ctk.CTk):
         self._ui_events = SimpleQueue()
 
         # 设置窗口
-        self.title("老王下载器 v1.0")
+        self.title("daw下载器 v1.0")
+        from downloader.ui.tray_manager import icon_path
+        self.iconbitmap(default=icon_path())
         self.geometry("900x600")
 
         # 设置主题
@@ -55,7 +57,7 @@ class MainWindow(ctk.CTk):
 
     def _init_tray(self):
         """初始化系统托盘"""
-        self.tray_manager = TrayManager("老王下载器")
+        self.tray_manager = TrayManager("daw下载器")
         self.tray_manager.set_show_window_callback(self._show_from_tray)
         self.tray_manager.set_exit_callback(lambda: self._ui_events.put((self._exit_app, ())))
         self.tray_manager.start()
@@ -635,7 +637,7 @@ class CloseConfirmDialog(ctk.CTkToplevel):
         # 提示信息
         msg_label = ctk.CTkLabel(
             main_frame,
-            text="确定要关闭老王下载器吗？",
+            text="确定要关闭daw下载器吗？",
             font=body_font,
             justify="left",
             wraplength=320,

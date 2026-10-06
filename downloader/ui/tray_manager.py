@@ -4,6 +4,8 @@
 老王说：托盘这玩意儿得整好，用户习惯最小化到托盘！
 """
 import os
+import sys
+from pathlib import Path
 import threading
 from typing import Callable, Optional
 
@@ -29,10 +31,15 @@ except ImportError:
     notification = None
 
 
+def icon_path():
+    root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[2]))
+    return str(root / 'assets' / 'icon.ico')
+
+
 class TrayManager:
     """系统托盘管理器"""
 
-    def __init__(self, app_name: str = "老王下载器"):
+    def __init__(self, app_name: str = "daw下载器"):
         self.app_name = app_name
         self.icon: Optional[object] = None
         self._running = False
@@ -52,6 +59,7 @@ class TrayManager:
         """查找图标文件"""
         # 艹，图标路径得动态查找，打包后和开发环境不一样
         possible_paths = [
+            icon_path(),
             os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.ico"),
             os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.png"),
             os.path.join(os.path.dirname(__file__), "assets", "icon.ico"),
@@ -68,12 +76,19 @@ class TrayManager:
 
         if self._icon_path and os.path.exists(self._icon_path):
             try:
-                return Image.open(self._icon_path)
+                with Image.open(self._icon_path) as image:
+                    return image.convert('RGBA')
             except Exception as e:
                 print(f"[警告] 加载图标失败: {e}")
 
-        # 没有图标就创建一个简单的蓝色方块
-        img = Image.new('RGB', (64, 64), color=(30, 144, 255))
+        # Preserve a recognizable download symbol even if external resources are missing.
+        from PIL import ImageDraw
+        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((2, 2, 62, 62), radius=14, fill='#13795b')
+        draw.line((32, 14, 32, 40), fill='white', width=6)
+        draw.line((20, 30, 32, 42, 44, 30), fill='white', width=6)
+        draw.line((18, 49, 46, 49), fill='white', width=5)
         return img
 
     def _create_menu(self):

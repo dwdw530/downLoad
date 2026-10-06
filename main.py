@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-老王下载器 - 启动入口
+daw下载器 - 启动入口
 IDM风格的多线程下载器，支持断点续传、队列管理
 
 作者：老王
@@ -21,6 +21,9 @@ from downloader.ui.main_window import MainWindow
 
 def main():
     """主函数"""
+    if os.name == 'nt':
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('daw.Downloader')
     from downloader.browser.bridge import BridgeServer, InstanceGuard, call_desktop
     guard = InstanceGuard()
     if not guard.primary:
@@ -31,7 +34,7 @@ def main():
         finally:
             guard.close()
         return
-    print("[启动] 老王下载器正在启动...")
+    print("[启动] daw下载器正在启动...")
 
     # 初始化配置管理器
     config_manager = ConfigManager()
@@ -69,7 +72,7 @@ def main():
         task_manager.shutdown()
         guard.close()
 
-    print("[退出] 老王下载器已关闭")
+    print("[退出] daw下载器已关闭")
 
 
 if __name__ == "__main__":

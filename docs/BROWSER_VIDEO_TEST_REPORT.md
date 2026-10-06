@@ -1,5 +1,17 @@
 # 浏览器视频集成测试记录
 
+## 当前发布补充：daw 改名与图标
+
+2026-10-05：用户将产品名称改为 `daw下载器`。当前正式入口为 `dist/daw下载器.exe`，下文旧名称 EXE 指纹仅为历史记录。
+
+- 图标根因：旧 spec 仅为 EXE 设置 icon，没有将图标加入运行时 datas；托盘找不到资源时绘制纯蓝方块。现将 ICO/PNG 打入包，冻结环境按 `_MEIPASS` 查找，并配置窗口图标及 Windows AppUserModelID。备用托盘图标也具有下载箭头。
+- 托盘、窗口、通知、关闭提示、扩展显示名、桥接启动文件名和安装检查统一更新；Native Host 名称和扩展 ID 保持兼容，既有用户下载目录不迁移。
+- 74 项 Python 回归通过（含 3 项新图标测试）；正式 EXE 从无 assets 的独立目录启动并正常退出，大/小窗口图标句柄通过，截图 `C:/Users/lenovo/AppData/Local/Temp/downloader-exe-smoke-fqtlhqqa/main-window.png`。EXE 内 ICO/PNG 与源资源逐字节一致。
+- 首次窗口断言只检查 WM_GETICON，未考虑 Tk 默认图标挂在窗口类上，导致假失败；补上 GetClassLongPtrW 检查后通过，实际截图已显示新图标。
+- 正式发布扩展全套 Chromium 回归通过；新桥接冷启动 `daw下载器.exe` 下载用户 X 视频成功，720p H.264/AAC、全片解码、去重和正常退出通过，产物 `output/x-exe-43e4e915/`。
+- 主 EXE SHA256：`b0693958feb16f0ee814736613243be0e9623c288ac36524acaaab660e92e70c`；桥接 SHA256：`b1376b238099259042336789480acb42f42235b6f5d2471c5a2f77a6b06d9c07`。
+- 旧名称 EXE 未自动删除；用户应使用新名称文件，旧固定快捷方式需改指向新入口。未修改用户注册表、下载记录或断点文件；未声称已人工核对用户 Explorer 中的托盘缓存。
+
 ## 当前验收：X 帖子下载
 
 日期：2026-10-05（Asia/Shanghai）。接续聊天 `01a10acb-8ce7-7a73-82e8-5a8a4792b703`。

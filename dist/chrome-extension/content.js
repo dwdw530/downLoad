@@ -119,7 +119,7 @@
         button.disabled = true;
         button.textContent = "发送中";
         state.status.className = "notice";
-        state.status.textContent = "正在连接老王下载器…";
+        state.status.textContent = "正在连接daw下载器…";
         const response = await send({action: "download", id: item.id});
         state.status.className = response.ok ? "notice success" : "notice error";
         state.status.textContent = response.ok ? `已加入下载：${response.filename}` : response.error || "发送失败";
@@ -140,7 +140,7 @@
     style.textContent = styles;
     const trigger = text("button", "", "trigger");
     trigger.type = "button";
-    trigger.title = "使用老王下载器下载视频";
+    trigger.title = "使用daw下载器下载视频";
     trigger.setAttribute("aria-expanded", "false");
     const icon = document.createElement("img");
     icon.src = chrome.runtime.getURL("icons/download.svg");

@@ -18,7 +18,7 @@
 
 ## 安装（Windows + Chrome）
 
-1. 保持 `dist/老王下载器.exe`、`dist/BrowserBridge.exe`、`dist/chrome-extension/`、`dist/video-tools/` 在同一目录。不能只复制主 EXE，否则 YouTube/X 功能不可用。
+1. 保持 `dist/daw下载器.exe`、`dist/BrowserBridge.exe`、`dist/chrome-extension/`、`dist/video-tools/` 在同一目录。不能只复制主 EXE，否则 YouTube/X 功能不可用。
 2. 双击 `dist/install_browser_bridge.cmd`。此操作只在当前用户的 `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.laowang.downloader` 注册桥接，不需要修改系统 PATH。
 3. 打开 Chrome 的 `chrome://extensions/`，开启“开发者模式”，点击“加载已解压的扩展程序”，选择 `dist/chrome-extension/`。
 4. 刷新原来已经打开的视频页面，播放视频，再点击播放器上的“下载视频”。
@@ -33,7 +33,7 @@
 
 已有安装升级：完全退出桌面下载器（包括托盘），更新完整发布包，然后在 `chrome://extensions/` 对本扩展点击“重新加载”，刷新视频页面。仅关闭窗口到托盘不会加载新版代码。原路径不变时不必重装桥接。
 
-Edge 使用 `edge://extensions/` 重新加载同一扩展。2026-10-05 已在旧程序退出后完成原 `dist` 的 X 新版重建和实网验收，正式入口为 `dist/老王下载器.exe` 与 `dist/chrome-extension/`。配置、下载记录和断点文件保持不变；`output/release-x/` 仅为早先独立验收包，不再作为交付入口。重启下载器后仍需重新加载扩展并刷新视频页面。
+Edge 使用 `edge://extensions/` 重新加载同一扩展。2026-10-05 已在旧程序退出后完成原 `dist` 的 X 新版重建和实网验收，正式入口为 `dist/daw下载器.exe` 与 `dist/chrome-extension/`。配置、下载记录和断点文件保持不变；`output/release-x/` 仅为早先独立验收包，不再作为交付入口。重启下载器后仍需重新加载扩展并刷新视频页面。
 
 卸载：在 Chrome 移除扩展，再双击 `dist/uninstall_browser_bridge.cmd`。卸载注册不会删除下载记录、下载文件或断点数据。
 

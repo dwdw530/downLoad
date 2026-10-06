@@ -27,7 +27,7 @@ class ConfigManager:
     """配置管理器"""
 
     DEFAULT_CONFIG = {
-        "download_dir": os.path.join(os.path.expanduser("~"), "Downloads", "老王下载器"),  # 用户下载目录
+        "download_dir": os.path.join(os.path.expanduser("~"), "Downloads", "daw下载器"),  # 用户下载目录
         "temp_dir": "temp",  # 临时文件目录
         "thread_count": 8,  # 默认线程数
         "max_concurrent_downloads": 3,  # 同时下载任务数

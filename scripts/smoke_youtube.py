@@ -40,7 +40,7 @@ def packaged(url, release):
     directory = ROOT / 'output' / (kind + '-exe-' + uuid.uuid4().hex[:8])
     app = directory / 'app'
     app.mkdir(parents=True)
-    for name in ('BrowserBridge.exe', '\u8001\u738b\u4e0b\u8f7d\u5668.exe'):
+    for name in ('BrowserBridge.exe', 'daw\u4e0b\u8f7d\u5668.exe'):
         shutil.copy2(release / name, app / name)
     shutil.copytree(release / 'video-tools', app / 'video-tools')
     config = ConfigManager(str(app / 'data/config.json'))
@@ -49,7 +49,7 @@ def packaged(url, release):
     config.set('close_behavior', 'exit')
     config.set('timeout', 30)
     config.save()
-    exe = app / '\u8001\u738b\u4e0b\u8f7d\u5668.exe'
+    exe = app / 'daw\u4e0b\u8f7d\u5668.exe'
     foreground = user32.GetForegroundWindow()
 
     def native(message):
@@ -89,13 +89,13 @@ def packaged(url, release):
             '-i', str(video), '-f', 'null', '-'], capture_output=True, timeout=300,
             creationflags=subprocess.CREATE_NO_WINDOW)
         assert decoded.returncode == 0 and not decoded.stderr, decoded.stderr
-        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '\u8001\u738b\u4e0b\u8f7d\u5668 v1.0'), None))
+        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == 'daw\u4e0b\u8f7d\u5668 v1.0'), None))
         capture(window['hwnd'], directory / (kind + '-completed.png'))
         print('PASS: packaged native cold start, video download, dedupe, audio/video and full decode', flush=True)
         print('Artifacts:', directory, flush=True)
     finally:
         for window in app_windows(exe):
-            if window['title'] == '\u8001\u738b\u4e0b\u8f7d\u5668 v1.0':
+            if window['title'] == 'daw\u4e0b\u8f7d\u5668 v1.0':
                 user32.PostMessageW(window['hwnd'], 0x0010, 0, 0)
         wait_for(lambda: not app_windows(exe), timeout=30)
         if foreground:

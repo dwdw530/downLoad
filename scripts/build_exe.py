@@ -83,7 +83,7 @@ def main() -> int:
     for name in ('install_browser_bridge.cmd', 'uninstall_browser_bridge.cmd'):
         shutil.copy2(project_root / 'scripts' / name, dist_dir / name)
 
-    exe_path = dist_dir / "老王下载器.exe"
+    exe_path = dist_dir / "daw下载器.exe"
     if exe_path.exists():
         print(f"[OK] EXE: {exe_path}")
         return 0

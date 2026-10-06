@@ -30,7 +30,7 @@ async function refresh() {
       button.disabled = true;
       button.textContent = "发送中";
       $("status").className = "";
-      $("status").textContent = "正在连接老王下载器…";
+      $("status").textContent = "正在连接daw下载器…";
       const response = await send({action: "download", id: item.id});
       $("status").textContent = response.ok ? `已加入下载：${response.filename}` : response.error || "发送失败";
       $("status").className = response.ok ? "" : "error";
@@ -55,5 +55,5 @@ $("quality").addEventListener("change", async () => {
   tabId = tab?.id;
   await refresh();
   const connection = await send({action: "ping"});
-  $("connection").textContent = connection.ok ? "老王下载器已连接" : connection.error;
+  $("connection").textContent = connection.ok ? "daw下载器已连接" : connection.error;
 })().catch(() => { $("status").textContent = "当前页面不可用"; $("status").className = "error"; });

@@ -188,7 +188,7 @@ def capture(hwnd, path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exe', type=Path, default=ROOT / 'dist' / '老王下载器.exe')
+    parser.add_argument('--exe', type=Path, default=ROOT / 'dist' / 'daw下载器.exe')
     parser.add_argument('--inspect', action='store_true')
     args = parser.parse_args()
     original_foreground = user32.GetForegroundWindow()
@@ -235,8 +235,16 @@ def main():
             def launch():
                 nonlocal process
                 process = subprocess.Popen([str(exe)], cwd=launch_dir, startupinfo=startup, stdout=out, stderr=err)
-                window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '老王下载器 v1.0'), None))
+                window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == 'daw下载器 v1.0'), None))
                 time.sleep(0.8)
+                user32.SendMessageW.restype = ctypes.c_ssize_t
+                user32.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+                user32.GetClassLongPtrW.restype = ctypes.c_size_t
+                # Tk default icons are class icons, not necessarily WM_GETICON properties.
+                assert (user32.SendMessageW(window['hwnd'], 0x007F, 1, 0)
+                        or user32.GetClassLongPtrW(window['hwnd'], -14)), 'Window large icon is missing'
+                assert (user32.SendMessageW(window['hwnd'], 0x007F, 0, 0)
+                        or user32.GetClassLongPtrW(window['hwnd'], -34)), 'Window small icon is missing'
                 return window
             window = launch()
             children = enum_children(window['hwnd'])
@@ -259,13 +267,13 @@ def main():
         print('Test process windows:', app_windows(exe), flush=True)
         print('Task state:', [(t['filename'], t['status'], t['downloaded_size']) for t in db.get_all_tasks()], flush=True)
         for window in app_windows(exe):
-            if window['title'] == '老王下载器 v1.0':
+            if window['title'] == 'daw下载器 v1.0':
                 capture(window['hwnd'], workspace / 'failure.png')
         raise
     finally:
         if process and process.poll() is None:
             for window in app_windows(exe):
-                if window['title'] == '老王下载器 v1.0':
+                if window['title'] == 'daw下载器 v1.0':
                     user32.PostMessageW(window['hwnd'], 0x0010, 0, 0)
             process.wait(20)
         server.shutdown()

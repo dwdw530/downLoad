@@ -59,7 +59,7 @@ def forward(message):
                 capabilities = []
             return {'ok': False, 'error': '下载器未启动', 'installed': True, 'capabilities': capabilities}
         root = Path(get_app_root())
-        command = ([str(root / '老王下载器.exe')] if getattr(sys, 'frozen', False)
+        command = ([str(root / 'daw下载器.exe')] if getattr(sys, 'frozen', False)
                    else [sys.executable, str(root / 'main.py')])
         subprocess.Popen(command, cwd=str(root), stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

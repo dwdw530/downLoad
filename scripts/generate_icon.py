@@ -16,19 +16,12 @@ def create_download_icon(size=256):
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 渐变蓝色背景圆
+    # High-contrast download mark, shared by the EXE, window and notification area.
     center = size // 2
     radius = int(size * 0.45)
 
-    # 绘制圆形背景（深蓝到浅蓝渐变效果，用多层圆模拟）
-    for i in range(radius, 0, -2):
-        alpha = int(255 * (1 - i / radius * 0.3))
-        # 从深蓝(30, 144, 255)到亮蓝(100, 200, 255)
-        r = 30 + int(70 * (1 - i / radius))
-        g = 144 + int(56 * (1 - i / radius))
-        b = 255
-        color = (r, g, b, alpha)
-        draw.ellipse([center - i, center - i, center + i, center + i], fill=color)
+    draw.rounded_rectangle((center - radius, center - radius, center + radius, center + radius),
+                           radius=int(size * .22), fill='#13795b')
 
     # 绘制下载箭头（白色）
     arrow_color = (255, 255, 255, 255)
@@ -66,7 +59,7 @@ def save_as_ico(img, output_path):
         output_path: 输出路径
     """
     # 生成多个尺寸（Windows推荐）
-    sizes = [256, 128, 64, 48, 32, 16]
+    sizes = [256, 128, 64, 48, 40, 32, 24, 20, 16]
     images = []
 
     for size in sizes:
@@ -85,7 +78,7 @@ def create_png_icon(output_path, size=256):
         output_path: 输出路径
         size: 尺寸
     """
-    img = create_download_icon(size)
+    img = create_download_icon(size * 4).resize((size, size), Image.Resampling.LANCZOS)
     img.save(output_path, format='PNG')
     print(f"[成功] PNG图标已生成: {output_path}")
 
@@ -94,7 +87,7 @@ if __name__ == "__main__":
     print("[启动] 老王图标生成器")
 
     # 生成ICO图标
-    icon_img = create_download_icon(256)
+    icon_img = create_download_icon(1024)
     save_as_ico(icon_img, "assets/icon.ico")
 
     # 生成PNG预览（方便查看）
