@@ -106,14 +106,15 @@ async function main() {
     await popup.goto(worker.url().replace('background.js','popup.html'));
     await popup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
     await popup.evaluate(async id=>{tabId=id;await refresh();},tabId);
-    assert(await popup.getByText('HLS · 分段视频暂不支持',{exact:true}).isVisible());
+    assert(await popup.getByText('HLS · 最高 720p · MP4 视频',{exact:true}).isVisible());
+    assert(await popup.locator('.row').filter({hasText:'master.m3u8'}).getByRole('button',{name:'下载',exact:true}).isEnabled());
     await popup.screenshot({path:path.join(output,'video-popup.png')});
     await popup.close();
     await page.evaluate(()=>history.pushState({},'', '/next'));
     await page.waitForTimeout(300);
     items=await worker.evaluate(async id=>(await chrome.storage.session.get(`media:${id}`))[`media:${id}`],tabId);
     assert.equal(items.length,0);
-    console.log('PASS: HLS recognition with disabled action, SPA cleanup, real popup');
+    console.log('PASS: HLS recognition with enabled action, SPA cleanup, real popup');
     await page.goto(base+'/blob-only');
     await page.locator('video').evaluate((video,bytes)=>{
       video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
@@ -133,7 +134,7 @@ async function main() {
     await streamPopup.goto(worker.url().replace('background.js','popup.html'));
     await streamPopup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
     await streamPopup.evaluate(async id=>{tabId=id;await refresh();},tabId);
-    assert.equal(await streamPopup.getByText('媒体流 · 流式媒体暂不支持下载',{exact:true}).count(),2);
+    assert.equal(await streamPopup.getByText('媒体流 · 分片或媒体流，请选择对应的 HLS/DASH 资源',{exact:true}).count(),2);
     await streamPopup.close();
     await page.evaluate(()=>history.pushState({},'', '/after-blob'));
     await page.waitForTimeout(300);

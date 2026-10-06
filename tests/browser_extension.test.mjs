@@ -8,6 +8,12 @@ test('classifies MIME and URL while preserving signed query strings', () => {
   assert.equal(classify('https://cdn.test/master.m3u8?token=xyz'), 'hls');
   assert.equal(classify('https://cdn.test/manifest', 'application/dash+xml'), 'dash');
 });
+test('HLS MIME aliases work but POST manifests and HTML errors are not downloadable', () => {
+  assert.equal(classify('https://cdn.test/manifest', 'audio/x-mpegurl'), 'hls');
+  assert.equal(classifyResponse('https://cdn.test/manifest', 'audio/mpegurl', 'xmlhttprequest'), 'hls');
+  assert.equal(classifyResponse('https://cdn.test/a.m3u8', 'text/html', 'xmlhttprequest'), null);
+  assert.equal(classifyResponse('https://cdn.test/a.mpd', 'application/dash+xml', 'xmlhttprequest', 'POST'), 'stream');
+});
 test('rejects segments, audio, unsafe schemes and embedded credentials', () => {
   for (const url of ['blob:https://cdn.test/id', 'file:///video.mp4', 'https://u:p@cdn.test/video.mp4',
     'https://cdn.test/part.m4s', 'https://cdn.test/part.ts']) assert.equal(classify(url, 'video/mp4'), null);
@@ -65,7 +71,7 @@ test('a later DOM observation cannot turn an unsupported stream into a download'
   const item={id:'one',url:'https://cdn.test/part.mp4',kind:'stream',frameId:0};
   const updated=upsert(upsert([],item,1),{...item,id:'two',kind:'mp4'},2)[0];
   assert.equal(updated.kind,'stream');
-  assert.equal(publicItem(updated).unsupportedReason,'流式媒体暂不支持下载');
+  assert.equal(publicItem(updated).unsupportedReason,'分片或媒体流，请选择对应的 HLS/DASH 资源');
 });
 
 test('YouTube page URLs normalize to one video without timestamps or playlists', () => {

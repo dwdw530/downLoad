@@ -41,6 +41,36 @@ def normalize_context(url, context):
     return {'url': http_url(url), 'headers': headers, 'media': True}
 
 
+def normalize_stream_context(url, context):
+    """Keep cookie scope for manifests whose fragments may use another CDN."""
+    result = normalize_context(url, context or {})
+    result['headers'].pop('Cookie', None)
+    if result['headers'].get('Referer'):
+        parsed = urlsplit(http_url(result['headers']['Referer']))
+        result['headers']['Referer'] = f'{parsed.scheme}://{parsed.netloc}/'
+    host = urlsplit(url).hostname.lower()
+    cookies = (context or {}).get('cookies', [])
+    if not isinstance(cookies, list) or len(cookies) > 300:
+        raise ValueError('Invalid media cookies')
+    result['cookies'] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            raise ValueError('Invalid media cookie')
+        values = {key: cookie.get(key, '') for key in ('name', 'value', 'domain', 'path')}
+        if any(not isinstance(v, str) or len(v) > 32768 or any(ord(c) < 32 or ord(c) == 127 for c in v)
+               for v in values.values()):
+            raise ValueError('Invalid media cookie')
+        domain = values['domain'].lower().lstrip('.')
+        host_only = cookie.get('hostOnly', True) is not False
+        if not domain or (host != domain and (host_only or not host.endswith('.' + domain))):
+            raise ValueError('Cookie outside media domain')
+        if not values['name'] or not values['path'].startswith('/'):
+            raise ValueError('Invalid media cookie scope')
+        result['cookies'].append({**values, 'domain': domain if host_only else '.' + domain,
+                                  'hostOnly': host_only, 'secure': bool(cookie.get('secure'))})
+    return result
+
+
 class _Blob(ctypes.Structure):
     _fields_ = [('size', ctypes.c_uint32), ('data', ctypes.POINTER(ctypes.c_ubyte))]
 

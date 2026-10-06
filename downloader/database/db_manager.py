@@ -171,7 +171,7 @@ class DatabaseManager:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
 
-                    if download_type in ('youtube', 'x', 'bilibili'):
+                    if download_type in ('youtube', 'x', 'bilibili', 'hls', 'dash'):
                         cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
                                        (download_type, video_height, task_id))
                     if browser_context:

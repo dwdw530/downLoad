@@ -7,9 +7,18 @@ import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 from downloader.utils.config import get_app_root
+from downloader.browser.security import http_url, normalize_stream_context, unprotect
+
+VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'hls', 'dash')
+STREAM_KINDS = ('hls', 'dash')
+
+
+def video_task_url(value, kind):
+    return http_url(value) if kind in STREAM_KINDS else video_page_url(value, kind)
 
 
 def youtube_url(value):
@@ -90,6 +99,10 @@ def require_tools(directory=None):
 
 def failure_message(lines):
     text = '\n'.join(lines).lower()
+    if any(word in text for word in ('drm', 'sample-aes', 'widevine', 'playready')):
+        return '受 DRM 保护的视频不支持下载'
+    if 'live' in text and ('filter' in text or 'match' in text):
+        return '当前仅支持点播视频，不支持持续直播录制'
     if any(word in text for word in ('sign in', 'not a bot', 'login', 'log in', 'authentication')):
         return '网站要求登录或验证，此版本不会读取账号 Cookie'
     if 'private video' in text or 'video unavailable' in text:
@@ -116,6 +129,7 @@ class YoutubeDownloader:
         self.tracks = {}
         self.kind = task.get('download_type', 'youtube')
         self.folder = Path(config.temp_dir) / self.kind / task['task_id']
+        self.cookie_file = None
 
     def command(self):
         height = int(self.task.get('video_height') or 720)
@@ -136,7 +150,35 @@ class YoutubeDownloader:
         proxies = self.config.proxies or {}
         if proxies.get('https') or proxies.get('http'):
             command += ['--proxy', proxies.get('https') or proxies['http']]
-        return command + ['--', video_page_url(self.task['url'], self.kind)]
+        if self.kind in STREAM_KINDS:
+            # Native fragment download preserves resume and scoped cookies; never skip lost fragments.
+            command[command.index('--format') + 1] = (
+                f'bv[height<=?{height}]+ba/b[height<=?{height}]/bv[height<=?{height}]')
+            command += ['--force-generic-extractor', '--downloader', 'm3u8:native',
+                        '--downloader', 'dash:native', '--abort-on-unavailable-fragments',
+                        '--remux-video', 'mp4']
+            context = normalize_stream_context(self.task['url'],
+                unprotect(self.task['browser_context']) if self.task.get('browser_context') else None)
+            for key, value in context['headers'].items():
+                command += ['--add-header', f'{key}:{value}']
+            if self.cookie_file:
+                command += ['--cookies', self.cookie_file]
+        return command + ['--', video_task_url(self.task['url'], self.kind)]
+
+    def prepare_cookies(self):
+        if self.kind not in STREAM_KINDS or not self.task.get('browser_context'):
+            return
+        context = normalize_stream_context(self.task['url'], unprotect(self.task['browser_context']))
+        if not context['cookies']:
+            return
+        # The database stays DPAPI-encrypted; only the running child gets a temporary cookie jar.
+        stream = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.cookies', delete=False)
+        self.cookie_file = stream.name
+        with stream:
+            stream.write('# Netscape HTTP Cookie File\n')
+            for cookie in context['cookies']:
+                stream.write('\t'.join((cookie['domain'], 'FALSE' if cookie['hostOnly'] else 'TRUE',
+                    cookie['path'], 'TRUE' if cookie['secure'] else 'FALSE', '0', cookie['name'], cookie['value'])) + '\n')
 
     def active(self):
         return not self.stop.is_set() and self.is_current()
@@ -160,6 +202,7 @@ class YoutubeDownloader:
             with self.lock:
                 if not self.active():
                     return
+                self.prepare_cookies()
                 self.process = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -186,7 +229,7 @@ class YoutubeDownloader:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             metadata = json.loads(probe.stdout)
             types = {stream.get('codec_type') for stream in metadata.get('streams', [])}
-            required = {'video'} if self.kind == 'x' else {'video', 'audio'}
+            required = {'video'} if self.kind in ('x', *STREAM_KINDS) else {'video', 'audio'}
             if probe.returncode or not required <= types or float(metadata.get('format', {}).get('duration', 0)) <= 0:
                 raise ValueError('合并结果缺少视频、音频或有效时长')
             if not self.active():
@@ -205,6 +248,9 @@ class YoutubeDownloader:
         finally:
             if self.process and self.process.stdout:
                 self.process.stdout.close()
+            if self.cookie_file:
+                Path(self.cookie_file).unlink(missing_ok=True)
+                self.cookie_file = None
 
     def cancel(self):
         self.stop.set()

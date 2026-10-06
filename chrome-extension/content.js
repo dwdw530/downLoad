@@ -107,12 +107,12 @@
       const row = text("div", "", "row");
       const info = text("div", "");
       info.append(text("div", item.name, "name"));
-      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${item.kind === "x" ? "视频" : "音视频"}`
+      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
         : !["mp4", "webm"].includes(item.kind) ? item.unsupportedReason : item.sizeLabel;
       info.append(text("div", `${item.kindLabel} · ${reason}`, "meta"));
       const button = text("button", "下载", "download");
       button.type = "button";
-      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili"].includes(item.kind);
+      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili", "hls", "dash"].includes(item.kind);
       button.addEventListener("click", async event => {
         if (!event.isTrusted) return;
         if (location.href !== requestedPage || xPostFor(video) !== postUrl) { await open(video, state); return; }

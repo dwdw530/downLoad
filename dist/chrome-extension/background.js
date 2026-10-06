@@ -97,7 +97,7 @@ async function download(tabId, id, senderFrame) {
   const item = (await getItems(tabId)).find(i => i.id === id);
   if (!item || (senderFrame !== undefined && item.frameId !== senderFrame)) return {ok: false, error: "视频资源已过期，请重新播放"};
   if (item.protected) return {ok: false, error: "受保护视频不支持下载"};
-  if (!["mp4", "webm", "youtube", "x", "bilibili"].includes(item.kind)) return {ok: false, error: "流式或分段媒体暂不支持下载"};
+  if (!["mp4", "webm", "youtube", "x", "bilibili", "hls", "dash"].includes(item.kind)) return {ok: false, error: "未找到完整视频地址，请选择 HLS/DASH 播放列表"};
   if (item.kind === "bilibili") {
     const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
     if (bilibiliUrl(frame?.url) !== item.url) return {ok: false, error: "视频分 P 已切换，请刷新资源列表"};
@@ -115,6 +115,11 @@ async function download(tabId, id, senderFrame) {
         kind: item.kind, filename: item.name, height});
     }
     const headers = {"User-Agent": navigator.userAgent};
+    const segmented = ["hls", "dash"].includes(item.kind);
+    if (segmented) {
+      const connection = await native({action: "ping"});
+      if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: "请更新并重启桌面下载器，流媒体模块尚未就绪"};
+    }
     try {
       const pageUrl = new URL(item.pageUrl);
       if (["http:", "https:"].includes(pageUrl.protocol)) {
@@ -125,8 +130,16 @@ async function download(tabId, id, senderFrame) {
     } catch { /* DOM-only candidates may not have an HTTP referrer. */ }
     const stores = await chrome.cookies.getAllCookieStores();
     const storeId = stores.find(store => store.tabIds.includes(tabId))?.id;
-    const cookies = await chrome.cookies.getAll({url: item.url, ...(storeId ? {storeId} : {})});
+    if (!storeId) return {ok: false, error: "无法确认当前标签页的授权环境，请刷新视频页后重试"};
+    const cookies = await chrome.cookies.getAll({url: item.url, storeId});
     const ordinary = cookies.filter(cookie => !cookie.partitionKey).sort((a, b) => b.path.length - a.path.length);
+    if (segmented) {
+      const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
+      const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
+      return native({action: "download", request_id: `${item.id}-${height}`, url: item.url,
+        filename: item.name, kind: item.kind, height, headers,
+        cookies: ordinary.map(({name, value, domain, path, secure, hostOnly}) => ({name, value, domain, path, secure, hostOnly}))});
+    }
     if (ordinary.length) headers.Cookie = ordinary.map(cookie => `${cookie.name}=${cookie.value}`).join("; ");
     return native({action: "download", request_id: item.id, url: item.url,
       filename: item.name, kind: item.kind, headers});

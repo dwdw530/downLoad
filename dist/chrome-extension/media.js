@@ -46,9 +46,9 @@ export function classify(url, mime = "") {
   const path = parsed.pathname.toLowerCase();
   mime = mime.split(";")[0].trim().toLowerCase();
   // Segments must never be offered as a complete movie.
-  if (/\.(m4s|ts|aac|m4a)$/.test(path) || mime.startsWith("audio/")) return null;
-  if (path.endsWith(".m3u8") || ["application/vnd.apple.mpegurl", "application/x-mpegurl"].includes(mime)) return "hls";
+  if (path.endsWith(".m3u8") || ["application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl", "audio/x-mpegurl"].includes(mime)) return "hls";
   if (path.endsWith(".mpd") || mime === "application/dash+xml") return "dash";
+  if (/\.(m4s|ts|aac|m4a)$/.test(path) || mime.startsWith("audio/")) return null;
   if (mime === "video/mp4" || path.endsWith(".mp4")) return "mp4";
   if (mime === "video/webm" || path.endsWith(".webm")) return "webm";
   return null;
@@ -67,8 +67,8 @@ export function classifyResponse(url, mime, requestType, method = "GET") {
   if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
   const type = mime.split(";")[0].trim().toLowerCase();
   const kind = classify(url, mime);
-  if (["hls", "dash"].includes(kind)) return kind;
   if (type === "text/html" || type === "application/json") return null;
+  if (["hls", "dash"].includes(kind)) return method === "GET" ? kind : "stream";
   if (kind) return requestType === "media" && method === "GET" && !parsed.searchParams.has("range") ? kind : "stream";
   if (/^(video|audio)\//.test(type) || type === "application/vnd.yt-ump") return "stream";
   return null;
@@ -95,5 +95,5 @@ export function publicItem(item) {
   return {id: item.id, url: item.url, name: item.name, kind: item.kind, size: item.size,
     sizeLabel, frameId: item.frameId, protected: !!item.protected,
     kindLabel: item.kind === "bilibili" ? "B站" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
-    unsupportedReason: item.kind === "stream" ? "流式媒体暂不支持下载" : "分段视频暂不支持"};
+    unsupportedReason: item.kind === "stream" ? "分片或媒体流，请选择对应的 HLS/DASH 资源" : "资源类型暂不支持"};
 }

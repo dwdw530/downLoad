@@ -12,7 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from downloader.browser.security import http_url, normalize_context, protect, unprotect
+from downloader.browser.security import http_url, normalize_context, normalize_stream_context, protect, unprotect
 from downloader.utils.config import get_app_root
 from downloader.core.youtube_downloader import video_page_url, require_tools
 
@@ -71,6 +71,10 @@ def call_desktop(message, path=None, timeout=90):
 
 def video_filename(message):
     kind = message.get('kind')
+    if kind in ('hls', 'dash'):
+        message = {**message, 'kind': 'mp4', 'filename': re.sub(r'\.(m3u8|mpd)$', '',
+            message.get('filename') or unquote(urlsplit(http_url(message.get('url'))).path.rsplit('/', 1)[-1]), flags=re.I) or 'video'}
+        kind = 'mp4'
     if kind in ('youtube', 'x', 'bilibili'):
         url = video_page_url(message.get('url'), kind)
         if kind == 'bilibili':
@@ -82,7 +86,7 @@ def video_filename(message):
                    'filename': message.get('filename') or default_name}
         kind = 'mp4'
     if kind not in ('mp4', 'webm'):
-        raise ValueError('本版仅下载 MP4、WebM；分段视频暂不支持')
+        raise ValueError('不支持此资源类型，请选择视频直链或 HLS/DASH 播放列表')
     url = http_url(message.get('url'))
     candidate = message.get('filename') or unquote(urlsplit(url).path.rsplit('/', 1)[-1]) or 'video'
     if not isinstance(candidate, str):
@@ -181,7 +185,7 @@ class BridgeServer:
                 self.show_window()
             try:
                 require_tools()
-                capabilities = ['youtube', 'x', 'bilibili']
+                capabilities = ['youtube', 'x', 'bilibili', 'hls', 'dash']
             except ValueError:
                 capabilities = []
             return {'ok': True, 'version': 2, 'capabilities': capabilities}
@@ -200,6 +204,9 @@ class BridgeServer:
             is_page = kind in ('youtube', 'x', 'bilibili')
             url = video_page_url(message['url'], kind) if is_page else http_url(message['url'])
             context = None if is_page else normalize_context(url, {'headers': message.get('headers', {})})
+            if kind in ('hls', 'dash'):
+                context = normalize_stream_context(url, {'headers': message.get('headers', {}),
+                                                         'cookies': message.get('cookies', [])})
             directory = os.path.abspath(self.manager.engine.config.download_dir)
             occupied = {os.path.normcase(os.path.abspath(task['save_path'])) for task in self.manager.get_all_tasks()}
             base, extension = os.path.splitext(filename)
@@ -212,6 +219,9 @@ class BridgeServer:
                 raise ValueError('Too many duplicate filenames')
             if is_page:
                 task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720), kind=kind)
+            elif kind in ('hls', 'dash'):
+                task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720),
+                                                       kind=kind, request_context=context)
             else:
                 task_id = self.manager.add_task(url, filename=name, save_path=directory, request_context=context)
             if not task_id:

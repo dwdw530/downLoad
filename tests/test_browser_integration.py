@@ -204,8 +204,10 @@ class BrowserValidation(unittest.TestCase):
         self.assertNotIn('/', result)
         self.assertTrue(result.endswith('.mp4'))
         self.assertEqual(video_filename({'url':'https://x.test/NUL.mp4','kind':'mp4'}), '_NUL.mp4')
+        self.assertEqual(video_filename({'url':'https://x.test/a.m3u8','kind':'hls'}), 'a.mp4')
+        self.assertEqual(video_filename({'url':'https://x.test/a.mpd','kind':'dash'}), 'a.mp4')
         with self.assertRaises(ValueError):
-            video_filename({'url':'https://x.test/a.m3u8','kind':'hls'})
+            video_filename({'url':'https://x.test/part.ts','kind':'stream'})
 
     def test_stable_extension_id(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'chrome-extension/manifest.json').read_text(encoding='utf-8'))
