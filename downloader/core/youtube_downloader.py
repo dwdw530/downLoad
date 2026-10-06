@@ -49,11 +49,29 @@ def x_url(value):
     return f'https://x.com/{user}/status/{post}/video/{index or "1"}'
 
 
+def bilibili_url(value):
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
+        raise ValueError('无效的 B 站视频地址')
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or parsed.hostname not in ('bilibili.com', 'www.bilibili.com', 'm.bilibili.com')):
+        raise ValueError('无效的 B 站视频地址')
+    match = re.fullmatch(r'/video/(BV[A-Za-z0-9]{10}|av[1-9][0-9]{0,19})/?', parsed.path)
+    parts = parse_qs(parsed.query, keep_blank_values=True).get('p', ['1'])
+    if not match or len(parts) != 1 or not re.fullmatch(r'[1-9][0-9]{0,4}', parts[0]):
+        raise ValueError('仅接受 B 站普通视频及有效的分 P 地址')
+    # Explicit p=1 prevents a multi-part video from becoming a playlist.
+    return f'https://www.bilibili.com/video/{match[1]}/?p={parts[0]}'
+
+
 def video_page_url(value, kind='youtube'):
     if kind == 'youtube':
         return youtube_url(value)
     if kind == 'x':
         return x_url(value)
+    if kind == 'bilibili':
+        return bilibili_url(value)
     raise ValueError('不支持的视频站点')
 
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl, xUrl, isXPage} from '../chrome-extension/media.js';
+import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl} from '../chrome-extension/media.js';
 
 test('classifies MIME and URL while preserving signed query strings', () => {
   assert.equal(classify('https://cdn.test/stream?id=3', 'video/mp4; charset=binary'), 'mp4');
@@ -93,4 +93,20 @@ test('X and Twitter post URLs preserve video index and reject unrelated or unsaf
     url.replace('/video/1', '/video/0'), url.replace('/video/1', '/photo/1'), url.replace('https:', 'file:')]) {
     assert.equal(xUrl(input), null);
   }
+});
+
+test('Bilibili URLs preserve one part, remove tracking and reject unsupported or unsafe pages', () => {
+  const base = 'https://www.bilibili.com/video/BV1VbYk6FE6c/';
+  for (const input of [base, base + '?trackid=test&spm_id_from=333.1007#reply', base.replace('www.', 'm.') + '?p=1']) {
+    assert.equal(bilibiliUrl(input), base + '?p=1');
+  }
+  assert.equal(bilibiliUrl(base + '?p=2&t=10'), base + '?p=2');
+  assert.equal(bilibiliUrl('http://bilibili.com/video/av123'), 'https://www.bilibili.com/video/av123/?p=1');
+  for (const input of [base + '?p=0', base + '?p=-1', base + '?p=', base + '?p=1.5',
+    base + '?p=1&p=2', base + '?p=100000', base + '?p=01',
+    base.replace('bilibili.com', 'bilibili.com.evil.test'), base.replace('www.', 'user:secret@www.'),
+    base.replace('.com', '.com:444'), base.replace('https:', 'file:'), base.replace('BV1VbYk6FE6c', 'bad'),
+    base.replace('/video/BV1VbYk6FE6c/', '/bangumi/play/ep123'), 'https://live.bilibili.com/123',
+    'https://b23.tv/abcdef', null]) assert.equal(bilibiliUrl(input), null, String(input));
+  assert.equal(publicItem({kind:'bilibili'}).kindLabel, 'B站');
 });

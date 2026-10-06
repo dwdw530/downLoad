@@ -21,6 +21,12 @@ class BrandingTests(unittest.TestCase):
         with patch.object(sys, '_MEIPASS', 'C:/isolated-bundle', create=True):
             self.assertEqual(Path(icon_path()), Path('C:/isolated-bundle/assets/icon.ico'))
 
+    def test_window_png_retains_full_resolution(self):
+        with Image.open(Path(icon_path()).with_suffix('.png')) as icon:
+            self.assertEqual(icon.size, (256, 256))
+            self.assertEqual(icon.mode, 'RGBA')
+            self.assertEqual(icon.getpixel((0, 0))[3], 0)
+
     def test_tray_and_fallback_use_a_symbol_not_a_solid_square(self):
         tray = TrayManager()
         self.assertEqual(tray.app_name, 'daw下载器')

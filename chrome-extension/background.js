@@ -1,4 +1,4 @@
-import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage} from "./media.js";
+import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl} from "./media.js";
 
 const HOST = "com.laowang.downloader";
 const tabLocks = new Map();
@@ -97,17 +97,22 @@ async function download(tabId, id, senderFrame) {
   const item = (await getItems(tabId)).find(i => i.id === id);
   if (!item || (senderFrame !== undefined && item.frameId !== senderFrame)) return {ok: false, error: "视频资源已过期，请重新播放"};
   if (item.protected) return {ok: false, error: "受保护视频不支持下载"};
-  if (!["mp4", "webm", "youtube", "x"].includes(item.kind)) return {ok: false, error: "流式或分段媒体暂不支持下载"};
+  if (!["mp4", "webm", "youtube", "x", "bilibili"].includes(item.kind)) return {ok: false, error: "流式或分段媒体暂不支持下载"};
+  if (item.kind === "bilibili") {
+    const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+    if (bilibiliUrl(frame?.url) !== item.url) return {ok: false, error: "视频分 P 已切换，请刷新资源列表"};
+  }
   const sendKey = `${tabId}:${id}`;
   if (sending.has(sendKey)) return sending.get(sendKey);
   const request = (async () => {
-    if (["youtube", "x"].includes(item.kind)) {
+    if (["youtube", "x", "bilibili"].includes(item.kind)) {
       const connection = await native({action: "ping"});
       if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: "请更新并重启桌面下载器，视频模块尚未就绪"};
       const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
       const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
       return native({action: "download", request_id: `${item.id}-${height}`,
-        url: item.kind === "x" ? xUrl(item.url) : youtubeUrl(item.url), kind: item.kind, filename: item.name, height});
+        url: item.kind === "bilibili" ? bilibiliUrl(item.url) : item.kind === "x" ? xUrl(item.url) : youtubeUrl(item.url),
+        kind: item.kind, filename: item.name, height});
     }
     const headers = {"User-Agent": navigator.userAgent};
     try {
@@ -178,15 +183,17 @@ async function handle(message, sender) {
     const page = popup ? await chrome.tabs.get(tabId)
       : {...await chrome.webNavigation.getFrame({tabId, frameId: sender.frameId}), title: sender.tab?.title};
     const onX = isXPage(page.url);
-    const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl) : youtubeUrl(page.url);
-    const pageKind = onX ? "x" : "youtube";
+    const biliUrl = bilibiliUrl(page.url);
+    const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
+    const pageKind = onX ? "x" : biliUrl ? "bilibili" : "youtube";
     if (pageUrl && await setting()) {
       await serial(tabId, async () => {
         const frameId = popup ? 0 : sender.frameId;
         const frames = (await chrome.storage.session.get(`protected:${tabId}`))[`protected:${tabId}`] || [];
-        const current = (await getItems(tabId)).filter(i => i.kind !== "youtube" || i.frameId !== frameId || i.url === pageUrl);
+        const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
         await saveItems(tabId, upsert(current, {id: crypto.randomUUID(), url: pageUrl,
           name: onX ? `X-${new URL(pageUrl).pathname.split("/status/")[1].replaceAll("/", "-")}`
+            : biliUrl ? `${(page.title || `Bilibili-${new URL(biliUrl).pathname.split("/")[2]}`).slice(0, 120)} - P${new URL(biliUrl).searchParams.get("p")}`
             : (page.title || `YouTube-${new URL(pageUrl).searchParams.get("v")}`).replace(/ - YouTube$/, "").slice(0, 140),
           kind: pageKind, frameId, size: 0, protected: frames.includes(frameId)}));
       });

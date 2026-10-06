@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from downloader.core.youtube_downloader import YoutubeDownloader, require_tools, youtube_url, x_url, video_page_url
+from downloader.core.youtube_downloader import YoutubeDownloader, require_tools, youtube_url, x_url, bilibili_url, video_page_url
 from downloader.browser.bridge import BridgeServer, video_filename
 from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
@@ -73,6 +73,81 @@ class YoutubeTests(unittest.TestCase):
         self.run_worker(streams=('video',))
         self.completed.assert_called_once()
         self.failed.assert_not_called()
+
+    def test_bilibili_url_validation_and_part_selection(self):
+        base = 'https://www.bilibili.com/video/BV1VbYk6FE6c/'
+        for value in (base, base + '?spm_id_from=333.1007&trackid=test#reply',
+                      base.replace('www.', 'm.') + '?p=1'):
+            self.assertEqual(bilibili_url(value), base + '?p=1')
+        self.assertEqual(video_page_url(base + '?p=2&t=5', 'bilibili'), base + '?p=2')
+        self.assertEqual(bilibili_url('http://bilibili.com/video/av123'),
+                         'https://www.bilibili.com/video/av123/?p=1')
+        for value in (base + '?p=0', base + '?p=-1', base + '?p=', base + '?p=1.5',
+                      base + '?p=1&p=2', base + '?p=100000', base + '?p=01',
+                      base.replace('bilibili.com', 'bilibili.com.evil.test'),
+                      base.replace('www.', 'user:secret@www.'), base.replace('.com', '.com:444'),
+                      base.replace('https:', 'file:'), base.replace('BV1VbYk6FE6c', 'bad'),
+                      base.replace('/video/BV1VbYk6FE6c/', '/bangumi/play/ep123'),
+                      'https://live.bilibili.com/123', 'https://b23.tv/abcdef', None):
+            with self.subTest(url=value), self.assertRaises(ValueError):
+                bilibili_url(value)
+        self.assertEqual(video_filename({'kind': 'bilibili', 'url': base + '?p=2'}),
+                         'Bilibili-BV1VbYk6FE6c-P2.mp4')
+
+    def test_bilibili_command_single_part_and_merge_validation(self):
+        self.task.update(download_type='bilibili', url='https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2&t=9')
+        self.worker = YoutubeDownloader(self.task, self.config, self.progress, self.completed,
+                                        self.failed, lambda: True, self.tools)
+        command = self.worker.command()
+        self.assertEqual(command[-1], 'https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2')
+        self.assertIn('--no-playlist', command)
+        self.assertIn('height<=720', command[command.index('--format') + 1])
+        self.assertEqual(self.worker.folder.parent.name, 'bilibili')
+        self.assertFalse(any('cookie' in arg.lower() for arg in command))
+        self.run_worker(streams=('video',))
+        self.completed.assert_not_called()
+        self.failed.assert_called_once()
+        self.failed.reset_mock()
+        self.run_worker()
+        self.completed.assert_called_once()
+        self.failed.assert_not_called()
+
+    def test_bilibili_bridge_queue_dedupe_pause_restart_and_resume(self):
+        db = DatabaseManager(str(self.root / 'bilibili.db'))
+        self.config.download_dir = str(self.root / 'out')
+        engine = DownloadEngine(db, self.config)
+        manager = TaskManager(engine, db)
+        self.addCleanup(manager.shutdown)
+        bridge = BridgeServer(manager, Mock(), self.root / 'endpoint')
+        self.addCleanup(bridge.close)
+        worker = Mock()
+        with patch('downloader.core.download_engine.require_tools'), \
+                patch('downloader.core.download_engine.YoutubeDownloader', return_value=worker), \
+                patch('downloader.browser.bridge.require_tools'):
+            self.assertIn('bilibili', bridge.dispatch({'action': 'ping'})['capabilities'])
+            message = {'action': 'download', 'kind': 'bilibili',
+                       'url': 'https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2&trackid=ignore',
+                       'request_id': 'bilibili-request-123456789', 'height': 480,
+                       'headers': {'Cookie': 'never-store'}}
+            result = bridge.dispatch(message)
+            self.assertTrue(result['ok'])
+            self.assertEqual(bridge.dispatch(message), result)
+            task_id = result['task_id']
+            task = db.get_task(task_id)
+            self.assertEqual(task['download_type'], 'bilibili')
+            self.assertEqual(task['video_height'], 480)
+            self.assertTrue(task['url'].endswith('?p=2'))
+            self.assertFalse(task['browser_context'])
+            self.assertTrue(manager.pause_task(task_id))
+            worker.cancel.assert_called_once()
+            db.update_task_progress(task_id, 50, 0)
+            manager.shutdown()
+            restarted = TaskManager(DownloadEngine(db, self.config), db)
+            self.addCleanup(restarted.shutdown)
+            self.assertEqual(db.get_task(task_id)['downloaded_size'], 50)
+            self.assertTrue(restarted.resume_task(task_id))
+            self.assertTrue(restarted.cancel_task(task_id))
+            self.assertEqual(db.get_task(task_id)['status'], 'cancelled')
 
     def test_x_bridge_queue_dedupe_pause_restart_and_resume(self):
         db = DatabaseManager(str(self.root / 'x.db'))

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "daw视频下载助手",
-  "version": "0.2.0",
-  "description": "识别网页视频，将 MP4、WebM 视频发送到daw下载器。",
+  "version": "0.3.0",
+  "description": "识别网页视频，将 B站、YouTube、X 和 MP4、WebM 视频发送到daw下载器。",
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzk9e5ZA0nqIEZ3nD3vkNvilM3doz9AK/eWwKwSBnkk/S6jTSE8GeCrDzAb4x4zjI/IeHh7Oo18YQBlkixXWSFDxPdPECodjfhwDKokGkSrjUiS8N4zscvGb4RYg7xbkC+428oq4lKZALtjak2oH2BHAV8mxyCG1kbMBrB/TOslFest0ymBTS6ONnu6KpozxMik8mK2IT9phj8CEY38VO2Y5+No9kpXM6psGCHzNiFcb3tW+tPUIIRmZNZ/7dXAr5hp8cw8NKi9VEh/f39QlGT62Da44yMlbjsbqH2ChP7QR6rEs5gYeKlmoNEkk6vbT+rc8/A3NMPTxy561o22Q38QIDAQAB",
   "permissions": ["storage", "webRequest", "webNavigation", "nativeMessaging", "cookies"],

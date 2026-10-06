@@ -1,5 +1,25 @@
 # 老王下载器功能测试报告
 
+## 当前补充：任务栏高清图标（2026-10-06）
+
+- 本机 200% 缩放下，原窗口 HICON 为模糊的 64x64，而源 ICO 的 64x64 图像清晰。修复仅将窗口展示改为持有 256x256 PNG 的 `PhotoImage`/`iconphoto`，保留 EXE 的多尺寸 ICO。
+- 全量首轮 81 项中 80 项通过、1 项普通下载测试遇到本地 HTTP 2 秒读取超时；没有修改业务或放宽超时，构建结束后 13 项 GUI 回归全部通过（27.918 秒），4 项图标回归通过。
+- 新版正式 EXE 在真实 Windows 中提供 256x256 大小图标，完整下载/暂停/重启/续传/哈希/清空历史/退出验收通过，产物 `C:/Users/lenovo/AppData/Local/Temp/downloader-exe-smoke-uxfoy28l/`。检查标准不再仅为图标句柄非空。
+- 已正常退出、重建原 `dist` 并重启；任务栏实拍 `output/icon-diagnostics/taskbar-after.png` 已目视验证，大小 HICON 都保留 256x256。原配置和数据库 SHA256 不变，注册桥接正常。仅实测本机 192 DPI，不冒充已验证全部缩放比例或多显示器切换。
+- 当前主 EXE SHA256 `e5ffd838b386a8afc06fe22242e027d8b274a6f9565b20734d7eacd792f0b3c0`，桥接 `d602a759e9521e07c9d9bbf2c2c8a24133dd26dc886736efd5f687b13b025a99`；下方为先前清空交互包的历史指纹。
+
+## 当前补充：清空历史交互（2026-10-06）
+
+- 清空前的防误删确认保留；成功后只刷新空列表，不再弹出“历史记录已清空”的确认框。数据库返回 False 或抛异常时保留错误提示，不刷新假成功状态。
+- 首次全量回归 79 项中 1 项失败，定位为 HistoryDialog 销毁后的 CustomTkinter 标题栏/焦点延迟回调；按既有对话框模式增加窗口存活检查，补入快速关闭回归后重新全量执行：79 项全部通过，88.547 秒。
+- GUI 测试使用独立临时数据库、真实 Tk 控件与事件循环，消息框调用由 mock 检查；验证清空成功只有一次事前确认、无成功弹窗、空状态即时显示，取消不删除，失败有反馈。
+- 已正常点击原程序托盘“退出”，直接重建原 `dist`。`scripts/smoke_exe.py` 实际 EXE 的下载、暂停/重启/续传、哈希、历史清空、正常退出均通过；清空只出现事前确认，之后无成功弹窗，下载文件仍保留。截图 `C:/Users/lenovo/AppData/Local/Temp/downloader-exe-smoke-e1yvbs2h/history-cleared.png` 已目视检查。
+- 首轮 EXE 测试卡在用窗口文本定位 Tk 绘制按钮；复用现有按矩形定位按钮的方式后重跑通过。首轮记录在 `downloader-exe-smoke-6lfucxop`，不是清空业务失败。
+- 同一新版 B 站 P1 1080p 冷启动下载、全片解码与正常退出通过，产物 `output/bilibili-exe-365cff77/`。已重启正式原路径 EXE，桥接运行中能力 `youtube/x/bilibili` 正常。
+- 主 EXE SHA256 `e1eadb1035fbd9c5a61a398379f35e1f954ef4d9a712d4b44180de789ce7cc62`，桥接 `a52f6e1991db1f985f99e35b54d08148215dd0413e66bd0330de9aee61c380fc`。退出/打包/测试/重启前后原配置和数据库哈希未变；测试只清空隔离数据库，未清空用户历史或文件。详情见原进度档。
+
+## 历史：2026-09-11
+
 日期：2026-09-11。环境：Windows、Python 3.10.14（py310_env）、CustomTkinter 5.2.2、PyInstaller 6.17.0、Tcl/Tk 8.6.12。
 
 ## 结论

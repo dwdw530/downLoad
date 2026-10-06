@@ -54,7 +54,7 @@ def forward(message):
             from downloader.core.youtube_downloader import require_tools
             try:
                 require_tools()
-                capabilities = ['youtube', 'x']
+                capabilities = ['youtube', 'x', 'bilibili']
             except ValueError:
                 capabilities = []
             return {'ok': False, 'error': '下载器未启动', 'installed': True, 'capabilities': capabilities}

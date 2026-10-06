@@ -20,8 +20,8 @@ async function refresh() {
     const row = node("div", "", "row");
     const info = node("div", "");
     info.append(node("div", item.name, "name"));
-    const supported = !item.protected && ["mp4", "webm", "youtube", "x"].includes(item.kind);
-    const note = item.protected ? "受保护视频" : ["youtube", "x"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${item.kind === "x" ? "视频" : "音视频"}`
+    const supported = !item.protected && ["mp4", "webm", "youtube", "x", "bilibili"].includes(item.kind);
+    const note = item.protected ? "受保护视频" : ["youtube", "x", "bilibili"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${item.kind === "x" ? "视频" : "音视频"}`
       : supported ? item.sizeLabel : item.unsupportedReason;
     info.append(node("div", `${item.kindLabel} · ${note}`, "meta"));
     const button = node("button", "下载", "download");

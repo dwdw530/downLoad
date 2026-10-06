@@ -16,15 +16,17 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.core.youtube_downloader import x_url
+from downloader.core.youtube_downloader import x_url, bilibili_url
 
 
 def page_kind(url):
-    try:
-        x_url(url)
-        return 'x'
-    except ValueError:
-        return 'youtube'
+    for kind, normalize in (('x', x_url), ('bilibili', bilibili_url)):
+        try:
+            normalize(url)
+            return kind
+        except ValueError:
+            pass
+    return 'youtube'
 
 
 def page_filename(url):
@@ -32,7 +34,7 @@ def page_filename(url):
     return video_filename({'kind': page_kind(url), 'url': url})
 
 
-def packaged(url, release):
+def packaged(url, release, height=720):
     from downloader.browser.native_host import read_message, write_message
     from smoke_exe import app_windows, wait_for, user32, capture
 
@@ -64,7 +66,7 @@ def packaged(url, release):
     try:
         ping = native({'action': 'ping'})
         assert ping.get('installed') and kind in ping.get('capabilities', []), ping
-        message = {'action': 'download', 'kind': kind, 'url': url, 'height': 720,
+        message = {'action': 'download', 'kind': kind, 'url': url, 'height': height,
                    'filename': page_filename(url), 'request_id': str(uuid.uuid4())}
         result = native(message)
         assert result['ok'], result
@@ -83,6 +85,7 @@ def packaged(url, release):
         assert probe.returncode == 0, probe.stderr
         metadata = json.loads(probe.stdout)
         assert {'video', 'audio'} <= {s['codec_type'] for s in metadata['streams']}
+        assert all(s.get('height', 0) <= height for s in metadata['streams'])
         assert float(metadata['format']['duration']) > 0
         print(probe.stdout, flush=True)
         decoded = subprocess.run([str(app / 'video-tools/ffmpeg.exe'), '-v', 'error', '-xerror',
@@ -107,9 +110,10 @@ def main():
     parser.add_argument('url')
     parser.add_argument('--exe', action='store_true', help='Validate the packaged release in an isolated directory')
     parser.add_argument('--release', type=Path, default=ROOT / 'dist')
+    parser.add_argument('--height', type=int, choices=(480, 720, 1080), default=720)
     args = parser.parse_args()
     if args.exe:
-        return packaged(args.url, args.release.resolve())
+        return packaged(args.url, args.release.resolve(), args.height)
     directory = ROOT / 'output' / (page_kind(args.url) + '-validation-' + uuid.uuid4().hex[:8])
     directory.mkdir(parents=True, exist_ok=True)
     config = ConfigManager(str(directory / 'config.json'))
@@ -132,7 +136,7 @@ def main():
     engine.set_progress_callback(progress)
     try:
         result = bridge.dispatch({'action':'download', 'kind':page_kind(args.url), 'url':args.url,
-            'filename':page_filename(args.url), 'height':720, 'request_id':str(uuid.uuid4())})
+            'filename':page_filename(args.url), 'height':args.height, 'request_id':str(uuid.uuid4())})
         assert result['ok'], result
         print(json.dumps(result), flush=True)
         deadline = time.monotonic() + 900

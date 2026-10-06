@@ -26,6 +26,19 @@ export function xUrl(value) {
   return match ? `https://x.com/${match[1]}/status/${match[2]}/video/${match[3] || "1"}` : null;
 }
 
+export function bilibiliUrl(value) {
+  if (typeof value !== "string" || value.length > 2048 || /[\x00-\x1f]/.test(value)) return null;
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||
+      (url.port && !["80", "443"].includes(url.port)) ||
+      !["bilibili.com", "www.bilibili.com", "m.bilibili.com"].includes(url.hostname)) return null;
+  const match = /^\/video\/(BV[A-Za-z0-9]{10}|av[1-9][0-9]{0,19})\/?$/.exec(url.pathname);
+  const parts = url.searchParams.has("p") ? url.searchParams.getAll("p") : ["1"];
+  if (!match || parts.length !== 1 || !/^[1-9][0-9]{0,4}$/.test(parts[0])) return null;
+  return `https://www.bilibili.com/video/${match[1]}/?p=${parts[0]}`;
+}
+
 export function classify(url, mime = "") {
   let parsed;
   try { parsed = new URL(url); } catch { return null; }
@@ -81,6 +94,6 @@ export function publicItem(item) {
     ? `${Math.max(1, Math.round(item.size / 1024))} KB` : `${(item.size / 1048576).toFixed(1)} MB`;
   return {id: item.id, url: item.url, name: item.name, kind: item.kind, size: item.size,
     sizeLabel, frameId: item.frameId, protected: !!item.protected,
-    kindLabel: item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
+    kindLabel: item.kind === "bilibili" ? "B站" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
     unsupportedReason: item.kind === "stream" ? "流式媒体暂不支持下载" : "分段视频暂不支持"};
 }

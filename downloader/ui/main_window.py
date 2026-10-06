@@ -7,7 +7,7 @@ import customtkinter as ctk
 import os
 import subprocess
 from queue import Empty, SimpleQueue
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, PhotoImage
 from typing import Dict
 from downloader.core.task_manager import TaskManager
 from downloader.utils.file_utils import format_speed
@@ -27,7 +27,11 @@ class MainWindow(ctk.CTk):
         # 设置窗口
         self.title("daw下载器 v1.0")
         from downloader.ui.tray_manager import icon_path
-        self.iconbitmap(default=icon_path())
+        window_icon = icon_path()
+        self.iconbitmap(default=window_icon)
+        # Keep the full-resolution image; Tk's ICO loader blurs it at high DPI.
+        self._window_icon_photo = PhotoImage(master=self, file=os.path.splitext(window_icon)[0] + '.png')
+        self.iconphoto(True, self._window_icon_photo)
         self.geometry("900x600")
 
         # 设置主题

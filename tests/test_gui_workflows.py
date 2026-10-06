@@ -66,13 +66,20 @@ class GuiFeatures(FeatureFixture):
 
     def test_destroyed_dialogs_ignore_delayed_titlebar_and_focus_callbacks(self):
         config = ConfigManager(str(self.root / 'dialog-config.json'))
-        for factory in (lambda: AddTaskDialog(self.app), lambda: CloseConfirmDialog(self.app, config)):
+        for factory in (lambda: AddTaskDialog(self.app), lambda: CloseConfirmDialog(self.app, config),
+                        lambda: HistoryDialog(self.app, self.db)):
             dialog = factory()
             dialog.destroy()
             dialog._revert_withdraw_after_windows_set_titlebar_color()
             dialog.focus_set()
             dialog.focus()
         self.pump(0.5)
+
+    def test_main_window_keeps_full_resolution_icon_photo(self):
+        self.assertEqual(self.app._window_icon_photo.width(), 256)
+        self.assertEqual(self.app._window_icon_photo.height(), 256)
+        self.pump(0.5)
+        self.assertIn(str(self.app._window_icon_photo), self.app.tk.call('image', 'names'))
 
     def test_add_download_progress_history_and_delete_record(self):
         def fill(dialog):
@@ -93,8 +100,14 @@ class GuiFeatures(FeatureFixture):
         def inspect_history(dialog):
             self.assertEqual(len(self.db.get_history()), 1)
             self.assertTrue(dialog.history_frame.winfo_children())
+            self.mocks[2].reset_mock()
+            self.mocks[4].reset_mock()
             dialog._on_clear_history()
             self.assertEqual(self.db.get_history(), [])
+            self.mocks[4].assert_called_once()
+            self.mocks[2].assert_not_called()
+            self.assertTrue(any(w.cget('text') == '暂无下载历史记录'
+                                for w in dialog.history_frame.winfo_children()))
             dialog.destroy()
         self.dialog_action(self.app._on_history, HistoryDialog, inspect_history)
         self.dialog_action(lambda: self.app._on_delete_task(task_id), DeleteTaskDialog,
@@ -102,6 +115,31 @@ class GuiFeatures(FeatureFixture):
         self.assertIsNone(self.db.get_task(task_id))
         self.assertNotIn(task_id, self.app.task_widgets)
         self.assertTrue(Path(task['save_path']).is_file())
+
+    def test_cancel_clear_history_does_not_delete_or_refresh(self):
+        dialog = HistoryDialog(self.app, self.db)
+        self.mocks[4].return_value = False
+        with patch.object(self.db, 'clear_history') as clear, patch.object(dialog, '_load_history') as refresh:
+            dialog._on_clear_history()
+            clear.assert_not_called()
+            refresh.assert_not_called()
+        self.mocks[2].assert_not_called()
+        self.mocks[3].assert_not_called()
+        dialog.destroy()
+
+    def test_failed_clear_history_keeps_error_feedback_without_success_popup(self):
+        dialog = HistoryDialog(self.app, self.db)
+        for error in (None, OSError('database unavailable')):
+            with self.subTest(error=error), \
+                    patch.object(self.db, 'clear_history', return_value=False, side_effect=error) as clear, \
+                    patch.object(dialog, '_load_history') as refresh:
+                self.mocks[3].reset_mock()
+                dialog._on_clear_history()
+                clear.assert_called_once()
+                refresh.assert_not_called()
+                self.mocks[3].assert_called_once()
+                self.mocks[2].assert_not_called()
+        dialog.destroy()
 
     def test_delete_files_also_removes_single_thread_temporary_data(self):
         task_id = self.create('/no-range')

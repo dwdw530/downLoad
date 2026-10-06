@@ -158,7 +158,7 @@ async function main() {
         return {onMessage:{addListener:fn=>listeners.push(fn)}, onDisconnect:{addListener:()=>{}},
           disconnect:()=>{}, postMessage:message=>{
             globalThis.nativeMessages.push(message);
-            const response=message.action==='ping' ? {ok:false,installed:true,capabilities:globalThis.testCapabilities || ['youtube', 'x']}
+            const response=message.action==='ping' ? {ok:false,installed:true,capabilities:globalThis.testCapabilities || ['youtube', 'x', 'bilibili']}
               : {ok:true,task_id:'fixture',filename:message.filename+'.mp4'};
             setTimeout(()=>listeners.forEach(fn=>fn(response)),0);
           }};
@@ -285,6 +285,71 @@ async function main() {
     assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
     assert.equal(errors.length,0,JSON.stringify(errors));
     console.log('PASS: X feed per-player identity, popup, quality, narrow viewport, old desktop guard and recycled/unknown posts');
+    await context.route('https://www.bilibili.com/**', route => route.fulfill({
+      contentType:'text/html; charset=utf-8', body:'<!doctype html><title>Bilibili 分P测试</title><video controls style="display:block;width:90%;aspect-ratio:16/9;margin:30px auto"></video>'
+    }));
+    await worker.evaluate(async()=>{
+      globalThis.testCapabilities=['youtube','x','bilibili']; globalThis.nativeMessages=[];
+      await chrome.storage.local.set({videoHeight:720});
+    });
+    await page.setViewportSize({width:1280,height:900});
+    await page.goto('https://www.bilibili.com/video/BV1VbYk6FE6c/?trackid=ignore');
+    await page.locator('video').evaluate((video,bytes)=>{
+      video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
+    },bytes);
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('B站 · 最高 720p · MP4 音视频',{exact:true}).waitFor();
+    assert.equal(await page.locator('laowang-video-assistant .row').count(),1);
+    await page.screenshot({path:path.join(output,'bilibili-desktop.png')});
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[0].url,'https://www.bilibili.com/video/BV1VbYk6FE6c/?p=1');
+    assert.equal(messages[0].kind,'bilibili');
+    assert.equal(messages[0].headers,undefined);
+    assert(messages[0].filename.endsWith(' - P1'));
+    await page.evaluate(()=>history.pushState({},'', '/video/BV1VbYk6FE6c/?p=2&spm_id_from=ignore'));
+    await page.waitForFunction(()=>document.querySelector('laowang-video-assistant')?.shadowRoot.querySelector('.panel').hidden);
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('Bilibili 分P测试 - P2',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[1].url,'https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2');
+    assert.notEqual(messages[0].request_id,messages[1].request_id);
+    const biliPopup=await context.newPage();
+    await biliPopup.goto(worker.url().replace('background.js','popup.html'));
+    await biliPopup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
+    await biliPopup.evaluate(async id=>{tabId=id;await refresh();},tabId);
+    await biliPopup.locator('#quality').selectOption('480');
+    await biliPopup.getByText('B站 · 最高 480p · MP4 音视频',{exact:true}).waitFor();
+    assert.equal(await biliPopup.locator('.row').count(),1);
+    await biliPopup.screenshot({path:path.join(output,'bilibili-popup.png')});
+    await biliPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await biliPopup.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[2].height,480);
+    assert.equal(messages[2].url,messages[1].url);
+    assert.notEqual(messages[2].request_id,messages[1].request_id);
+    await biliPopup.close();
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('B站 · 最高 480p · MP4 音视频',{exact:true}).waitFor();
+    const biliBounds=await page.locator('laowang-video-assistant .panel').boundingBox();
+    assert(biliBounds.x>=0 && biliBounds.x+biliBounds.width<=391,JSON.stringify(biliBounds));
+    await page.screenshot({path:path.join(output,'bilibili-mobile.png')});
+    await worker.evaluate(()=>{globalThis.testCapabilities=['youtube','x'];globalThis.nativeMessages=[];});
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByText('请更新并重启桌面下载器，视频模块尚未就绪',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),0);
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.locator('video').evaluate(video=>video.dispatchEvent(new Event('encrypted')));
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('B站 · 受保护视频，不支持下载',{exact:true}).waitFor();
+    assert(await page.getByRole('button',{name:'下载',exact:true}).isDisabled());
+    assert.equal(errors.length,0,JSON.stringify(errors));
+    console.log('PASS: Bilibili blob page handoff, part switching, popup quality, narrow viewport, old desktop and DRM guards');
     console.log('Screenshots:',output);
   } catch(error) {
     await context.pages()[0]?.screenshot({path:path.join(output,'video-failure.png')});

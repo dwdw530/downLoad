@@ -1,6 +1,6 @@
 {
   "name": "com.laowang.downloader",
-  "description": "LaoWang video download bridge",
+  "description": "daw video download bridge",
   "path": "D:\\vscode_workspace\\downLoad_project\\dist\\BrowserBridge.exe",
   "type": "stdio",
   "allowed_origins": [

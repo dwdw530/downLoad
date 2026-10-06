@@ -10,7 +10,7 @@ import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from downloader.browser.security import http_url, normalize_context, protect, unprotect
 from downloader.utils.config import get_app_root
@@ -71,9 +71,13 @@ def call_desktop(message, path=None, timeout=90):
 
 def video_filename(message):
     kind = message.get('kind')
-    if kind in ('youtube', 'x'):
+    if kind in ('youtube', 'x', 'bilibili'):
         url = video_page_url(message.get('url'), kind)
-        default_name = 'YouTube-' + url.split('v=')[1] if kind == 'youtube' else 'X-' + urlsplit(url).path.split('/status/')[1].replace('/', '-')
+        if kind == 'bilibili':
+            parsed = urlsplit(url)
+            default_name = f'Bilibili-{parsed.path.split("/")[2]}-P{parse_qs(parsed.query)["p"][0]}'
+        else:
+            default_name = 'YouTube-' + url.split('v=')[1] if kind == 'youtube' else 'X-' + urlsplit(url).path.split('/status/')[1].replace('/', '-')
         message = {**message, 'kind': 'mp4', 'url': url,
                    'filename': message.get('filename') or default_name}
         kind = 'mp4'
@@ -177,7 +181,7 @@ class BridgeServer:
                 self.show_window()
             try:
                 require_tools()
-                capabilities = ['youtube', 'x']
+                capabilities = ['youtube', 'x', 'bilibili']
             except ValueError:
                 capabilities = []
             return {'ok': True, 'version': 2, 'capabilities': capabilities}
@@ -193,7 +197,7 @@ class BridgeServer:
                 return self.receipts[request_id]
             filename = video_filename(message)
             kind = message.get('kind')
-            is_page = kind in ('youtube', 'x')
+            is_page = kind in ('youtube', 'x', 'bilibili')
             url = video_page_url(message['url'], kind) if is_page else http_url(message['url'])
             context = None if is_page else normalize_context(url, {'headers': message.get('headers', {})})
             directory = os.path.abspath(self.manager.engine.config.download_dir)

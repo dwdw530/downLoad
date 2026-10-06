@@ -288,7 +288,7 @@ class DownloadEngine:
         # 每次启动都生成新的会话ID，后续所有回调/收尾都必须绑定它
         run_id = self._next_task_run_id(task_id)
 
-        if task.get('download_type') in ('youtube', 'x'):
+        if task.get('download_type') in ('youtube', 'x', 'bilibili'):
             return self._start_youtube_download(task, run_id)
 
         task['_request_context'] = unprotect(task['browser_context']) if task.get('browser_context') else None
@@ -744,7 +744,7 @@ class DownloadEngine:
             return False
 
         # 艹，分块任务暂停后走重建更稳；非分块任务保留活跃下载器，避免进度被重置到0
-        if task.get('support_range') or task.get('download_type') in ('youtube', 'x'):
+        if task.get('support_range') or task.get('download_type') in ('youtube', 'x', 'bilibili'):
             # 艹，暂停时要等线程池收敛，避免紧接着恢复时旧线程还在抢写临时文件
             self._stop_active_task_workers(task_id, wait=True)
         elif task_id in self.active_downloaders:

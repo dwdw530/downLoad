@@ -1,5 +1,52 @@
 # 浏览器视频集成测试记录
 
+## 当前验收：B 站普通视频与分 P
+
+日期：2026-10-06（Asia/Shanghai）。源码、独立包及原 `dist` 完整升级均已完成；正式包实网第一 P 1080p 下载、注册路径桥接能力及浏览器回归已通过。
+
+### 问题与修复
+
+- 用户在 B 站看到“检测到浏览器内视频源（blob），尚未获取可下载直链”。原扩展和桌面只对 YouTube/X 提供页面解析，B 站分轨流进入通用禁用路径。
+- 增加 B 站主站/移动站 BV、av 普通视频地址校验，去除跟踪参数并显式保留 `p`，缺省规范化为 `p=1`；拒绝错误分 P、伪造主机、凭据、异常端口、直播和番剧地址。
+- 复用既有 yt-dlp/FFmpeg、清晰度、代理、限速、队列、暂停/续传和数据库字段；桥接冷启动与运行中能力均新增 `bilibili`。不新增数据库结构，不读取账号 Cookie。
+- 扩展新增 B 站资源项和分 P 文件名；站内切换清理旧列表，发送前复核当前 frame 的分 P；旧桌面缺能力时提示更新。清晰度标签改为通用“视频清晰度”，扩展版本 0.3.0。
+- 后续用户启动 `output/release-bilibili/daw下载器.exe` 仍提示视频模块未就绪：进程与接口核实该新版已运行并支持 B 站，但 Chrome 注册项仍指向 `dist/browser-native-host.json`，其旧桥接仅返回 `youtube/x`。实例按安装目录隔离，手动启动另一目录 EXE 不会切换已注册桥接。原 `dist` 进程退出后直接重建正式目录，不改注册表，不强杀独立目录用户程序。
+
+### 验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| Python 全量 | 77 项通过，82.444 秒；新增 B 站地址、命令、缺音频拒绝、桥接去重、暂停、重启进度保留及取消 |
+| Node 逻辑 | 12 项通过；包含 B 站地址规范化、分 P 和危险/不支持地址拒绝 |
+| 真实扩展 | 源码及 `output/release-bilibili/chrome-extension` 均通过 Chromium 测试，1280x900 与 390x844；覆盖 blob、P1/P2 切换、popup 清晰度、不同请求 ID、旧桌面能力和 DRM guard |
+| 既有浏览器路径 | 同轮直链、iframe、HLS/流片段禁用、YouTube 清晰度/SPA/DRM、X 多播放器回归通过 |
+| 源码实网 P1 | 用户视频第一 P 下载完成；1280x720 H.264 + AAC，324.151202 秒，16492537 字节；独立 ffprobe 和全片解码通过 |
+| 新 EXE 实网 P2 | 实际 BrowserBridge 冷启动新 EXE；重复消息只创建一条任务，下载当前第二 P，1280x720 H.264 + AAC，165.651474 秒，7766652 字节；全片解码和正常退出通过 |
+| 发布一致性 | 独立包扩展所有文件与源码逐字节一致；完整包含双 EXE、扩展、视频组件、许可证及安装脚本 |
+| 正式 dist EXE | 默认发布目录复制出的真实双 EXE 冷启动、去重、第一 P 1080p 下载、全片解码、正常退出通过；1920x1080 H.264 + AAC，324.151202 秒，29001472 字节 |
+| 正式 dist 扩展 | `smoke_browser.cjs --dist` 全套通过；原目录扩展与源码、全部 9 个视频工具/许可文件与 vendor 逐字节一致 |
+| 已注册桥接 | 按 HKCU 注册项解析真实 host 路径并发送 Native Messaging ping，返回 `installed=true` 且能力包含 `youtube/x/bilibili`；正式 GUI 未启动时返回此安装能力属于预期 |
+| 用户数据保留 | 部署及隔离测试前后原 `dist/data/config.json` 与 `downloads.db` SHA256 均不变；未修改注册表，未关闭用户独立目录的程序 |
+
+- 验收链接：`https://www.bilibili.com/video/BV1VbYk6FE6c/`，分别选择 `?p=1` 和 `?p=2`。
+- P1：`output/bilibili-validation-3d2b4069/downloads/Bilibili-BV1VbYk6FE6c-P1.mp4`。
+- P2：`output/bilibili-exe-ce2f25e3/downloads/Bilibili-BV1VbYk6FE6c-P2.mp4`；EXE 截图 `output/bilibili-exe-ce2f25e3/bilibili-completed.png`。
+- 正式包 P1 1080p：`output/bilibili-exe-60032184/downloads/Bilibili-BV1VbYk6FE6c-P1.mp4`；截图 `output/bilibili-exe-60032184/bilibili-completed.png`。命令：`python -B scripts/smoke_youtube.py "https://www.bilibili.com/video/BV1VbYk6FE6c/?p=1" --exe --height 1080`，默认发布目录为原 `dist`。
+- 浏览器截图：`output/playwright/bilibili-desktop.png`、`bilibili-mobile.png`、`bilibili-popup.png`，已目视核对无溢出。
+- 首次浏览器测试调用了与本机 Chromium 缓存不匹配的 Playwright（缺 chromium-1247）；改用已有 `C:/Users/lenovo/AppData/Local/npm-cache/_npx/84539a01c0e4c364/node_modules/playwright` 后通过，未安装或修改用户浏览器。
+
+### 发布状态与边界
+
+- 正式交付目录已经更新为原 `dist/`，扩展 0.3.0；不再要求用户改用 `output/release-bilibili/`。Chrome 继续使用原注册路径，点击下载可冷启动正式新版。
+- 正式主 EXE SHA256（含清空历史及高清窗口图标修复）：`e5ffd838b386a8afc06fe22242e027d8b274a6f9565b20734d7eacd792f0b3c0`。
+- 正式桥接 EXE SHA256：`d602a759e9521e07c9d9bbf2c2c8a24133dd26dc886736efd5f687b13b025a99`。
+- 高清窗口图标版已通过真实 EXE 全工作流、任务栏实拍和注册桥接能力检查；本轮未重做 B 站实网，下一条实网结果属于清空历史补丁版本，详细版本边界见 `TEST_REPORT_2026-09-11.md` 顶部。
+- 清空交互补丁后同一正式包再次完成 B 站 P1 1080p 实网与全片解码，产物 `output/bilibili-exe-365cff77/`，1920x1080 H.264/AAC、324.151202 秒、29001472 字节。代理正常退出原应用后打包、验收并重启，原路径桥接运行中 ping 返回 `ok=true` 和完整能力；清空交互 EXE 验收详见 `TEST_REPORT_2026-09-11.md` 顶部。
+- `output/release-bilibili/` 仅为早期独立验收包；其主 EXE SHA256 `47367c001a11aa995b7743dc7978d9d9d240b8fe9359cb584a1339051a509d24`，桥接 SHA256 `91e5c229a0ebbd9df9b30ceab09a3c23b4c5474c0a37601095a5711fd843429c`，不等同于 Chrome 当前注册的正式实例。
+- 原 `dist/data/config.json` 基线 SHA256：`5b792996463345cc3cde1b83b1f619aebf454b08ee3fb631b2ee0b776af2f451`；`downloads.db`：`58c7313d48a13e00c66dcfc02e28f4ecfb968f885539a1312b9596a44e2e8f96`；当前 `dist/temp/` 未发现文件。部署必须保留这些用户数据。
+- 浏览器使用独立配置和构造页面，Native Messaging 在浏览器段模拟；用户视频另由实际桥接/EXE 完整下载，另已核对真实注册路径的 ping 能力。未自动点击用户登录 Chrome 完成整条链路，仍待用户重试；未重新实网验收 YouTube/X。
+- 已实测上述普通公开视频 P1/P2 的 720p 及 P1 的 1080p；不扩展到番剧、付费/登录受限、直播、DRM、所有分 P 或整合集下载，不保证其他视频匿名可取 1080p。
+
 ## 当前发布补充：daw 改名与图标
 
 2026-10-05：用户将产品名称改为 `daw下载器`。当前正式入口为 `dist/daw下载器.exe`，下文旧名称 EXE 指纹仅为历史记录。

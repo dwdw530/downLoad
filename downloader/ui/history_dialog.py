@@ -38,6 +38,17 @@ def format_duration(seconds: float) -> str:
 class HistoryDialog(ctk.CTkToplevel):
     """下载历史对话框"""
 
+    def focus_set(self):
+        if self.winfo_exists():
+            super().focus_set()
+
+    focus = focus_set
+
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # CustomTkinter 的标题栏延迟回调可能晚于窗口关闭。
+        if self.winfo_exists():
+            super()._revert_withdraw_after_windows_set_titlebar_color()
+
     def __init__(self, parent, db_manager):
         super().__init__(parent)
 
@@ -196,8 +207,9 @@ class HistoryDialog(ctk.CTkToplevel):
 
         if messagebox.askyesno("确认", "确定要清空所有下载历史记录吗？\n此操作不可恢复！", parent=self):
             try:
-                self.db_manager.clear_history()
+                if not self.db_manager.clear_history():
+                    messagebox.showerror("错误", "清空历史失败，请稍后重试。", parent=self)
+                    return
                 self._load_history()
-                messagebox.showinfo("成功", "历史记录已清空！", parent=self)
             except Exception as e:
                 messagebox.showerror("错误", f"清空历史失败: {e}", parent=self)

@@ -60,6 +60,8 @@ user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
+user32.GetDlgCtrlID.restype = ctypes.c_int
 user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetAncestor.restype = wintypes.HWND
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
@@ -115,6 +117,35 @@ def app_windows(exe):
         return True
     user32.EnumWindows(CALLBACK(visit), 0)
     return result
+
+
+def window_icon_size(hwnd, kind):
+    class IconInfo(ctypes.Structure):
+        _fields_ = [('icon', wintypes.BOOL), ('x', wintypes.DWORD), ('y', wintypes.DWORD),
+                    ('mask', wintypes.HBITMAP), ('color', wintypes.HBITMAP)]
+
+    class Bitmap(ctypes.Structure):
+        _fields_ = [('type', wintypes.LONG), ('width', wintypes.LONG), ('height', wintypes.LONG),
+                    ('stride', wintypes.LONG), ('planes', wintypes.WORD), ('bpp', wintypes.WORD),
+                    ('bits', ctypes.c_void_p)]
+
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = ctypes.c_size_t
+    user32.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetClassLongPtrW.restype = ctypes.c_size_t
+    user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(IconInfo)]
+    gdi = ctypes.windll.gdi32
+    gdi.GetObjectW.argtypes = [wintypes.HGDIOBJ, ctypes.c_int, ctypes.c_void_p]
+    gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    handle = user32.SendMessageW(hwnd, 0x007F, kind, 0) or user32.GetClassLongPtrW(hwnd, -14 if kind else -34)
+    info, bitmap = IconInfo(), Bitmap()
+    assert user32.GetIconInfo(handle, ctypes.byref(info)), 'Window icon is missing'
+    try:
+        assert gdi.GetObjectW(info.color, ctypes.sizeof(bitmap), ctypes.byref(bitmap))
+        return bitmap.width, bitmap.height
+    finally:
+        gdi.DeleteObject(info.color)
+        gdi.DeleteObject(info.mask)
 
 
 def wait_for(predicate, timeout=20):
@@ -237,14 +268,8 @@ def main():
                 process = subprocess.Popen([str(exe)], cwd=launch_dir, startupinfo=startup, stdout=out, stderr=err)
                 window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == 'daw下载器 v1.0'), None))
                 time.sleep(0.8)
-                user32.SendMessageW.restype = ctypes.c_ssize_t
-                user32.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
-                user32.GetClassLongPtrW.restype = ctypes.c_size_t
-                # Tk default icons are class icons, not necessarily WM_GETICON properties.
-                assert (user32.SendMessageW(window['hwnd'], 0x007F, 1, 0)
-                        or user32.GetClassLongPtrW(window['hwnd'], -14)), 'Window large icon is missing'
-                assert (user32.SendMessageW(window['hwnd'], 0x007F, 0, 0)
-                        or user32.GetClassLongPtrW(window['hwnd'], -34)), 'Window small icon is missing'
+                sizes = [window_icon_size(window['hwnd'], kind) for kind in (0, 1)]
+                assert sizes == [(256, 256), (256, 256)], f'Window icons lost source resolution: {sizes}'
                 return window
             window = launch()
             children = enum_children(window['hwnd'])
@@ -283,18 +308,18 @@ def main():
         user32.SetForegroundWindow(original_foreground)
 
 
-def click_toolbar(hwnd, index):
-    # Identify the five fixed-width toolbar buttons from native rectangles.
+def click_toolbar(hwnd, index, expected_buttons=5, design_width=900, bottom=False):
+    # Tk-drawn button labels are not exposed as native window text.
     rect = wintypes.RECT()
     user32.GetClientRect(hwnd, ctypes.byref(rect))
-    scale = rect.right / 900
+    scale = rect.right / design_width
     children = enum_children(hwnd)
     buttons = [c for c in children if c['class'] == 'TkChild'
                and abs(c['rect'][2] - c['rect'][0] - 100 * scale) < 2
                and abs(c['rect'][3] - c['rect'][1] - 28 * scale) < 2]
-    top = min(c['rect'][1] for c in buttons)
+    top = (max if bottom else min)(c['rect'][1] for c in buttons)
     rectangles = sorted(set(tuple(c['rect']) for c in buttons if c['rect'][1] == top))
-    assert len(rectangles) == 5, f'Unexpected toolbar layout: {rectangles}'
+    assert len(rectangles) == expected_buttons, f'Unexpected toolbar layout: {rectangles}'
     left, top, right, bottom = rectangles[index]
     label = next(c for c in children if c['class'] == 'Static'
                  and left <= c['rect'][0] and c['rect'][2] <= right
@@ -340,6 +365,23 @@ def run_download_checks(exe, window, db, task_ids, workspace, restart):
     (workspace / 'result.json').write_text(json.dumps({'tasks': db.get_all_tasks(), 'history': db.get_history()},
                                                      ensure_ascii=False, indent=2), encoding='utf-8')
     print('PASS: native buttons, pause/resume, restart recovery, queue, Range/non-Range files, SHA256 and history', flush=True)
+    click_toolbar(window['hwnd'], 3)
+    history = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '下载历史'), None))
+    time.sleep(0.5)
+    click_toolbar(history['hwnd'], 1, expected_buttons=3, design_width=700, bottom=True)
+    confirm = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '确认'), None))
+    yes = next(c for c in enum_children(confirm['hwnd'])
+               if c['class'] == 'Button' and user32.GetDlgCtrlID(c['hwnd']) == 6)
+    user32.PostMessageW(yes['hwnd'], 0x00F5, 0, 0)
+    wait_for(lambda: not db.get_history())
+    wait_for(lambda: all(w['hwnd'] != confirm['hwnd'] for w in app_windows(exe)))
+    time.sleep(0.5)
+    assert not any(w['title'] in ('成功', '确认', '错误') for w in app_windows(exe)), 'Unexpected completion dialog'
+    capture(history['hwnd'], workspace / 'history-cleared.png')
+    user32.PostMessageW(history['hwnd'], 0x0010, 0, 0)
+    wait_for(lambda: all(w['hwnd'] != history['hwnd'] for w in app_windows(exe)))
+    assert all(Path(db.get_task(task_id)['save_path']).read_bytes() == PAYLOAD for task_id in task_ids)
+    print('PASS: clear-history confirmation, empty list, no completion popup and preserved downloads', flush=True)
     return window
 
 
