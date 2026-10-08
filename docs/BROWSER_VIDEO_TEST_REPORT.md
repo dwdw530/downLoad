@@ -1,5 +1,15 @@
 # 浏览器视频集成测试记录
 
+## GitHub v0.3.0 发布校验
+
+2026-10-08 22:21:20 +08:00 已公开发布 [v0.3.0](https://github.com/dwdw530/downLoad/releases/tag/v0.3.0) 并设为 Latest。标签源码提交为 `5c00c3d1252bff98610ebf199edc4df870c1ad93`，已推送到 `main`。
+
+- 完整包：`daw-downloader-v0.3.0-windows-x64.zip`，213764481 字节，SHA256 `5bc131526231b410f1a7761cd01e6a6dd918f5f691b007a9c5bbf2df42eda6f0`。
+- 独立扩展：`daw-browser-extension-v0.5.0.zip`，17768 字节，SHA256 `b0bdbb7bf475905711b8a77370fa381102c5d7e062cbe96aae025f18f168682a`。
+- 校验文件：`SHA256SUMS.txt`，205 字节，SHA256 `aede15d9a16874eab70c83a5eb68f6922bd4375e5010ba87135091a6efe9fb96`。
+- 三个附件均由 GitHub 返回 SHA256 与本地一致。完整包 24 个文件、扩展包 10 个文件，ZIP CRC 检查通过；正式双 EXE 内容与已验收版本一致，未包含配置、数据库、Cookie、断点、下载文件或本机桥接清单。
+- 本次发版沿用下述已完成的功能验收，未因仅打包附件而重复声称新的实网覆盖。Codex 与 Claude Code 本地记忆已同步用户的平台体验边界，并指向更新后的专题进度档。
+
 ## 追加核对：X 首页图标消失，完整刷新后恢复
 
 2026-10-08：用户反馈 X 首页没有播放器悬浮下载按钮，工具栏提示“未确认视频所属帖子”，进入 `https://x.com/077G_/status/2108037802533503327` 后工具栏才列出视频。用户按 Ctrl+F5 完整刷新 X 首页后，明确确认图标恢复。
