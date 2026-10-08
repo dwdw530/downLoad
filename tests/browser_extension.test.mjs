@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl} from '../chrome-extension/media.js';
+import {classify, classifyResponse, upsert, displayName, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage} from '../chrome-extension/media.js';
 
 test('classifies MIME and URL while preserving signed query strings', () => {
   assert.equal(classify('https://cdn.test/stream?id=3', 'video/mp4; charset=binary'), 'mp4');
@@ -47,6 +47,8 @@ test('XHR video is visible as a stream, not discarded or offered as a whole file
   assert.equal(classifyResponse(url,'video/mp4','media'),'stream');
   assert.equal(classifyResponse('https://cdn.test/movie.mp4','video/mp4','media'),'mp4');
   assert.equal(classifyResponse('https://cdn.test/movie.webm','video/webm','media'),'webm');
+  assert.equal(classifyResponse('https://cdn.test/media-video-avc1/','video/mp4','xmlhttprequest'),'stream');
+  assert.equal(classifyResponse('https://cdn.test/media-audio-und-mp4a/','video/mp4','xmlhttprequest'),'stream');
 });
 test('POST multiplexed media, audio and segments remain explicitly unsupported', () => {
   assert.equal(classifyResponse('https://cdn.test/videoplayback','application/vnd.yt-ump','xmlhttprequest','POST'),'stream');
@@ -115,4 +117,23 @@ test('Bilibili URLs preserve one part, remove tracking and reject unsupported or
     base.replace('/video/BV1VbYk6FE6c/', '/bangumi/play/ep123'), 'https://live.bilibili.com/123',
     'https://b23.tv/abcdef', null]) assert.equal(bilibiliUrl(input), null, String(input));
   assert.equal(publicItem({kind:'bilibili'}).kindLabel, 'B站');
+});
+
+test('Douyin resolves one video without accepting feeds, live pages or unsafe hosts', () => {
+  const base = 'https://www.douyin.com/video/7686532267488840975';
+  for (const input of [base, base + '/?recommend=1#comment', base.replace('www.', ''),
+    'https://www.douyin.com/?recommend=1&modal_id=7686532267488840975']) {
+    assert.equal(douyinUrl(input), base);
+  }
+  assert.equal(isDouyinPage('https://www.douyin.com/?recommend=1'), true);
+  for (const input of ['https://www.douyin.com/?recommend=1', 'https://www.douyin.com/?modal_id=',
+    'https://www.douyin.com/?modal_id=123&modal_id=456', base.replace('7686532267488840975', '0'),
+    base.replace('7686532267488840975', '01'), base.replace('7686532267488840975', '1'.repeat(26)),
+    base.replace('7686532267488840975', 'not-a-video'), base.replace('/video/', '/user/'),
+    base.replace('.com', '.com.evil.test'), base.replace('www.', 'user:secret@www.'),
+    base.replace('.com', '.com:444'), base.replace('https:', 'file:'), base + '\n',
+    'https://live.douyin.com/123', 'https://v.douyin.com/short/', null]) {
+    assert.equal(douyinUrl(input), null, String(input));
+  }
+  assert.equal(publicItem({kind:'douyin'}).kindLabel, '抖音');
 });

@@ -39,6 +39,24 @@ export function bilibiliUrl(value) {
   return `https://www.bilibili.com/video/${match[1]}/?p=${parts[0]}`;
 }
 
+export function isDouyinPage(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      (!url.port || ["80", "443"].includes(url.port)) &&
+      ["douyin.com", "www.douyin.com"].includes(url.hostname);
+  } catch { return false; }
+}
+
+export function douyinUrl(value) {
+  if (typeof value !== "string" || value.length > 2048 || /[\x00-\x1f]/.test(value) || !isDouyinPage(value)) return null;
+  const url = new URL(value);
+  const match = /^\/video\/([1-9][0-9]{0,24})\/?$/.exec(url.pathname);
+  const ids = url.searchParams.getAll("modal_id");
+  const id = match?.[1] || (url.pathname === "/" && ids.length === 1 ? ids[0] : "");
+  return /^[1-9][0-9]{0,24}$/.test(id) ? `https://www.douyin.com/video/${id}` : null;
+}
+
 export function classify(url, mime = "") {
   let parsed;
   try { parsed = new URL(url); } catch { return null; }
@@ -94,6 +112,6 @@ export function publicItem(item) {
     ? `${Math.max(1, Math.round(item.size / 1024))} KB` : `${(item.size / 1048576).toFixed(1)} MB`;
   return {id: item.id, url: item.url, name: item.name, kind: item.kind, size: item.size,
     sizeLabel, frameId: item.frameId, protected: !!item.protected,
-    kindLabel: item.kind === "bilibili" ? "B站" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
+    kindLabel: item.kind === "douyin" ? "抖音" : item.kind === "bilibili" ? "B站" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
     unsupportedReason: item.kind === "stream" ? "分片或媒体流，请选择对应的 HLS/DASH 资源" : "资源类型暂不支持"};
 }

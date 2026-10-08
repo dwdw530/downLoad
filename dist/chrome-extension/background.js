@@ -1,4 +1,4 @@
-import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl} from "./media.js";
+import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage} from "./media.js";
 
 const HOST = "com.laowang.downloader";
 const tabLocks = new Map();
@@ -97,10 +97,15 @@ async function download(tabId, id, senderFrame) {
   const item = (await getItems(tabId)).find(i => i.id === id);
   if (!item || (senderFrame !== undefined && item.frameId !== senderFrame)) return {ok: false, error: "视频资源已过期，请重新播放"};
   if (item.protected) return {ok: false, error: "受保护视频不支持下载"};
-  if (!["mp4", "webm", "youtube", "x", "bilibili", "hls", "dash"].includes(item.kind)) return {ok: false, error: "未找到完整视频地址，请选择 HLS/DASH 播放列表"};
+  if (!["mp4", "webm", "youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind)) return {ok: false, error: "未找到完整视频地址，请选择 HLS/DASH 播放列表"};
   if (item.kind === "bilibili") {
     const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
     if (bilibiliUrl(frame?.url) !== item.url) return {ok: false, error: "视频分 P 已切换，请刷新资源列表"};
+  }
+  if (item.kind === "douyin") {
+    const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+    const current = douyinUrl(frame?.url);
+    if (!isDouyinPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
   }
   const sendKey = `${tabId}:${id}`;
   if (sending.has(sendKey)) return sending.get(sendKey);
@@ -116,9 +121,24 @@ async function download(tabId, id, senderFrame) {
     }
     const headers = {"User-Agent": navigator.userAgent};
     const segmented = ["hls", "dash"].includes(item.kind);
-    if (segmented) {
+    const scopedContext = segmented || item.kind === "douyin";
+    if (scopedContext) {
       const connection = await native({action: "ping"});
-      if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: "请更新并重启桌面下载器，流媒体模块尚未就绪"};
+      if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: item.kind === "douyin"
+        ? "请更新并重启桌面下载器，抖音模块尚未就绪" : "请更新并重启桌面下载器，流媒体模块尚未就绪"};
+    }
+    let video;
+    if (item.kind === "douyin") {
+      const context = await chrome.tabs.sendMessage(tabId, {action: "douyinContext", videoUrl: item.url}, {frameId: item.frameId})
+        .catch(() => ({ok: false, error: "请刷新抖音视频详情页后重试"}));
+      if (!context.ok) return context;
+      const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+      const current = douyinUrl(frame?.url);
+      if (!isDouyinPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+      const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
+      if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
+      if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
+      video = context.video;
     }
     try {
       const pageUrl = new URL(item.pageUrl);
@@ -133,12 +153,12 @@ async function download(tabId, id, senderFrame) {
     if (!storeId) return {ok: false, error: "无法确认当前标签页的授权环境，请刷新视频页后重试"};
     const cookies = await chrome.cookies.getAll({url: item.url, storeId});
     const ordinary = cookies.filter(cookie => !cookie.partitionKey).sort((a, b) => b.path.length - a.path.length);
-    if (segmented) {
+    if (scopedContext) {
       const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
       const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
       return native({action: "download", request_id: `${item.id}-${height}`, url: item.url,
-        filename: item.name, kind: item.kind, height, headers,
-        cookies: ordinary.map(({name, value, domain, path, secure, hostOnly}) => ({name, value, domain, path, secure, hostOnly}))});
+        filename: item.name, kind: item.kind, height, headers, ...(video ? {video} : {}),
+        cookies: ordinary.filter(cookie => cookie.name).map(({name, value, domain, path, secure, hostOnly}) => ({name, value, domain, path, secure, hostOnly}))});
     }
     if (ordinary.length) headers.Cookie = ordinary.map(cookie => `${cookie.name}=${cookie.value}`).join("; ");
     return native({action: "download", request_id: item.id, url: item.url,
@@ -196,9 +216,11 @@ async function handle(message, sender) {
     const page = popup ? await chrome.tabs.get(tabId)
       : {...await chrome.webNavigation.getFrame({tabId, frameId: sender.frameId}), title: sender.tab?.title};
     const onX = isXPage(page.url);
+    const onDouyin = isDouyinPage(page.url);
     const biliUrl = bilibiliUrl(page.url);
-    const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
-    const pageKind = onX ? "x" : biliUrl ? "bilibili" : "youtube";
+    const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl)
+      : onDouyin ? douyinUrl(popup ? page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
+    const pageKind = onX ? "x" : onDouyin ? "douyin" : biliUrl ? "bilibili" : "youtube";
     if (pageUrl && await setting()) {
       await serial(tabId, async () => {
         const frameId = popup ? 0 : sender.frameId;
@@ -206,9 +228,10 @@ async function handle(message, sender) {
         const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
         await saveItems(tabId, upsert(current, {id: crypto.randomUUID(), url: pageUrl,
           name: onX ? `X-${new URL(pageUrl).pathname.split("/status/")[1].replaceAll("/", "-")}`
+            : onDouyin ? `抖音-${new URL(pageUrl).pathname.split("/")[2]}`
             : biliUrl ? `${(page.title || `Bilibili-${new URL(biliUrl).pathname.split("/")[2]}`).slice(0, 120)} - P${new URL(biliUrl).searchParams.get("p")}`
             : (page.title || `YouTube-${new URL(pageUrl).searchParams.get("v")}`).replace(/ - YouTube$/, "").slice(0, 140),
-          kind: pageKind, frameId, size: 0, protected: frames.includes(frameId)}));
+          kind: pageKind, frameId, pageUrl: page.url, size: 0, protected: frames.includes(frameId)}));
       });
     }
     const items = (await getItems(tabId)).filter(i => Date.now() - i.seen < 1800000);
@@ -216,11 +239,12 @@ async function handle(message, sender) {
     const applies = frames => frames?.some(frame => popup || frame === sender.frameId);
     const emptyMessage = applies(states[`protected:${tabId}`]) ? "检测到受保护视频，本版不支持下载"
       : onX ? "未确认视频所属帖子，请打开该视频的帖子详情后重试"
+      : onDouyin ? "未确认当前视频，请打开该视频的详情页后重试"
       : applies(states[`blob:${tabId}`]) ? "检测到浏览器内视频源（blob），尚未获取可下载直链" : "当前页面尚未发现视频资源";
     const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
     return {ok: true, enabled: await setting(), emptyMessage, videoHeight,
       items: items.filter(i => (popup || i.frameId === sender.frameId) &&
-        (pageUrl ? i.kind === pageKind && i.url === pageUrl : onX ? popup && i.kind === "x" : true)).map(publicItem)};
+        (pageUrl ? i.kind === pageKind && i.url === pageUrl : onX || onDouyin ? popup && i.kind === pageKind : true)).map(publicItem)};
   }
   if (message.action === "download") return download(tabId, message.id, popup ? undefined : sender.frameId);
   return {ok: false};

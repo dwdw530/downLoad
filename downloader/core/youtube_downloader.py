@@ -1,5 +1,6 @@
 """Supported video pages downloaded through the upstream yt-dlp/FFmpeg toolchain."""
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -13,8 +14,9 @@ from urllib.parse import parse_qs, urlsplit
 from downloader.utils.config import get_app_root
 from downloader.browser.security import http_url, normalize_stream_context, unprotect
 
-VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'hls', 'dash')
+VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash')
 STREAM_KINDS = ('hls', 'dash')
+CONTEXT_KINDS = ('douyin', *STREAM_KINDS)
 
 
 def video_task_url(value, kind):
@@ -74,6 +76,22 @@ def bilibili_url(value):
     return f'https://www.bilibili.com/video/{match[1]}/?p={parts[0]}'
 
 
+def douyin_url(value):
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
+        raise ValueError('无效的抖音视频地址')
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or parsed.hostname not in ('douyin.com', 'www.douyin.com')):
+        raise ValueError('无效的抖音视频地址')
+    match = re.fullmatch(r'/video/([1-9][0-9]{0,24})/?', parsed.path)
+    ids = parse_qs(parsed.query, keep_blank_values=True).get('modal_id', [])
+    video_id = match[1] if match else ids[0] if parsed.path in ('', '/') and len(ids) == 1 else ''
+    if not re.fullmatch(r'[1-9][0-9]{0,24}', video_id):
+        raise ValueError('仅接受单个抖音视频地址，请打开视频详情页')
+    return f'https://www.douyin.com/video/{video_id}'
+
+
 def video_page_url(value, kind='youtube'):
     if kind == 'youtube':
         return youtube_url(value)
@@ -81,7 +99,50 @@ def video_page_url(value, kind='youtube'):
         return x_url(value)
     if kind == 'bilibili':
         return bilibili_url(value)
+    if kind == 'douyin':
+        return douyin_url(value)
     raise ValueError('不支持的视频站点')
+
+
+def video_request_context(url, kind, context):
+    result = normalize_stream_context(url, context)
+    if kind != 'douyin':
+        return result
+    video_id = douyin_url(url).rsplit('/', 1)[-1]
+    video = (context or {}).get('video')
+    if not isinstance(video, dict) or video.get('id') != video_id:
+        raise ValueError('未获取当前抖音视频信息，请刷新视频详情页后重试')
+    duration = video.get('duration')
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError('抖音视频时长无效，无法确认完整视频')
+    formats = video.get('formats')
+    if not isinstance(formats, list) or not 1 <= len(formats) <= 64:
+        raise ValueError('未找到抖音完整 MP4，请刷新视频详情页后重试')
+    normalized = []
+    seen = set()
+    for item in formats:
+        if not isinstance(item, dict):
+            raise ValueError('无效的抖音视频格式')
+        media_url = http_url(item.get('url'))
+        parsed = urlsplit(media_url)
+        if (parsed.scheme != 'https' or parsed.port not in (None, 443)
+                or not parsed.hostname.endswith('.douyinvod.com')
+                or re.search(r'/media-(?:video|audio)-', parsed.path)
+                or 'range' in parse_qs(parsed.query, keep_blank_values=True)):
+            raise ValueError('拒绝将抖音分轨或未知地址作为完整视频')
+        if any(type(item.get(key)) is not int or not 0 < item[key] <= 16384 for key in ('width', 'height')):
+            raise ValueError('无效的抖音视频分辨率')
+        if item.get('vcodec') not in ('h264', 'h265'):
+            raise ValueError('无效的抖音视频编码')
+        if media_url in seen:
+            continue
+        seen.add(media_url)
+        normalized.append({'format_id': f'douyin-{len(normalized)}', 'url': media_url,
+                           'ext': 'mp4', 'protocol': 'https', 'vcodec': item['vcodec'], 'acodec': 'unknown',
+                           'width': item['width'], 'height': item['height']})
+    result['video'] = {'id': video_id, 'title': 'Douyin-' + video_id, 'duration': duration,
+                       'is_live': False, 'formats': normalized}
+    return result
 
 
 def tools_directory():
@@ -97,17 +158,22 @@ def require_tools(directory=None):
     return directory
 
 
-def failure_message(lines):
+def failure_message(lines, kind=None):
     text = '\n'.join(lines).lower()
     if any(word in text for word in ('drm', 'sample-aes', 'widevine', 'playready')):
         return '受 DRM 保护的视频不支持下载'
     if 'live' in text and ('filter' in text or 'match' in text):
         return '当前仅支持点播视频，不支持持续直播录制'
+    if 'fresh cookies' in text or (kind == 'douyin' and any(
+            word in text for word in ('sign in', 'not a bot', 'login', 'log in', 'authentication'))):
+        return '抖音需要新的访问凭据，请刷新视频页面后重新下载'
     if any(word in text for word in ('sign in', 'not a bot', 'login', 'log in', 'authentication')):
         return '网站要求登录或验证，此版本不会读取账号 Cookie'
     if 'private video' in text or 'video unavailable' in text:
         return '视频不可用、私有或当前地区无法访问'
     if '403' in text:
+        if kind == 'douyin':
+            return '抖音视频地址已过期或被拒绝，请刷新视频页面后重新下载'
         return '网站拒绝下载（403），请检查网络或更新视频组件'
     if 'timed out' in text or 'unable to download' in text:
         return '视频下载网络失败，请检查代理或稍后重试'
@@ -130,6 +196,8 @@ class YoutubeDownloader:
         self.kind = task.get('download_type', 'youtube')
         self.folder = Path(config.temp_dir) / self.kind / task['task_id']
         self.cookie_file = None
+        self.info_file = None
+        self.expected_duration = None
 
     def command(self):
         height = int(self.task.get('video_height') or 720)
@@ -157,18 +225,24 @@ class YoutubeDownloader:
             command += ['--force-generic-extractor', '--downloader', 'm3u8:native',
                         '--downloader', 'dash:native', '--abort-on-unavailable-fragments',
                         '--remux-video', 'mp4']
-            context = normalize_stream_context(self.task['url'],
+        if self.kind in CONTEXT_KINDS:
+            context = video_request_context(self.task['url'], self.kind,
                 unprotect(self.task['browser_context']) if self.task.get('browser_context') else None)
             for key, value in context['headers'].items():
                 command += ['--add-header', f'{key}:{value}']
             if self.cookie_file:
                 command += ['--cookies', self.cookie_file]
+        if self.kind == 'douyin':
+            if not self.info_file:
+                raise ValueError('抖音视频信息尚未准备好')
+            # The browser already obtained signed formats. Do not repeat an unsigned page API request.
+            return command + ['--load-info-json', self.info_file]
         return command + ['--', video_task_url(self.task['url'], self.kind)]
 
     def prepare_cookies(self):
-        if self.kind not in STREAM_KINDS or not self.task.get('browser_context'):
+        if self.kind not in CONTEXT_KINDS or not self.task.get('browser_context'):
             return
-        context = normalize_stream_context(self.task['url'], unprotect(self.task['browser_context']))
+        context = video_request_context(self.task['url'], self.kind, unprotect(self.task['browser_context']))
         if not context['cookies']:
             return
         # The database stays DPAPI-encrypted; only the running child gets a temporary cookie jar.
@@ -179,6 +253,17 @@ class YoutubeDownloader:
             for cookie in context['cookies']:
                 stream.write('\t'.join((cookie['domain'], 'FALSE' if cookie['hostOnly'] else 'TRUE',
                     cookie['path'], 'TRUE' if cookie['secure'] else 'FALSE', '0', cookie['name'], cookie['value'])) + '\n')
+
+    def prepare_video_info(self):
+        if self.kind != 'douyin':
+            return
+        context = video_request_context(self.task['url'], self.kind,
+            unprotect(self.task['browser_context']) if self.task.get('browser_context') else None)
+        self.expected_duration = context['video']['duration']
+        stream = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.info.json', delete=False)
+        self.info_file = stream.name
+        with stream:
+            json.dump(context['video'], stream)
 
     def active(self):
         return not self.stop.is_set() and self.is_current()
@@ -203,6 +288,7 @@ class YoutubeDownloader:
                 if not self.active():
                     return
                 self.prepare_cookies()
+                self.prepare_video_info()
                 self.process = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -219,7 +305,7 @@ class YoutubeDownloader:
             if not self.active():
                 return
             if code:
-                raise ValueError(failure_message(errors))
+                raise ValueError(failure_message(errors, self.kind))
             output = self.folder / 'video.mp4'
             if not output.is_file() or output.stat().st_size == 0:
                 raise ValueError('视频引擎未生成完整的 MP4 文件')
@@ -230,8 +316,11 @@ class YoutubeDownloader:
             metadata = json.loads(probe.stdout)
             types = {stream.get('codec_type') for stream in metadata.get('streams', [])}
             required = {'video'} if self.kind in ('x', *STREAM_KINDS) else {'video', 'audio'}
-            if probe.returncode or not required <= types or float(metadata.get('format', {}).get('duration', 0)) <= 0:
+            duration = float(metadata.get('format', {}).get('duration', 0))
+            if probe.returncode or not required <= types or not math.isfinite(duration) or duration <= 0:
                 raise ValueError('合并结果缺少视频、音频或有效时长')
+            if self.expected_duration and abs(duration - self.expected_duration) > max(2, self.expected_duration * 0.02):
+                raise ValueError('下载结果时长与完整视频不符，未发布不完整文件')
             if not self.active():
                 return
             destination = Path(self.task['save_path'])
@@ -248,9 +337,11 @@ class YoutubeDownloader:
         finally:
             if self.process and self.process.stdout:
                 self.process.stdout.close()
-            if self.cookie_file:
-                Path(self.cookie_file).unlink(missing_ok=True)
-                self.cookie_file = None
+            for attribute in ('cookie_file', 'info_file'):
+                filename = getattr(self, attribute)
+                if filename:
+                    Path(filename).unlink(missing_ok=True)
+                    setattr(self, attribute, None)
 
     def cancel(self):
         self.stop.set()

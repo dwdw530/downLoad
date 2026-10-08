@@ -9,6 +9,63 @@
     try { return await chrome.runtime.sendMessage(message); }
     catch { contextAlive = false; return {ok: false, error: "扩展已更新，请刷新页面"}; }
   };
+  if (["douyin.com", "www.douyin.com"].includes(location.hostname)) {
+    const requests = new Map();
+    const remember = entries => {
+      for (const entry of entries) {
+        try {
+          const url = new URL(entry.name);
+          const ids = url.searchParams.getAll("aweme_id");
+          if (entry.name.length > 16384 || url.origin !== location.origin ||
+              url.pathname !== "/aweme/v1/web/aweme/detail/" || ids.length !== 1 || !/^[1-9][0-9]{0,24}$/.test(ids[0])) continue;
+          requests.delete(ids[0]);
+          requests.set(ids[0], entry.name);
+          if (requests.size > 20) requests.delete(requests.keys().next().value);
+        } catch { /* Ignore unrelated resource entries. */ }
+      }
+    };
+    remember(performance.getEntriesByType("resource"));
+    const observer = new PerformanceObserver(list => remember(list.getEntries()));
+    observer.observe({type: "resource", buffered: true});
+    chrome.runtime.onMessage.addListener((message, sender, reply) => {
+      if (sender.id !== chrome.runtime.id || message?.action !== "douyinContext") return;
+      (async () => {
+        const id = /^https:\/\/www\.douyin\.com\/video\/([1-9][0-9]{0,24})$/.exec(message.videoUrl || "")?.[1];
+        if (!id) return {ok: false, error: "无效的抖音视频地址"};
+        const page = location.href;
+        remember(performance.getEntriesByType("resource"));
+        const endpoint = requests.get(id);
+        if (!endpoint) return {ok: false, error: "未获取当前视频信息，请打开该视频的详情页并刷新后重试"};
+        // Replay only the same-origin detail request this document already made; do not patch page fetch/XHR.
+        const response = await fetch(endpoint, {credentials: "same-origin", redirect: "error", signal: AbortSignal.timeout(10000)});
+        if (!response.ok) throw new Error("Detail request failed");
+        const text = await response.text();
+        if (text.length > 2 * 1024 * 1024) throw new Error("Detail response is too large");
+        const detail = JSON.parse(text).aweme_detail;
+        if (location.href !== page || detail?.aweme_id !== id) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+        const duration = detail.video?.duration / 1000;
+        const formats = [];
+        const seen = new Set();
+        for (const variant of (Array.isArray(detail.video?.bit_rate) ? detail.video.bit_rate : []).slice(0,40)) {
+          if (variant.format !== "mp4") continue;
+          const address = variant.play_addr;
+          for (const value of (Array.isArray(address?.url_list) ? address.url_list : []).slice(0,4)) {
+            try {
+              const url = new URL(value);
+              if (typeof value !== "string" || value.length > 16384 || url.protocol !== "https:" ||
+                  url.username || url.password || (url.port && url.port !== "443") ||
+                  !url.hostname.endsWith(".douyinvod.com") || seen.has(value) || formats.length >= 64) continue;
+              seen.add(value);
+              formats.push({url: value, width: address.width, height: address.height, vcodec: variant.is_h265 ? "h265" : "h264"});
+            } catch { /* Keep only playable CDN candidates; the desktop verifies the result. */ }
+          }
+        }
+        if (!formats.length || !Number.isFinite(duration) || duration <= 0) return {ok: false, error: "未找到完整音视频资源，请刷新视频详情页后重试"};
+        return {ok: true, video: {id, duration, formats}};
+      })().then(reply).catch(() => reply({ok: false, error: "抖音视频信息获取失败，请刷新视频详情页后重试"}));
+      return true;
+    });
+  }
   const styles = `
     :host {all:initial;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;font:13px "Microsoft YaHei",sans-serif!important;letter-spacing:0!important;}
     :host([hidden]) {display:none!important}
@@ -50,7 +107,32 @@
     state.panel.style.right = left + 132 < width + 10 ? `${left + 132 - width - 10}px` : "0px";
     state.panel.style.maxHeight = `${Math.max(90, Math.min(340, innerHeight - top - 54))}px`;
   }
-  function xPostFor(video) {
+  function videoPostFor(video) {
+    if (["douyin.com", "www.douyin.com"].includes(location.hostname)) {
+      const valid = value => {
+        try {
+          const url = new URL(value, location.href);
+          if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||
+              (url.port && !["80", "443"].includes(url.port)) ||
+              !["douyin.com", "www.douyin.com"].includes(url.hostname)) return null;
+          const match = /^\/video\/([1-9][0-9]{0,24})\/?$/.exec(url.pathname);
+          const ids = url.searchParams.getAll("modal_id");
+          const id = match?.[1] || (url.pathname === "/" && ids.length === 1 ? ids[0] : "");
+          return /^[1-9][0-9]{0,24}$/.test(id) ? `https://www.douyin.com/video/${id}` : null;
+        } catch { return null; }
+      };
+      const current = valid(location.href);
+      if (current) return current;
+      // A feed may reuse a video element. Only accept an unambiguous link near this player.
+      for (let parent = video.parentElement; parent; parent = parent.parentElement) {
+        if (parent.querySelectorAll("video").length > 1) break;
+        const urls = [...new Set([...parent.querySelectorAll('a[href*="/video/"]')]
+          .map(link => valid(link.href)).filter(Boolean))];
+        if (urls.length === 1) return urls[0];
+        if (urls.length > 1) break;
+      }
+      return null;
+    }
     if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(location.hostname)) return null;
     const valid = value => {
       try {
@@ -75,7 +157,7 @@
     return null;
   }
   async function observe(video) {
-    const postUrl = xPostFor(video);
+    const postUrl = videoPostFor(video);
     if (postUrl) await send({action: "list", postUrl});
     const sources = [{src: video.currentSrc || video.src, type: ""}, ...Array.from(video.querySelectorAll("source"), source => ({src: source.src, type: source.type}))];
     for (const source of sources) if (/^https?:\/\//i.test(source.src)) {
@@ -86,7 +168,7 @@
   }
   async function open(video, state) {
     const requestedPage = location.href;
-    const postUrl = xPostFor(video);
+    const postUrl = videoPostFor(video);
     state.postUrl = postUrl;
     state.panel.hidden = false;
     state.host.setAttribute("data-open", "");
@@ -95,7 +177,7 @@
     state.body.replaceChildren(text("div", "正在识别视频资源…", "notice"));
     await observe(video);
     const result = await send({action: "list", postUrl});
-    if (!state.host.isConnected || location.href !== requestedPage || xPostFor(video) !== postUrl) return;
+    if (!state.host.isConnected || location.href !== requestedPage || videoPostFor(video) !== postUrl) return;
     enabled = result.enabled !== false;
     if (!result.ok) { state.body.replaceChildren(text("div", result.error || "视频助手不可用", "notice error")); return; }
     let items = result.items || [];
@@ -107,15 +189,15 @@
       const row = text("div", "", "row");
       const info = text("div", "");
       info.append(text("div", item.name, "name"));
-      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
+      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
         : !["mp4", "webm"].includes(item.kind) ? item.unsupportedReason : item.sizeLabel;
       info.append(text("div", `${item.kindLabel} · ${reason}`, "meta"));
       const button = text("button", "下载", "download");
       button.type = "button";
-      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili", "hls", "dash"].includes(item.kind);
+      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind);
       button.addEventListener("click", async event => {
         if (!event.isTrusted) return;
-        if (location.href !== requestedPage || xPostFor(video) !== postUrl) { await open(video, state); return; }
+        if (location.href !== requestedPage || videoPostFor(video) !== postUrl) { await open(video, state); return; }
         button.disabled = true;
         button.textContent = "发送中";
         state.status.className = "notice";

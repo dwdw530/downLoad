@@ -12,9 +12,9 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from downloader.browser.security import http_url, normalize_context, normalize_stream_context, protect, unprotect
+from downloader.browser.security import http_url, normalize_context, protect, unprotect
 from downloader.utils.config import get_app_root
-from downloader.core.youtube_downloader import video_page_url, require_tools
+from downloader.core.youtube_downloader import video_page_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
 MAX_MESSAGE = 256 * 1024
 
@@ -75,11 +75,13 @@ def video_filename(message):
         message = {**message, 'kind': 'mp4', 'filename': re.sub(r'\.(m3u8|mpd)$', '',
             message.get('filename') or unquote(urlsplit(http_url(message.get('url'))).path.rsplit('/', 1)[-1]), flags=re.I) or 'video'}
         kind = 'mp4'
-    if kind in ('youtube', 'x', 'bilibili'):
+    if kind in ('youtube', 'x', 'bilibili', 'douyin'):
         url = video_page_url(message.get('url'), kind)
         if kind == 'bilibili':
             parsed = urlsplit(url)
             default_name = f'Bilibili-{parsed.path.split("/")[2]}-P{parse_qs(parsed.query)["p"][0]}'
+        elif kind == 'douyin':
+            default_name = 'Douyin-' + urlsplit(url).path.rsplit('/', 1)[-1]
         else:
             default_name = 'YouTube-' + url.split('v=')[1] if kind == 'youtube' else 'X-' + urlsplit(url).path.split('/status/')[1].replace('/', '-')
         message = {**message, 'kind': 'mp4', 'url': url,
@@ -185,7 +187,7 @@ class BridgeServer:
                 self.show_window()
             try:
                 require_tools()
-                capabilities = ['youtube', 'x', 'bilibili', 'hls', 'dash']
+                capabilities = list(VIDEO_KINDS)
             except ValueError:
                 capabilities = []
             return {'ok': True, 'version': 2, 'capabilities': capabilities}
@@ -201,12 +203,12 @@ class BridgeServer:
                 return self.receipts[request_id]
             filename = video_filename(message)
             kind = message.get('kind')
-            is_page = kind in ('youtube', 'x', 'bilibili')
+            is_page = kind in ('youtube', 'x', 'bilibili', 'douyin')
             url = video_page_url(message['url'], kind) if is_page else http_url(message['url'])
             context = None if is_page else normalize_context(url, {'headers': message.get('headers', {})})
-            if kind in ('hls', 'dash'):
-                context = normalize_stream_context(url, {'headers': message.get('headers', {}),
-                                                         'cookies': message.get('cookies', [])})
+            if kind in CONTEXT_KINDS:
+                context = video_request_context(url, kind, {'headers': message.get('headers', {}),
+                    'cookies': message.get('cookies', []), 'video': message.get('video')})
             directory = os.path.abspath(self.manager.engine.config.download_dir)
             occupied = {os.path.normcase(os.path.abspath(task['save_path'])) for task in self.manager.get_all_tasks()}
             base, extension = os.path.splitext(filename)
@@ -217,11 +219,11 @@ class BridgeServer:
                     break
             else:
                 raise ValueError('Too many duplicate filenames')
-            if is_page:
-                task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720), kind=kind)
-            elif kind in ('hls', 'dash'):
+            if kind in CONTEXT_KINDS:
                 task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720),
                                                        kind=kind, request_context=context)
+            elif is_page:
+                task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720), kind=kind)
             else:
                 task_id = self.manager.add_task(url, filename=name, save_path=directory, request_context=context)
             if not task_id:

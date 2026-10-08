@@ -351,6 +351,146 @@ async function main() {
     assert(await page.getByRole('button',{name:'下载',exact:true}).isDisabled());
     assert.equal(errors.length,0,JSON.stringify(errors));
     console.log('PASS: Bilibili blob page handoff, part switching, popup quality, narrow viewport, old desktop and DRM guards');
+    // Douyin uses separate MP4 tracks; only the selected video page is sent for extraction.
+    const douyinUrl='https://www.douyin.com/video/7686532267488840975';
+    let douyinApiMode='complete';
+    const douyinDetail=id=>({aweme_detail:{aweme_id:douyinApiMode==='mismatch'?'999':id,video:{duration:5000,bit_rate:[
+      {format:'mp4',is_h265:0,play_addr:{width:640,height:360,url_list:['https://v26-web.douyinvod.com/movie/?signature=keep',
+        'https://www.douyin.com/aweme/v1/play/?video_id=ignore','https://douyinvod.com.evil.test/ignore']}},
+      {format:'dash',is_h265:0,play_addr:{width:640,height:360,url_list:['https://v26-web.douyinvod.com/media-video-avc1/']}}
+    ]}}});
+    await context.route('https://www.douyin.com/**', async route => {
+      const url=new URL(route.request().url());
+      if(url.pathname==='/aweme/v1/web/aweme/detail/') {
+        if(douyinApiMode==='protect') await worker.evaluate(async id=>{
+          const key=`media:${id}`;
+          const items=(await chrome.storage.session.get(key))[key] || [];
+          await chrome.storage.session.set({[key]:items.map(item=>({...item,protected:true}))});
+        },douyinTab);
+        return route.fulfill({status:douyinApiMode==='error'?503:200, contentType:'application/json',
+          body:JSON.stringify(douyinDetail(url.searchParams.get('aweme_id')))
+        });
+      }
+      const id=/\/video\/(\d+)/.exec(url.pathname)?.[1] || '7686532267488840975';
+      return route.fulfill({contentType:'text/html; charset=utf-8',
+        body:`<!doctype html><title>Douyin fixture</title><section><video controls style="display:block;width:90%;aspect-ratio:16/9;margin:30px auto"></video><a href="${douyinUrl}">当前视频</a></section><script>fetch('/aweme/v1/web/aweme/detail/?aweme_id=${id}').then(r=>r.json())</script>`
+      });
+    });
+    await worker.evaluate(()=>{
+      globalThis.testCapabilities=['youtube','x','bilibili','douyin','hls','dash'];
+      globalThis.nativeMessages=[];
+      return chrome.storage.local.set({videoHeight:720});
+    });
+    await page.setViewportSize({width:1280,height:900});
+    await page.goto(douyinUrl+'?recommend=1');
+    await page.locator('video').evaluate((video,bytes)=>{
+      video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
+    },bytes);
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('抖音 · 最高 720p · MP4 音视频',{exact:true}).waitFor();
+    assert.equal(await page.locator('laowang-video-assistant .row').count(),1);
+    await page.screenshot({path:path.join(output,'douyin-desktop.png')});
+    const douyinTab=await worker.evaluate(async()=>
+      (await chrome.tabs.query({})).find(tab=>tab.url?.includes('douyin.com/video/')).id);
+    // Simulate ordinary/incognito cookie stores without reading any user profile.
+    await worker.evaluate(id=>{
+      globalThis.originalCookieStores=chrome.cookies.getAllCookieStores;
+      globalThis.originalGetCookies=chrome.cookies.getAll;
+      globalThis.cookieCalls=[];
+      chrome.cookies.getAllCookieStores=async()=>[{id:'unrelated',tabIds:[id+10000]},{id:'selected',tabIds:[id]}];
+      chrome.cookies.getAll=async query=>{
+        globalThis.cookieCalls.push(query);
+        if(query.storeId!=='selected') throw new Error('Wrong cookie store');
+        return [{name:'nonce',value:'test-authorization',domain:'.douyin.com',path:'/',secure:true,hostOnly:false},
+          {name:'',value:'ignore-nameless-cookie',domain:'www.douyin.com',path:'/video',secure:true,hostOnly:true},
+          {name:'partitioned',value:'never-forward',domain:'.douyin.com',path:'/',secure:true,hostOnly:false,
+            partitionKey:{topLevelSite:'https://www.douyin.com'}}];
+      };
+    },douyinTab);
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages.length,1);
+    assert.equal(messages[0].kind,'douyin');
+    assert.equal(messages[0].url,douyinUrl);
+    assert.equal(messages[0].height,720);
+    assert.equal(messages[0].headers.Cookie,undefined);
+    assert(messages[0].headers.Referer.startsWith('https://www.douyin.com/'));
+    assert.deepEqual(messages[0].video,{id:'7686532267488840975',duration:5,formats:[
+      {url:'https://v26-web.douyinvod.com/movie/?signature=keep',width:640,height:360,vcodec:'h264'}]});
+    assert.deepEqual(messages[0].cookies,[{name:'nonce',value:'test-authorization',domain:'.douyin.com',path:'/',secure:true,hostOnly:false}]);
+    assert.deepEqual(await worker.evaluate(()=>globalThis.cookieCalls),[{url:douyinUrl,storeId:'selected'}]);
+    const douyinPopup=await context.newPage();
+    await douyinPopup.goto(worker.url().replace('background.js','popup.html'));
+    await douyinPopup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
+    await douyinPopup.evaluate(async id=>{tabId=id;await refresh();},douyinTab);
+    await douyinPopup.locator('#quality').selectOption('480');
+    await douyinPopup.getByText('抖音 · 最高 480p · MP4 音视频',{exact:true}).waitFor();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[1].height,480);
+    assert.notEqual(messages[0].request_id,messages[1].request_id);
+    await douyinPopup.screenshot({path:path.join(output,'douyin-popup.png')});
+    await worker.evaluate(()=>{chrome.cookies.getAllCookieStores=async()=>[];});
+    await douyinPopup.locator('#refresh').click();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByText('无法确认当前标签页的授权环境，请刷新视频页后重试',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
+    await worker.evaluate(()=>{
+      globalThis.testCapabilities=['youtube','x','bilibili','hls','dash'];
+      chrome.cookies.getAllCookieStores=globalThis.originalCookieStores;
+      chrome.cookies.getAll=globalThis.originalGetCookies;
+    });
+    await douyinPopup.locator('#refresh').click();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByText('请更新并重启桌面下载器，抖音模块尚未就绪',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
+    await worker.evaluate(()=>{globalThis.testCapabilities=['douyin'];});
+    douyinApiMode='mismatch';
+    await douyinPopup.locator('#refresh').click();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByText('抖音视频已切换，请刷新资源列表',{exact:true}).waitFor();
+    douyinApiMode='error';
+    await douyinPopup.locator('#refresh').click();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByText('抖音视频信息获取失败，请刷新视频详情页后重试',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
+    douyinApiMode='protect';
+    await douyinPopup.locator('#refresh').click();
+    await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await douyinPopup.getByText('受保护视频不支持下载',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
+    douyinApiMode='complete';
+    await douyinPopup.close();
+    await page.locator('video').evaluate(video=>video.dispatchEvent(new Event('encrypted')));
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('抖音 · 受保护视频，不支持下载',{exact:true}).waitFor();
+    assert(await page.getByRole('button',{name:'下载',exact:true}).isDisabled());
+    // A reused player in a feed must refresh its selected post before sending.
+    await worker.evaluate(()=>{globalThis.testCapabilities=['douyin'];globalThis.nativeMessages=[];});
+    await page.goto('https://www.douyin.com/?recommend=1');
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('抖音-7686532267488840975',{exact:true}).waitFor();
+    await page.locator('section a').evaluate(async link=>{
+      link.href='https://www.douyin.com/video/7686532267488840976';
+      await (await fetch('/aweme/v1/web/aweme/detail/?aweme_id=7686532267488840976')).json();
+    });
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByText('抖音-7686532267488840976',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),0);
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages[0].url,'https://www.douyin.com/video/7686532267488840976');
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.locator('section a').evaluate(link=>link.remove());
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('未确认当前视频，请打开该视频的详情页后重试',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
+    assert.equal(errors.length,0,JSON.stringify(errors));
+    console.log('PASS: Douyin page selection, scoped cookie store, quality, old desktop, DRM, recycled and ambiguous feed players');
     console.log('Screenshots:',output);
   } catch(error) {
     await context.pages()[0]?.screenshot({path:path.join(output,'video-failure.png')});

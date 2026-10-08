@@ -51,10 +51,10 @@ def forward(message):
         call_desktop({'action': 'ping'}, timeout=2)
     except (OSError, ValueError, ConnectionError):
         if action == 'ping':
-            from downloader.core.youtube_downloader import require_tools
+            from downloader.core.youtube_downloader import require_tools, VIDEO_KINDS
             try:
                 require_tools()
-                capabilities = ['youtube', 'x', 'bilibili']
+                capabilities = list(VIDEO_KINDS)
             except ValueError:
                 capabilities = []
             return {'ok': False, 'error': '下载器未启动', 'installed': True, 'capabilities': capabilities}

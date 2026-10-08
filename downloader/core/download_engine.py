@@ -17,8 +17,7 @@ from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
-from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS
-from downloader.browser.security import normalize_stream_context
+from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
 
 class DownloadEngine:
@@ -223,7 +222,7 @@ class DownloadEngine:
 
     def create_youtube_task(self, url, filename, directory, height=720, kind='youtube', request_context=None):
         url = video_task_url(url, kind)
-        context = normalize_stream_context(url, request_context) if kind in ('hls', 'dash') else None
+        context = video_request_context(url, kind, request_context) if kind in CONTEXT_KINDS else None
         require_tools()
         if height not in (480, 720, 1080):
             raise ValueError('不支持的清晰度')

@@ -16,11 +16,11 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.core.youtube_downloader import x_url, bilibili_url
+from downloader.core.youtube_downloader import x_url, bilibili_url, douyin_url
 
 
 def page_kind(url):
-    for kind, normalize in (('x', x_url), ('bilibili', bilibili_url)):
+    for kind, normalize in (('x', x_url), ('bilibili', bilibili_url), ('douyin', douyin_url)):
         try:
             normalize(url)
             return kind
@@ -34,7 +34,23 @@ def page_filename(url):
     return video_filename({'kind': page_kind(url), 'url': url})
 
 
-def packaged(url, release, height=720):
+def validate_video(video, tools, height):
+    probe = subprocess.run([str(tools / 'ffprobe.exe'), '-v', 'error',
+        '-show_entries', 'stream=codec_name,codec_type,width,height:format=duration,size', '-of', 'json',
+        str(video)], capture_output=True, text=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert probe.returncode == 0, probe.stderr
+    metadata = json.loads(probe.stdout)
+    assert {'video', 'audio'} <= {s['codec_type'] for s in metadata['streams']}
+    assert all(s.get('height', 0) <= height for s in metadata['streams'])
+    assert float(metadata['format']['duration']) > 0
+    print(probe.stdout, flush=True)
+    decoded = subprocess.run([str(tools / 'ffmpeg.exe'), '-v', 'error', '-xerror',
+        '-i', str(video), '-f', 'null', '-'], capture_output=True, timeout=300,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    assert decoded.returncode == 0 and not decoded.stderr, decoded.stderr
+
+
+def packaged(url, release, height=720, browser_context=None):
     from downloader.browser.native_host import read_message, write_message
     from smoke_exe import app_windows, wait_for, user32, capture
 
@@ -68,6 +84,9 @@ def packaged(url, release, height=720):
         assert ping.get('installed') and kind in ping.get('capabilities', []), ping
         message = {'action': 'download', 'kind': kind, 'url': url, 'height': height,
                    'filename': page_filename(url), 'request_id': str(uuid.uuid4())}
+        if browser_context:
+            message.update(headers=browser_context.get('headers', {}), cookies=browser_context.get('cookies', []),
+                           video=browser_context.get('video'))
         result = native(message)
         assert result['ok'], result
         assert native(message) == result
@@ -75,23 +94,11 @@ def packaged(url, release, height=720):
         db = DatabaseManager(str(app / 'data/downloads.db'))
         task = wait_for(lambda: (t if (t := db.get_task(result['task_id'])) and
             t['status'] in ('completed', 'failed', 'verify_failed') else None), timeout=900)
-        print(json.dumps(task, ensure_ascii=True), flush=True)
+        print(json.dumps({k: v for k, v in task.items() if k != 'browser_context'}, ensure_ascii=True), flush=True)
         assert task['status'] == 'completed', task['error_message']
         assert len(db.get_all_tasks()) == 1
         video = Path(task['save_path'])
-        probe = subprocess.run([str(app / 'video-tools/ffprobe.exe'), '-v', 'error',
-            '-show_entries', 'stream=codec_name,codec_type,width,height:format=duration,size', '-of', 'json',
-            str(video)], capture_output=True, text=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
-        assert probe.returncode == 0, probe.stderr
-        metadata = json.loads(probe.stdout)
-        assert {'video', 'audio'} <= {s['codec_type'] for s in metadata['streams']}
-        assert all(s.get('height', 0) <= height for s in metadata['streams'])
-        assert float(metadata['format']['duration']) > 0
-        print(probe.stdout, flush=True)
-        decoded = subprocess.run([str(app / 'video-tools/ffmpeg.exe'), '-v', 'error', '-xerror',
-            '-i', str(video), '-f', 'null', '-'], capture_output=True, timeout=300,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        assert decoded.returncode == 0 and not decoded.stderr, decoded.stderr
+        validate_video(video, app / 'video-tools', height)
         window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == 'daw\u4e0b\u8f7d\u5668 v1.0'), None))
         capture(window['hwnd'], directory / (kind + '-completed.png'))
         print('PASS: packaged native cold start, video download, dedupe, audio/video and full decode', flush=True)
@@ -111,9 +118,13 @@ def main():
     parser.add_argument('--exe', action='store_true', help='Validate the packaged release in an isolated directory')
     parser.add_argument('--release', type=Path, default=ROOT / 'dist')
     parser.add_argument('--height', type=int, choices=(480, 720, 1080), default=720)
+    parser.add_argument('--browser-context-stdin', action='store_true', help='Read scoped Douyin context from stdin, never command arguments')
     args = parser.parse_args()
+    browser_context = json.load(sys.stdin) if args.browser_context_stdin else None
+    if browser_context is not None and (not isinstance(browser_context, dict) or page_kind(args.url) != 'douyin'):
+        raise ValueError('Browser context is only accepted for the Douyin validation path')
     if args.exe:
-        return packaged(args.url, args.release.resolve(), args.height)
+        return packaged(args.url, args.release.resolve(), args.height, browser_context)
     directory = ROOT / 'output' / (page_kind(args.url) + '-validation-' + uuid.uuid4().hex[:8])
     directory.mkdir(parents=True, exist_ok=True)
     config = ConfigManager(str(directory / 'config.json'))
@@ -135,16 +146,24 @@ def main():
 
     engine.set_progress_callback(progress)
     try:
-        result = bridge.dispatch({'action':'download', 'kind':page_kind(args.url), 'url':args.url,
-            'filename':page_filename(args.url), 'height':args.height, 'request_id':str(uuid.uuid4())})
+        message = {'action':'download', 'kind':page_kind(args.url), 'url':args.url,
+            'filename':page_filename(args.url), 'height':args.height, 'request_id':str(uuid.uuid4())}
+        if browser_context:
+            message.update(headers=browser_context.get('headers', {}), cookies=browser_context.get('cookies', []),
+                           video=browser_context.get('video'))
+        result = bridge.dispatch(message)
         assert result['ok'], result
+        assert bridge.dispatch(message) == result
         print(json.dumps(result), flush=True)
         deadline = time.monotonic() + 900
         while time.monotonic() < deadline:
             task = db.get_task(result['task_id'])
             if task['status'] in ('completed', 'failed', 'verify_failed'):
-                print(json.dumps(task, ensure_ascii=True), flush=True)
+                print(json.dumps({k: v for k, v in task.items() if k != 'browser_context'}, ensure_ascii=True), flush=True)
                 assert task['status'] == 'completed', task['error_message']
+                validate_video(Path(task['save_path']), ROOT / 'vendor/video', args.height)
+                print('PASS: source bridge, complete audio/video download, dedupe and full decode', flush=True)
+                print('Artifacts:', directory, flush=True)
                 return
             time.sleep(.25)
         raise TimeoutError('YouTube validation timed out')

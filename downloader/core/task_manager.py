@@ -53,7 +53,7 @@ class TaskManager:
         tasks = self.db.get_all_tasks()
 
         for task in tasks:
-            if task.get('download_type') in ('youtube', 'x', 'bilibili', 'hls', 'dash'):
+            if task.get('download_type') in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
                 continue
             status = task.get('status')
             # 终态不碰，避免误改历史结果
