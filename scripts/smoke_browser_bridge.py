@@ -1,4 +1,5 @@
 """Exercise the packaged native host and cold-start GUI without registry changes."""
+import argparse
 import hashlib
 import io
 import json
@@ -21,13 +22,19 @@ from smoke_exe import app_windows, wait_for, user32, capture
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--app-dir', type=Path, help='Test a disposable installed directory directly')
+    args = parser.parse_args()
+    if args.app_dir and (args.app_dir.resolve() / 'data').exists():
+        parser.error('--app-dir requires a disposable installation without an existing data directory')
     workspace = Path(tempfile.mkdtemp(prefix='browser-bridge-exe-'))
-    app_dir = workspace / 'app'
-    app_dir.mkdir()
+    app_dir = args.app_dir.resolve() if args.app_dir else workspace / 'app'
+    app_dir.mkdir(exist_ok=True)
     exe = app_dir / 'daw下载器.exe'
     host = app_dir / 'BrowserBridge.exe'
-    for binary in (exe, host):
-        shutil.copy2(ROOT / 'dist' / binary.name, binary)
+    if not args.app_dir:
+        for binary in (exe, host):
+            shutil.copy2(ROOT / 'dist' / binary.name, binary)
     config = ConfigManager(str(app_dir / 'data/config.json'))
     config.download_dir = str(workspace / 'downloads')
     config.set('temp_dir', str(workspace / 'parts'))

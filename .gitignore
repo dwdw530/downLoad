@@ -22,4 +22,7 @@ __pycache__/
 /output/youtube-exe-*/
 /output/release-youtube/
 /output/releases/
+/output/installer-smoke/
+/dist/*-setup.exe
+/dist/*-setup.exe.sha256
 
