@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from downloader.core.youtube_downloader import YoutubeDownloader, require_tools, youtube_url, x_url, bilibili_url, video_page_url
+from downloader.core.youtube_downloader import (YoutubeDownloader, require_tools, youtube_url, x_url, bilibili_url,
+                                                video_page_url, sanitize_output, failure_message)
 from downloader.browser.bridge import BridgeServer, video_filename
 from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
@@ -238,6 +239,34 @@ class YoutubeTests(unittest.TestCase):
         self.assertNotIn('secret', self.failed.call_args.args[0])
         self.assertIn('403', self.failed.call_args.args[0])
         self.assertFalse(Path(self.task['save_path']).exists())
+
+    def test_rate_limit_failure_is_logged_with_sanitized_output(self):
+        with self.assertLogs(MODULE, level='INFO') as captured:
+            self.run_worker(code=1, log='ERROR: HTTP Error 429: Too Many Requests https://cdn.test/?secret=token')
+        self.completed.assert_not_called()
+        self.assertIn('限流', self.failed.call_args.args[0])
+        logged = '\n'.join(captured.output)
+        self.assertIn('限流', logged)
+        self.assertIn('<url>', logged)
+        self.assertNotIn('secret', logged)
+
+    def test_bot_check_still_reports_login_requirement(self):
+        self.run_worker(code=1, log="ERROR: Sign in to confirm you're not a bot")
+        message = self.failed.call_args.args[0]
+        self.assertIn('登录', message)
+        self.assertNotIn('限流', message)
+
+    def test_sanitize_output_rewrites_links_and_credentials(self):
+        text = sanitize_output(['ERROR: https://cdn.test/?secret=token', '', 'Cookie: session=abc123'])
+        self.assertNotIn('secret', text)
+        self.assertNotIn('abc123', text)
+        self.assertIn('<url>', text)
+        self.assertIn('<redacted>', text)
+
+    def test_rate_limit_message_takes_priority_over_login_wording(self):
+        message = failure_message(['ERROR: HTTP Error 429: Too Many Requests',
+                                   "ERROR: Sign in to confirm you're not a bot"], 'youtube')
+        self.assertIn('限流', message)
 
     def test_existing_destination_is_not_overwritten(self):
         destination = Path(self.task['save_path'])

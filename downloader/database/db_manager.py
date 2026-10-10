@@ -49,6 +49,12 @@ class DatabaseManager:
             conn = self._get_connection()
             cursor = conn.cursor()
 
+            # 进度写库较频，WAL 让写入不必等读锁；网络盘等不支持时退回默认日志模式
+            try:
+                cursor.execute('PRAGMA journal_mode=WAL')
+            except sqlite3.DatabaseError as e:
+                logger.warning("启用 WAL 失败，继续使用默认日志模式: %s", e)
+
             # 任务表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS download_tasks (

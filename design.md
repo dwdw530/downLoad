@@ -87,6 +87,14 @@ downloader/
 
 分块模式若有分块失败，`_fallback_to_singlethread`（`download_engine.py:439`）会清理分块临时文件、把任务切为单线程（`mark_task_singlethread`）并从头重试一次；仍失败才判 `failed`。
 
+### 3.7 进度上报节流与数据库日志模式
+
+分块下载每读 8 KB 就回调一次进度，若每次都写库，1 GB 文件会产生约 13 万次「新建连接 + 全局锁 + UPDATE + commit」。因此：
+
+- **节流**：`ChunkDownloader._report_progress()` 只在累计 **256 KB**（`PROGRESS_INTERVAL_BYTES`）或距上次 **0.5 s**（`PROGRESS_INTERVAL_SECONDS`）后才回调；**收尾必须补报**（正常结束、发现分块已完成、取消退出时用 `force=True`）。单线程任务复用同一节流，因为它同样经由 `ChunkDownloader` 发起回调。
+- **为何不影响续传**：数据库里的分块字节数不是续传真值——续传偏移来自临时文件实际大小（`download()` 每次重试重新 `getsize`），合并前终态写入用内存值，重启后 `_reconcile_incomplete_tasks_progress` 仍会按临时文件回填。数据库最多滞后一个阈值，只影响进度显示。
+- **WAL**：`DatabaseManager._init_database` 设置 `PRAGMA journal_mode=WAL`，让写入不必等待读锁；不支持时（网络盘、只读目录）只记警告并退回默认日志模式。未改动 `synchronous`，掉电耐久性与改动前一致。
+
 ## 4. 任务状态机
 
 任务状态定义在 `download_tasks.status`，共 8 个：
@@ -155,7 +163,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 **download_history**：id、task_id、filename、file_size、download_time、avg_speed、completed_at。
 
-索引：`idx_task_status`、`idx_chunk_task`、`idx_chunk_status`。老库通过 `ALTER TABLE` 补列，不做整库迁移。
+索引：`idx_task_status`、`idx_chunk_task`、`idx_chunk_status`。老库通过 `ALTER TABLE` 补列，不做整库迁移。日志模式为 WAL（不支持时退回默认），见第 3.7 节。
 
 ## 7. 浏览器视频链路
 
@@ -205,6 +213,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 - **输出目标**：默认写 `<程序目录>/logs/app.log`（`RotatingFileHandler`，2 MB × 3，UTF-8）；目录不可写时回退 `%LOCALAPPDATA%\LaoWangDownloader\logs`；两者都不可用时静默降级，不阻断启动。
 - **stdout 禁区**：`native_host.py` 用 stdout 传输长度前缀 JSON，任何 handler 都不得写入 stdout。因此冻结环境只挂文件 handler，开发环境额外挂 stderr。
 - **脱敏**：网络相关异常用 `app_log.safe_error(error, sensitive=True)` 只记类型名，避免异常消息里的链接或 Cookie 落盘；顶层未捕获异常默认也只记类型名，需要完整堆栈时设 `DAW_LOG_LEVEL=DEBUG`。
+- **视频失败诊断**：`YoutubeDownloader.run` 失败时以 WARNING 记录失败原因，并用 `sanitize_output()` 把 yt-dlp 输出尾部（链接替换为 `<url>`，Cookie/Authorization 字段替换为 `<redacted>`）写入 INFO。`failure_message()` 优先区分限流（HTTP 429）与登录验证，前者提示稍后重试或更换网络与代理。
 - **级别**：默认 `INFO`，可用环境变量 `DAW_LOG_LEVEL` 覆盖；开发环境 `logs/` 已被 `.gitignore` 排除。
 
 ## 10. 构建与发布

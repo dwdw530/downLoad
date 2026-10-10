@@ -1,5 +1,6 @@
 """Supported video pages downloaded through the upstream yt-dlp/FFmpeg toolchain."""
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -13,6 +14,11 @@ from urllib.parse import parse_qs, urlsplit
 
 from downloader.utils.config import get_app_root
 from downloader.browser.security import http_url, normalize_stream_context, unprotect
+
+logger = logging.getLogger(__name__)
+
+URL_PATTERN = re.compile(r'https?://\S+')
+SECRET_PATTERN = re.compile(r'(?i)\b(cookie|authorization)\b\s*[:=]\s*\S+')
 
 VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash')
 STREAM_KINDS = ('hls', 'dash')
@@ -158,12 +164,24 @@ def require_tools(directory=None):
     return directory
 
 
+def sanitize_output(lines, limit=2000):
+    """汇总 yt-dlp 输出用于排障：链接与凭据字段先遮蔽，长度受限"""
+    parts = []
+    for line in lines:
+        text = SECRET_PATTERN.sub(r'\1: <redacted>', URL_PATTERN.sub('<url>', str(line).strip()))
+        if text:
+            parts.append(text)
+    return ' | '.join(parts)[:limit]
+
+
 def failure_message(lines, kind=None):
     text = '\n'.join(lines).lower()
     if any(word in text for word in ('drm', 'sample-aes', 'widevine', 'playready')):
         return '受 DRM 保护的视频不支持下载'
     if 'live' in text and ('filter' in text or 'match' in text):
         return '当前仅支持点播视频，不支持持续直播录制'
+    if 'http error 429' in text or 'too many requests' in text:
+        return '网站限流（HTTP 429），请稍后重试或更换网络或代理'
     if 'fresh cookies' in text or (kind == 'douyin' and any(
             word in text for word in ('sign in', 'not a bot', 'login', 'log in', 'authentication'))):
         return '抖音需要新的访问凭据，请刷新视频页面后重新下载'
@@ -332,7 +350,15 @@ class YoutubeDownloader:
                 self.completed(destination.stat().st_size)
         except Exception as error:
             if self.active():
-                message = str(error) if isinstance(error, ValueError) else '视频下载失败，请检查网络、磁盘或下载组件'
+                if isinstance(error, ValueError):
+                    message = str(error)
+                else:
+                    message = '视频下载失败，请检查网络、磁盘或下载组件'
+                    logger.debug("视频下载异常", exc_info=True)
+                # 失败原因与 yt-dlp 输出尾巴都进日志；链接和凭据字段已遮蔽
+                logger.warning("视频下载失败（%s）: %s", self.kind, message)
+                if errors:
+                    logger.info("yt-dlp 输出尾部: %s", sanitize_output(errors))
                 self.failed(message)
         finally:
             if self.process and self.process.stdout:

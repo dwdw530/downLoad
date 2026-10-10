@@ -14,6 +14,11 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# 进度上报阈值：攼够这么多字节或过了这么久才回调一次，
+# 避免每 8 KB 写一次数据库（1 GB 文件约 13 万次）。
+PROGRESS_INTERVAL_BYTES = 256 * 1024
+PROGRESS_INTERVAL_SECONDS = 0.5
+
 
 class SpeedLimiter:
     """
@@ -105,6 +110,8 @@ class ChunkDownloader:
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
         self.is_cancelled = False  # 取消标志
+        self._reported_bytes = 0  # 上次回调给外部（数据库/UI）的字节数
+        self._reported_at = 0.0  # 上次回调时间
 
         # 速度限制器
         self.speed_limiter = SpeedLimiter(speed_limit)
@@ -119,6 +126,26 @@ class ChunkDownloader:
             callback: 回调函数，签名为 callback(chunk_id, downloaded_bytes)
         """
         self.progress_callback = callback
+
+    def _report_progress(self, force: bool = False) -> bool:
+        """按字节或时间阈值上报进度。
+
+        Args:
+            force: 收尾时刻（结束/暂停/取消）强制上报，保证数据库拿到最后一跳
+        Returns:
+            True 表示本次确实回调了
+        """
+        if not self.progress_callback:
+            return False
+        now = time.monotonic()
+        if not force:
+            if (self.downloaded_bytes - self._reported_bytes < PROGRESS_INTERVAL_BYTES
+                    and now - self._reported_at < PROGRESS_INTERVAL_SECONDS):
+                return False
+        self._reported_bytes = self.downloaded_bytes
+        self._reported_at = now
+        self.progress_callback(self.chunk_id, self.downloaded_bytes)
+        return True
 
     def download(self, resume: bool = False) -> bool:
         """
@@ -139,6 +166,8 @@ class ChunkDownloader:
             with open(self.temp_file, 'wb'):
                 pass
         self.downloaded_bytes = 0
+        self._reported_bytes = 0
+        self._reported_at = 0.0
 
         # 开始下载（带重试）
         for attempt in range(self.retry_times):
@@ -161,6 +190,7 @@ class ChunkDownloader:
             actual_start = self.start_byte + self.downloaded_bytes
 
             if self.downloaded_bytes == expected_size:
+                self._report_progress(force=True)
                 return True
 
             try:
@@ -225,18 +255,22 @@ class ChunkDownloader:
             with open(self.temp_file, mode) as f:
                 for data in response.iter_content(chunk_size=8192):
                     if not self._wait_if_paused_or_cancelled():
+                        self._report_progress(force=True)
                         return False
                     if data:
                         if self.downloaded_bytes + len(data) > expected_size:
                             raise ValueError('下载内容超过预期分块大小')
                         self.speed_limiter.acquire(len(data))
                         if not self._wait_if_paused_or_cancelled():
+                            self._report_progress(force=True)
                             return False
                         f.write(data)
                         self.downloaded_bytes += len(data)
-                        if self.progress_callback:
-                            self.progress_callback(self.chunk_id, self.downloaded_bytes)
+                        self._report_progress()
 
+            if self.downloaded_bytes == expected_size:
+                # 收尾必须补报一次，保证数据库拿到最终字节数
+                self._report_progress(force=True)
             return self.downloaded_bytes == expected_size
 
     def _wait_if_paused_or_cancelled(self) -> bool:
