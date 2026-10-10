@@ -21,7 +21,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("500x520")  # 加高给代理设置腾位置
+        self.geometry("520x560")  # 加高给代理和完成后动作腾位置
         self.resizable(False, False)
 
         # 模态对话框
@@ -128,6 +128,23 @@ class SettingsDialog(ctk.CTkToplevel):
         speed_hint_label = ctk.CTkLabel(speed_frame, text="(0表示不限速)", font=("Arial", 10), text_color="gray")
         speed_hint_label.pack(side="left")
 
+        # ========== 下载完成后动作 ==========
+        after_label = ctk.CTkLabel(main_frame, text="下载完成后:", font=("Arial", 12))
+        after_label.grid(row=6, column=0, sticky="nw", pady=10)
+
+        after_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        after_frame.grid(row=6, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+
+        # 开关默认全关，避免替用户做多余动作
+        self.after_open_file_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(after_frame, text="打开文件", variable=self.after_open_file_var).pack(anchor="w")
+
+        self.after_open_folder_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(after_frame, text="打开所在文件夹", variable=self.after_open_folder_var).pack(anchor="w")
+
+        self.after_shutdown_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(after_frame, text="全部下载完成后关机", variable=self.after_shutdown_var).pack(anchor="w")
+
         # 按钮区域
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(fill="x", padx=20, pady=10)
@@ -161,6 +178,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self.http_proxy_entry.insert(0, proxy_cfg.get("http", ""))
         self.https_proxy_entry.insert(0, proxy_cfg.get("https", ""))
         self._on_proxy_toggle()  # 根据开关状态设置输入框状态
+        # 下载完成后动作
+        after_cfg = self.config.after_download
+        self.after_open_file_var.set(after_cfg["open_file"])
+        self.after_open_folder_var.set(after_cfg["open_folder"])
+        self.after_shutdown_var.set(after_cfg["shutdown"])
 
     def _browse_directory(self):
         """浏览目录"""
@@ -225,6 +247,13 @@ class SettingsDialog(ctk.CTkToplevel):
             http_proxy = self.http_proxy_entry.get().strip()
             https_proxy = self.https_proxy_entry.get().strip()
             self.config.set_proxy(proxy_enabled, http_proxy, https_proxy)
+            # 下载完成后动作
+            after_config = {
+                'open_file': self.after_open_file_var.get(),
+                'open_folder': self.after_open_folder_var.get(),
+                'shutdown': self.after_shutdown_var.get(),
+            }
+            self.config.after_download = after_config
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
@@ -243,7 +272,8 @@ class SettingsDialog(ctk.CTkToplevel):
                         'enabled': proxy_enabled,
                         'http': http_proxy,
                         'https': https_proxy,
-                    }
+                    },
+                    'after_download': after_config,
                 }
                 self.on_save_callback(runtime_settings)
 
@@ -284,4 +314,9 @@ class SettingsDialog(ctk.CTkToplevel):
             self.http_proxy_entry.delete(0, "end")
             self.https_proxy_entry.delete(0, "end")
             self._on_proxy_toggle()
+            # 下载完成后动作重置
+            after_default = self.config.after_download
+            self.after_open_file_var.set(after_default["open_file"])
+            self.after_open_folder_var.set(after_default["open_folder"])
+            self.after_shutdown_var.set(after_default["shutdown"])
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

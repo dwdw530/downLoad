@@ -27,7 +27,7 @@ downloader/
 │   └── db_manager.py          SQLite 封装：任务表、分块表、历史表与老库字段迁移
 ├── ui/
 │   ├── main_window.py         主窗口、任务卡片，及添加/删除/退出确认对话框
-│   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速）
+│   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速、完成后动作）
 │   ├── history_dialog.py      下载历史对话框
 │   └── tray_manager.py        系统托盘图标与下载完成通知
 ├── browser/
@@ -130,6 +130,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 - `verify_failed` 重试前会把任务进度与分块进度清零。
 - 程序重启时 `downloading`/`verifying` 统一纠偏为 `paused`。
 - 并发已满时 `resume_task` 会把任务落回 `pending` 排队，而非强启。
+- 「稍后下载」的新任务直接以 `paused` 状态落库（`db.create_task_with_chunks(status=...)`），且 `add_task(start_later=True)` 不触发 `_try_start_next_task()`；不新增状态，也不区分「用户暂停」与「排队等候」。
 
 ## 5. 并发与线程模型
 
@@ -205,7 +206,22 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ## 8. 配置
 
-`data/config.json`，默认值见 `config.py:29`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
+`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
+
+### 8.1 任务列表显示与过滤
+
+- 每张任务卡片两行信息：行一是进度条 + 百分比 + 「文件位置」；行二是 `已下载 X / Y`、`剩余 mm:ss`（`file_utils.format_remaining`）、速度、状态。只有 `downloading` 且速度大于 0 时才显示剩余时间，其余情况显示 `--`，总大小未知时显示 `X / 未知`。
+- 过滤由 `MainWindow._apply_task_filter()` 统一处理：搜索词按文件名/URL 子串（不区分大小写，不做 percent 解码）匹配，「隐藏已完成」按状态过滤；命中 `pack`、不命中 `pack_forget`，空结果显示「没有匹配的任务」。
+- 过滤依赖 `task_widgets` 中缓存的 `filename`/`url`/`status`，不额外查库；「隐藏已完成」写入 `ui_hide_completed`，搜索词不持久化。
+
+### 8.2 添加任务（批量与稍后）
+
+- 「下载链接」为多行输入：每行一个链接，空行丢弃，同批内按 URL 去重。
+- 行数大于 1 时自动禁用文件校验控件（批量无单一哈希概念），单链接时保持原哈希校验能力。
+- 单链接沿用同步添加与即时提示；多链接走后台线程逐条 `add_task`（每条都要发探测请求，同步会阻塞 UI），完成后经 `_ui_events` 回主线程汇总成功/失败/跳过数量，失败原因最多列 3 条；日志只记数量，不记 URL。
+- 按钮为「开始下载」（`pending` 并进入队列调度）与「稍后下载」（`paused`，不进调度）；多行输入框内回车为换行，提交用 Ctrl+Enter。
+
+完成后动作的触发链路：引擎状态回调把 `completed` 事件投递到 UI 事件队列（`MainWindow._handle_download_completed`），只有 `completed`（校验通过）才触发，`verify_failed` 不触发。开启关机时先检查是否还有 `downloading/pending/verifying` 任务，还有则等最后一个完成再弹倒计时确认框（默认 60 秒，关窗即取消）；确认或倒计时结束才执行 `shutdown /s /t 0`。
 
 ## 9. 日志与排障
 

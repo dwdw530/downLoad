@@ -130,7 +130,8 @@ class DownloadEngine:
     def create_download_task(self, url: str, filename: Optional[str] = None,
                             save_path: Optional[str] = None,
                             expected_hash: Optional[str] = None,
-                            hash_type: str = "md5", request_context=None) -> Optional[str]:
+                            hash_type: str = "md5", request_context=None,
+                            start_later: bool = False) -> Optional[str]:
         """
         创建下载任务
         Args:
@@ -139,6 +140,7 @@ class DownloadEngine:
             save_path: 保存路径（可选，不提供则使用默认下载目录）
             expected_hash: 预期哈希值（可选，用于下载后校验）
             hash_type: 哈希类型（md5/sha256）
+            start_later: 是否稍后手动开始（任务直接以 paused 落库，不进队列调度）
         Returns:
             任务ID，失败返回None
         """
@@ -188,7 +190,8 @@ class DownloadEngine:
             chunks=chunks,
             expected_hash=expected_hash,
             hash_type=hash_type,
-            browser_context=protect(request_context) if request_context else None
+            browser_context=protect(request_context) if request_context else None,
+            status='paused' if start_later else 'pending',
         )
 
         if not success:

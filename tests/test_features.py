@@ -15,6 +15,7 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
+from downloader.utils.file_utils import format_remaining
 from test_download_regressions import DownloadHandler, PAYLOAD
 
 
@@ -239,6 +240,27 @@ class TimingFeatures(unittest.TestCase):
             for _ in range(4):
                 limiter.acquire(1024)
         self.assertGreaterEqual(clock[0], 4)
+
+
+class FormatRemainingTests(unittest.TestCase):
+    """剩余时间格式化：拿不到速度就不编数字"""
+
+    def test_unknown_or_zero_values_return_placeholder(self):
+        for remaining, speed in ((0, 1024), (1024, 0), (1024, -1), (-5, 1024), (1024, None)):
+            with self.subTest(remaining=remaining, speed=speed):
+                self.assertEqual(format_remaining(remaining, speed), '--')
+
+    def test_seconds_minutes_and_hours(self):
+        self.assertEqual(format_remaining(1024, 1024), '00:01')
+        self.assertEqual(format_remaining(24689, 4096), '00:06')
+        self.assertEqual(format_remaining(60 * 1024, 1024), '01:00')
+        self.assertEqual(format_remaining(3661 * 1024, 1024), '1:01:01')
+
+    def test_over_one_day_is_capped(self):
+        self.assertEqual(format_remaining(25 * 3600 * 1024, 1024), '超过 1 天')
+
+    def test_completed_download_has_no_remaining_time(self):
+        self.assertEqual(format_remaining(0, 1024 * 1024), '--')
 
 
 if __name__ == '__main__':

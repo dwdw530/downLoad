@@ -164,10 +164,12 @@ class DatabaseManager:
                                 chunks: Optional[List[Tuple[int, int, int, str]]] = None,
                                 expected_hash: Optional[str] = None, hash_type: str = "md5",
                                 browser_context: Optional[str] = None, download_type: str = 'file',
-                                video_height: int = 720) -> bool:
+                                video_height: int = 720, status: str = 'pending') -> bool:
         """
         原子创建任务与分块（可选带预期哈希）
         老王说：任务和分块必须一锅端，要么全成要么全回滚，别搞半截子烂账。
+        status 直接进 INSERT：稍后下载的任务一出生就是 paused，
+        不然建完再改状态会被队列调度抢先捡起来。
         """
         with self._lock:
             conn = None
@@ -177,9 +179,10 @@ class DatabaseManager:
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT INTO download_tasks
-                        (task_id, url, filename, save_path, total_size, support_range, thread_count)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0,
+                          thread_count, status))
 
                     if download_type in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
                         cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',

@@ -6,7 +6,7 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.3.1/daw-downloader-v0.3.1-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.4.0/daw-downloader-v0.4.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -17,6 +17,9 @@ Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoa
 ✅ **队列管理** - 支持同时下载多个任务
 ✅ **实时进度显示** - 进度条、速度、状态一目了然
 ✅ **数据持久化** - SQLite存储，任务重启不丢失
+✅ **批量添加** - 多行粘贴链接，一行一个，自动去重
+✅ **任务筛选** - 按文件名/链接搜索，可隐藏已完成任务
+✅ **完成后动作** - 可设置下载完成后打开文件、打开所在文件夹或全部完成后关机（默认关闭）
 ✅ **简洁GUI** - 基于CustomTkinter，现代化界面
 
 ## 项目结构
@@ -93,8 +96,18 @@ python main.py
 
 ### 1. 添加下载任务
 - 点击 **"➕ 添加任务"** 按钮
-- 输入下载链接
+- **下载链接支持多行**：每行一个链接，空行忽略，同一批里重复链接只加一次
+- 多条链接会批量添加（后台逐条探测，完成后弹一个汇总框：成功/失败/跳过数量）；单条链接保持即时提示
 - 选择保存位置（可选，默认保存到 `downloads/` 目录）
+- 文件校验（MD5/SHA256）只在单条链接时可用，批量添加时自动置灰
+- 提交按钮二选一：**"开始下载"** 立即进入下载队列；**"稍后下载"** 只加入列表，等你手动点「▶ 继续」
+- 多行输入框内回车是换行，提交用 **Ctrl+Enter**（其它控件下回车等同「开始下载」）
+
+### 1.1 任务列表显示与筛选
+- 每张任务卡显示：文件名、进度条与百分比、**已下载/总大小**、**剩余时间**、速度、状态
+- 剩余时间只在下载中且速度大于 0 时显示，其它情况显示 `--`；总大小未知时显示 `X / 未知`
+- 列表上方可按 **文件名或链接** 搜索（不区分大小写，不支持通配符）
+- 勾选 **"隐藏已完成"** 后已完成任务不再显示，该选项会写入 `config.json` 的 `ui_hide_completed` 并在重启后保留；搜索词不保存
 
 ### 2. 管理任务
 - **▶ 开始** - 启动下载
@@ -115,6 +128,7 @@ python main.py
 - 请求超时时间
 - 下载速度限制（每个任务的总速度，0表示不限速）
 - HTTP/HTTPS代理地址
+- 下载完成后动作：打开文件 / 打开所在文件夹 / 全部下载完成后关机（默认全部关闭，关机前弹 60 秒倒计时确认，关窗即取消）
 
 ### 5. 关闭程序
 - 点击窗口右上角关闭会弹出 **退出确认**（居中显示、布局更紧凑）：可选择“最小化到任务栏（继续后台下载）”或“退出程序（停止所有下载）”
@@ -191,11 +205,21 @@ python -B scripts/smoke_exe.py
         "https": ""
     },
     "close_behavior": "ask",
-    "speed_limit": 0
+    "speed_limit": 0,
+    "ui_hide_completed": false,
+    "after_download": {
+        "open_file": false,
+        "open_folder": false,
+        "shutdown": false
+    }
 }
 ```
 
 `close_behavior` 取值为 `ask`（每次询问）/ `minimize`（最小化到托盘）/ `exit`（直接退出）；`speed_limit` 单位为字节/秒，0 表示不限速。
+
+`after_download` 控制下载完成后的动作，三项默认均为 `false`（不做任何动作）；只有校验通过（`completed`）才触发，校验失败（`verify_failed`）不触发。开启 `shutdown` 时，若队列里还有下载中/等待/校验中的任务，会等最后一个完成再弹出 60 秒倒计时确认框，点“取消”或直接关闭窗口都不会关机。
+
+`ui_hide_completed` 控制任务列表是否隐藏已完成任务，由主界面勾选框直接读写。
 
 ## 日志与排障
 

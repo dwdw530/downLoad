@@ -3,8 +3,8 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-10-09 00:18 +08:00
-- 状态：已完成（安装包与源码已发布，进度及两套本地记忆已保存验证）
+- 更新时间：2026-10-10 18:01 +08:00（v0.3.1 构建与发布）
+- 状态：已完成（v0.3.0 安装包与 v0.3.1 新版本均已交付；v0.3.1 的 GitHub Release 由用户创建上传）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
@@ -13,6 +13,8 @@
 沿用原 `dist` 已验证的主程序、BrowserBridge、浏览器扩展与视频组件，使用 NSIS 制作离线安装包。中文向导可选安装路径，提供开始菜单、可选桌面快捷方式及 Windows 系统卸载入口；默认当前用户安装，升级和卸载保留配置、记录、下载文件和断点。
 
 安装包和独立 SHA256 文件已补充到既有 `v0.3.0` Release。配套源码和说明已提交 `8fe9831be738e1e0bebadb0fbd826bcb02056d83` 并推送远端 `main`。本地分支为 `master`，跟踪 `origin/main`；没有创建新分支，也没有移动 `v0.3.0` 标签。
+
+2026-10-10：桌面程序新增运行日志、分块进度节流、数据库 WAL 与视频失败诊断后，按用户要求**另开 `v0.3.1` 发布**，不替换也不改动 `v0.3.0` 的记录。安装包从已验证的 `dist` 封装（未 `--rebuild`），便携包与校验文件由 `scripts/package_release.py v0.3.1` 生成。
 
 ## 已完成任务
 
@@ -24,6 +26,24 @@
 - [x] 代码和文档已推送，Release 已补充安装版入口及源码提交链接。
 - [x] Codex、Claude Code 记忆正文和索引已同步，Claude 入口已更新；JSON、ID、source_file/anchor、入口链接、条目预算及双库内容一致性验证通过。
 - [x] 已建立本专题进度档，并在原下载器交付进度档增加接续链接。
+- [x] 按 v0.3.1 重建安装包与发布产物：`build_installer.py v0.3.1`（仅封装已验证 dist）+ `package_release.py v0.3.1`。
+- [x] 校对安装包：SHA256 与 `.sha256` 一致、`FileVersion 0.3.1.0`、7z 核查 25 项载荷且不含 `data`/`temp`/`logs`。
+- [x] 校对便携 ZIP：CRC 通过、24 项（23 个发布文件 + 发布说明 `README.md`）、无用户运行数据。
+- [x] 新增 `docs/releases/v0.3.1.md`，README、PROJECT_SUMMARY、BUILD_EXE、INSTALLER 同步到 v0.3.1 链接与校验值。
+- [x] 提交 `45701e4` 并推送 `main`，创建并推送 annotated 标签 `v0.3.1`；`v0.3.0` 标签仍指向 `5c00c3d`。
+
+## v0.3.1 发布（2026-10-10）
+
+本次发布为“运行日志 + 进度节流 + WAL + 视频失败诊断”，桌面程序与新载荷双 EXE 均重新打包并实测；安装脚本、向导与卸载逻辑未改动。
+
+- 发布标识：`v0.3.1`，标签指向 `45701e4075a9cdf0b48461fd8b13399aff6d30b9`（源码提交 `45701e4`）。
+- 安装包：`dist/daw-downloader-v0.3.1-windows-x64-setup.exe`，155,645,269 字节（148.44 MiB），`FileVersion 0.3.1.0`，SHA256 `a1a137a5409c38f34f0247396db2a3d477028c72d1e1c1e8e281a3d75a857bfa`。
+- 便携包：`daw-downloader-v0.3.1-windows-x64.zip`，213,802,439 字节，SHA256 `b6ea05ce3594493d7b0f6d040af1ebe8ed8be98cef32f101c7f74cca906a1f62`；本地产物在 `output/releases/v0.3.1/`（不提交 Git）。
+- 扩展包：`daw-browser-extension-v0.5.0.zip`，17,768 字节，SHA256 `b0bdbb7bf475905711b8a77370fa381102c5d7e062cbe96aae025f18f168682a`（扩展与 v0.3.0 相同）。
+- `SHA256SUMS.txt`（205 字节）校验上述两个 ZIP。
+- 载荷 EXE：主程序 21,634,509 字节 SHA256 `dcc22670…29fc4c`，桥接 9,971,991 字节 SHA256 `c207f9f3…a05b90b`。
+- 附件上传与 Release 创建由用户自行完成（当前环境无 `gh` CLI 也没有 GitHub 令牌，代理无法代传）。
+- 本次未重复执行完整安装向导验收；载荷双 EXE 已在独立目录实测启动写日志、WAL 生效、正常退出，并通过 111 项 Python 回归。此边界已记入 `docs/INSTALLER.md`。
 
 ## 发布与产物
 
@@ -67,6 +87,8 @@
 - 浏览器扩展仍需手动加载安装位置下的 `chrome-extension`，更新后完整刷新已打开的视频网页；卸载后可在浏览器中手动移除扩展。
 - 大安装包通过 Releases 附件分发，使用独立的 `.exe.sha256` 校验；既有 `SHA256SUMS.txt` 仍对应两个旧 ZIP。
 - 当前构建、发布结果与操作说明均已存在。后续修改后是否重建、覆盖或发布，以当时任务授权为准。
+- **发布新版本时不覆盖既有 Release 记录**：用户明确要求发新版本、不要替换原版本的 GitHub 记录；新内容另开版本号（如 `v0.3.2`）。
+- 安装包与便携包必须从已验证的 `dist` 生成；重建 EXE 前确认下载器已正常退出，并核对 `dist/data` 哈希未变。
 
 ## 本地记忆
 
@@ -77,3 +99,5 @@
 ## 下一步行动
 
 本轮暂无剩余实施任务。后续修改安装器时从本档和 `docs/INSTALLER.md` 接续，先核对当前源码、发布附件及用户数据，再按本次具体需求构建和验收。
+
+下一次发布的起点：核对 `dist/data` 与当前双 EXE 哈希 → 跑 `python -B -m unittest discover -s tests` → 需要重建时 `scripts/build_exe.py` → `scripts/build_installer.py <新版本>` 与 `scripts/package_release.py <新版本>` → 更新 `docs/releases/<新版本>.md` 与相关链接 → 提交推送并另开标签，保留原 Release。

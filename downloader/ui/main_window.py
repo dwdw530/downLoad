@@ -7,11 +7,12 @@ import customtkinter as ctk
 import logging
 import os
 import subprocess
+import threading
 from queue import Empty, SimpleQueue
 from tkinter import messagebox, filedialog, PhotoImage
 from typing import Dict
 from downloader.core.task_manager import TaskManager
-from downloader.utils.file_utils import format_speed
+from downloader.utils.file_utils import format_speed, format_size, format_remaining
 from downloader.ui.tray_manager import TrayManager
 
 
@@ -27,6 +28,8 @@ class MainWindow(ctk.CTk):
         self.task_manager = task_manager
         self.task_widgets = {}  # {task_id: widget}
         self._ui_events = SimpleQueue()
+        self._shutdown_dialog_open = False  # 关机确认只能同时开一个，避免多任务同时完成时叠窗
+        self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
 
         # 设置窗口
         self.title("daw下载器 v1.0")
@@ -36,7 +39,19 @@ class MainWindow(ctk.CTk):
         # Keep the full-resolution image; Tk's ICO loader blurs it at high DPI.
         self._window_icon_photo = PhotoImage(master=self, file=os.path.splitext(window_icon)[0] + '.png')
         self.iconphoto(True, self._window_icon_photo)
-        self.geometry("900x600")
+
+        # 主窗口按屏幕居中：尺寸仍是 900x600（CustomTkinter 会按 DPI 缩放放大），
+        # 而 +x+y 是按物理像素原样生效，所以偏移要按缩放换算到物理像素；
+        # 尺寸和位置必须写在同一次 geometry 调用里，分开调用会被二次偏移。
+        window_width, window_height = 900, 600
+        self.update_idletasks()
+        scaling = ctk.ScalingTracker.get_window_scaling(self) or 1
+        win_w, win_h = round(window_width * scaling), round(window_height * scaling)
+        screen_w = int(self.winfo_screenwidth() * scaling)
+        screen_h = int(self.winfo_screenheight() * scaling)
+        x = max(0, (screen_w - win_w) // 2)
+        y = max(0, (screen_h - win_h) // 2)
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         # 设置主题
         ctk.set_appearance_mode("dark")
@@ -139,9 +154,34 @@ class MainWindow(ctk.CTk):
         history_btn = ctk.CTkButton(toolbar, text="📜 历史", command=self._on_history, width=100)
         history_btn.pack(side="right", padx=5)
 
+        # 过滤行：搜索 + 隐藏已完成
+        filter_frame = ctk.CTkFrame(self, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        self.search_entry = ctk.CTkEntry(filter_frame, width=240, placeholder_text="搜索文件名或链接")
+        self.search_entry.pack(side="left")
+        self.search_entry.bind("<KeyRelease>", lambda _event: self._apply_task_filter())
+
+        config = self.task_manager.engine.config
+        self.hide_completed_var = ctk.BooleanVar(value=config.ui_hide_completed)
+        hide_completed_check = ctk.CTkCheckBox(
+            filter_frame,
+            text="隐藏已完成",
+            variable=self.hide_completed_var,
+            command=self._on_hide_completed_toggle,
+        )
+        hide_completed_check.pack(side="left", padx=10)
+
+        self.filter_hint_label = ctk.CTkLabel(filter_frame, text="", font=("Arial", 11), text_color="gray")
+        self.filter_hint_label.pack(side="right", padx=5)
+
         # 任务列表区域（使用Scrollable Frame）
         self.task_list_frame = ctk.CTkScrollableFrame(self, label_text="下载任务列表")
         self.task_list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # 空态提示：由 _apply_task_filter 统一控制显示
+        self.empty_label = ctk.CTkLabel(self.task_list_frame, text="暂无任务", text_color="gray")
+        self.empty_label.pack(pady=20)
 
         # 底部状态栏
         self.status_bar = ctk.CTkFrame(self, height=40)
@@ -151,22 +191,103 @@ class MainWindow(ctk.CTk):
         self.status_label.pack(side="left", padx=10)
 
     def _on_add_task(self):
-        """添加任务对话框"""
+        """添加任务对话框（支持多行批量）"""
         dialog = AddTaskDialog(self)
         self.wait_window(dialog)
 
-        if dialog.confirmed:
-            # 添加任务（带哈希校验参数）
+        if not dialog.confirmed:
+            return
+
+        urls, skipped = self._dedupe_urls(dialog.urls)
+        if not urls:
+            return
+
+        if len(urls) == 1:
+            # 单链接保持原同步流程，行为和原来完全一致
             task_id = self.task_manager.add_task(
-                url=dialog.url,
+                url=urls[0],
                 save_path=dialog.save_dir,
                 expected_hash=dialog.expected_hash,
-                hash_type=dialog.hash_type
+                hash_type=dialog.hash_type,
+                start_later=dialog.start_later,
             )
             if task_id:
-                messagebox.showinfo("成功", "任务添加成功！")
+                message = "任务添加成功！"
+                if skipped:
+                    message += f"\n已跳过 {skipped} 条重复链接"
+                messagebox.showinfo("成功", message)
             else:
                 messagebox.showerror("错误", "任务添加失败！")
+            return
+
+        self._add_tasks_in_background(urls, dialog, skipped)
+
+    @staticmethod
+    def _dedupe_urls(urls) -> tuple:
+        """同批内按顺序去重，返回 (去重后列表, 跳过条数)"""
+        unique = []
+        seen = set()
+        skipped = 0
+        for url in urls or ():
+            if url in seen:
+                skipped += 1
+                continue
+            seen.add(url)
+            unique.append(url)
+        return unique, skipped
+
+    def _add_tasks_in_background(self, urls, dialog, skipped: int = 0):
+        """批量添加走后台：每条链接都要发探测请求，同步会把界面卡死"""
+        save_dir = dialog.save_dir
+        expected_hash = dialog.expected_hash
+        hash_type = dialog.hash_type
+        start_later = dialog.start_later
+        self._batch_add_pending += len(urls)
+
+        def worker():
+            success = 0
+            failures = []
+            try:
+                for url in urls:
+                    reason = "无法获取文件大小或链接不可用"
+                    try:
+                        task_id = self.task_manager.add_task(
+                            url=url,
+                            save_path=save_dir,
+                            expected_hash=expected_hash,
+                            hash_type=hash_type,
+                            start_later=start_later,
+                        )
+                    except Exception as e:
+                        task_id = None
+                        reason = str(e)
+                    if task_id:
+                        success += 1
+                    else:
+                        failures.append(f"{url}（{reason}）")
+            finally:
+                self._batch_add_pending -= len(urls)
+                # 日志不记链接，只记数量，避免把 URL 写进日志
+                logger.info("批量添加完成: 成功=%d 失败=%d 跳过=%d", success, len(failures), skipped)
+                self._ui_events.put((self._show_add_summary, (success, failures, skipped)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_add_summary(self, success: int, failures, skipped: int):
+        """批量添加结果汇总（成功失败都只弹一个框）"""
+        lines = [f"成功添加 {success} 个任务"]
+        if skipped:
+            lines.append(f"已跳过 {skipped} 条重复链接")
+        if failures:
+            lines.append(f"失败 {len(failures)} 个：")
+            lines.extend(f"  • {item}" for item in failures[:3])
+            if len(failures) > 3:
+                lines.append(f"  … 其余 {len(failures) - 3} 个未列出")
+        text = "\n".join(lines)
+        if success:
+            messagebox.showinfo("添加结果", text)
+        else:
+            messagebox.showerror("添加结果", text)
 
     def _on_pause_all(self):
         """暂停全部任务"""
@@ -221,6 +342,10 @@ class MainWindow(ctk.CTk):
             if max_concurrent is not None:
                 self.task_manager.set_max_concurrent(max_concurrent)
 
+            # 恢复默认设置可能把隐藏已完成改回关，勾选框得跟着配置走
+            self.hide_completed_var.set(config.ui_hide_completed)
+            self._apply_task_filter()
+
         # 兜一层after，保证控件操作和队列调度都在主线程触发
         self.after(0, apply_runtime_settings)
 
@@ -252,6 +377,9 @@ class MainWindow(ctk.CTk):
                 float(task_for_ui.get('speed') or 0),
             )
 
+        # 没有任务时上面的回调一个都不会跑，这里补一次，把空态和“显示 N / M”初始化
+        self._apply_task_filter()
+
     def _add_task_widget(self, task: Dict):
         """添加任务UI组件"""
         task_id = task['task_id']
@@ -277,21 +405,30 @@ class MainWindow(ctk.CTk):
         )
         location_btn.pack(side="right", padx=5)
 
-        # 进度条
-        progress_bar = ctk.CTkProgressBar(info_frame, width=400)
-        progress_bar.pack(side="left", padx=5)
+        # 进度条（拉满剩余宽度，窗口缩放不露出空档）
+        progress_bar = ctk.CTkProgressBar(info_frame, width=300)
+        progress_bar.pack(side="left", fill="x", expand=True, padx=5)
         progress_bar.set(0)
 
         # 进度百分比
         progress_label = ctk.CTkLabel(info_frame, text="0%", width=60)
         progress_label.pack(side="left", padx=5)
 
-        # 速度
-        speed_label = ctk.CTkLabel(info_frame, text="0 KB/s", width=100)
+        # 详情行：已下载/总大小、剩余时间、速度、状态
+        detail_frame = ctk.CTkFrame(task_frame, fg_color="transparent")
+        detail_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        # 宽度写死，不然数字一跳整行都在抖
+        size_label = ctk.CTkLabel(detail_frame, text="已下载 0 B / 未知", width=220, anchor="w")
+        size_label.pack(side="left", padx=5)
+
+        eta_label = ctk.CTkLabel(detail_frame, text="剩余 --", width=140, anchor="w")
+        eta_label.pack(side="left", padx=5)
+
+        speed_label = ctk.CTkLabel(detail_frame, text="0 KB/s", width=110, anchor="w")
         speed_label.pack(side="left", padx=5)
 
-        # 状态
-        status_label = ctk.CTkLabel(info_frame, text=self._get_status_text(task['status']), width=80)
+        status_label = ctk.CTkLabel(detail_frame, text=self._get_status_text(task['status']), width=80, anchor="w")
         status_label.pack(side="left", padx=5)
 
         # 按钮区域
@@ -320,12 +457,20 @@ class MainWindow(ctk.CTk):
             'frame': task_frame,
             'progress_bar': progress_bar,
             'progress_label': progress_label,
+            'size_label': size_label,
+            'eta_label': eta_label,
             'speed_label': speed_label,
             'status_label': status_label,
             'action_btn': action_btn,
             'cancel_btn': cancel_btn,
             'location_btn': location_btn,
+            # 过滤用的缓存，避免每次输入都查库
+            'filename': task.get('filename') or '',
+            'url': task.get('url') or '',
+            'status': task.get('status') or 'pending',
         }
+
+        self._apply_task_filter()
 
     def _configure_action_button(self, task_id: str, status: str, action_btn: ctk.CTkButton):
         """根据任务状态配置操作按钮"""
@@ -405,6 +550,7 @@ class MainWindow(ctk.CTk):
             if task_id in self.task_widgets:
                 self.task_widgets[task_id]['frame'].destroy()
                 del self.task_widgets[task_id]
+                self._apply_task_filter()
 
     def _on_open_location(self, task_id: str):
         """打开文件位置（Windows资源管理器定位文件）"""
@@ -432,6 +578,61 @@ class MainWindow(ctk.CTk):
         except Exception as e:
             messagebox.showerror("错误", f"打开文件位置失败: {e}")
 
+    def _handle_download_completed(self, task_id: str):
+        """下载完成后动作：打开文件/所在文件夹、全部完成后关机（默认全关）"""
+        actions = self.task_manager.engine.config.after_download
+        if not any(actions.values()):
+            return
+
+        task = self.task_manager.get_task(task_id)
+        if not task:
+            return
+
+        save_path = task.get('save_path') or ''
+
+        if actions['open_file'] and save_path and os.path.exists(save_path):
+            try:
+                os.startfile(save_path)
+            except Exception as e:
+                logger.warning("完成后打开文件失败: %s", e)
+
+        if actions['open_folder'] and save_path:
+            self._on_open_location(task_id)
+
+        if actions['shutdown']:
+            self._schedule_shutdown_if_idle()
+
+    def _has_active_tasks(self) -> bool:
+        """是否还有在跑的任务（下载中/等待/校验中）"""
+        return any(
+            task.get('status') in ('downloading', 'pending', 'verifying')
+            for task in self.task_manager.get_all_tasks()
+        )
+
+    def _schedule_shutdown_if_idle(self):
+        """队列里还有任务就先不关机，等最后一个完成时再弹确认"""
+        if self._shutdown_dialog_open or self._has_active_tasks():
+            return
+
+        self._shutdown_dialog_open = True
+        try:
+            dialog = ShutdownConfirmDialog(self, on_shutdown=self._perform_shutdown)
+            self.wait_window(dialog)
+        finally:
+            self._shutdown_dialog_open = False
+
+    def _perform_shutdown(self):
+        """等倒计时确认走完才真关机，取消就是什么都不做"""
+        logger.info("全部下载完成，执行关机命令")
+        try:
+            subprocess.Popen(
+                ["shutdown", "/s", "/t", "0"],
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+        except Exception as e:
+            logger.error("执行关机命令失败: %s", e)
+            messagebox.showerror("错误", f"关机失败: {e}")
+
     def _on_task_added(self, task_id: str):
         """任务添加回调"""
         task = self.task_manager.get_task(task_id)
@@ -447,6 +648,8 @@ class MainWindow(ctk.CTk):
             task = self.task_manager.get_task(task_id)
             if task and hasattr(self, 'tray_manager'):
                 self.tray_manager.notify_download_complete(task['filename'])
+            # 完成后动作必须走UI事件队列，不能在引擎回调线程里直接开窗口/关机
+            self._ui_events.put((self._handle_download_completed, (task_id,)))
 
     def _on_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """任务进度回调"""
@@ -469,15 +672,19 @@ class MainWindow(ctk.CTk):
             return
 
         widgets = self.task_widgets[task_id]
+        widgets['status'] = status
         widgets['status_label'].configure(text=self._get_status_text(status))
         if status != 'downloading':
             widgets['speed_label'].configure(text=format_speed(0))
+            widgets['eta_label'].configure(text="剩余 --")
         if 'cancel_btn' in widgets:
             widgets['cancel_btn'].configure(state='disabled' if status == 'completed' else 'normal')
 
         # 更新按钮
         action_btn = widgets['action_btn']
         self._configure_action_button(task_id, status, action_btn)
+
+        self._apply_task_filter()
 
     def _update_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """更新任务进度UI"""
@@ -496,6 +703,15 @@ class MainWindow(ctk.CTk):
         # 更新速度
         widgets['speed_label'].configure(text=format_speed(speed))
 
+        # 已下载/总大小 + 剩余时间：总大小未知时别编数字
+        total_text = format_size(total_size) if total_size > 0 else "未知"
+        widgets['size_label'].configure(text=f"已下载 {format_size(downloaded_size)} / {total_text}")
+        if widgets.get('status') == 'downloading':
+            remaining = max(0, total_size - downloaded_size) if total_size > 0 else 0
+            widgets['eta_label'].configure(text=f"剩余 {format_remaining(remaining, speed)}")
+        else:
+            widgets['eta_label'].configure(text="剩余 --")
+
     def _start_ui_update_thread(self):
         """使用Tk定时器更新状态栏，窗口销毁后不再保留后台线程。"""
         def update_status_bar():
@@ -503,10 +719,46 @@ class MainWindow(ctk.CTk):
             downloading_tasks = self.task_manager.get_downloading_tasks()
             total_speed = sum(task['speed'] for task in downloading_tasks)
             status_text = f"总速度: {format_speed(total_speed)} | 下载中: {stats['downloading']} | 等待: {stats['pending']}"
+            if self._batch_add_pending:
+                status_text += f" | 正在添加 {self._batch_add_pending} 个任务…"
             self.status_label.configure(text=status_text)
             self.after(1000, update_status_bar)
 
         self.after(1000, update_status_bar)
+
+    def _on_hide_completed_toggle(self):
+        """隐藏已完成：立即生效并持久化"""
+        config = self.task_manager.engine.config
+        config.ui_hide_completed = bool(self.hide_completed_var.get())
+        config.save()
+        self._apply_task_filter()
+
+    def _apply_task_filter(self):
+        """按搜索词与“隐藏已完成”统一控制任务行显示"""
+        keyword = self.search_entry.get().strip().lower()
+        hide_completed = bool(self.hide_completed_var.get())
+        visible = 0
+
+        for widgets in self.task_widgets.values():
+            matched = not keyword or keyword in widgets['filename'].lower() or keyword in widgets['url'].lower()
+            if hide_completed and widgets['status'] == 'completed':
+                matched = False
+
+            frame = widgets['frame']
+            if matched:
+                if not frame.winfo_manager():
+                    frame.pack(fill="x", pady=5)
+                visible += 1
+            elif frame.winfo_manager():
+                frame.pack_forget()
+
+        if visible == 0:
+            self.empty_label.configure(text="没有匹配的任务" if (keyword or hide_completed) else "暂无任务")
+            self.empty_label.pack(pady=20)
+        elif self.empty_label.winfo_manager():
+            self.empty_label.pack_forget()
+
+        self.filter_hint_label.configure(text=f"显示 {visible} / {len(self.task_widgets)}")
 
     @staticmethod
     def _get_status_text(status: str) -> str:
@@ -727,6 +979,76 @@ class CloseConfirmDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class ShutdownConfirmDialog(ctk.CTkToplevel):
+    """全部下载完成后的关机确认（倒计时结束才真关机，关窗=取消）"""
+
+    DEFAULT_COUNTDOWN = 60
+
+    def __init__(self, parent, on_shutdown=None, countdown: int = DEFAULT_COUNTDOWN):
+        super().__init__(parent)
+
+        self._on_shutdown = on_shutdown
+        self._remaining = max(0, int(countdown))
+        self._tick_id = None
+
+        self.title("下载完成")
+        self.geometry("360x150")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="全部下载已完成", font=("Arial", 14, "bold")).pack(pady=(20, 5))
+
+        self.count_label = ctk.CTkLabel(self, text=self._countdown_text())
+        self.count_label.pack(pady=5)
+
+        button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        button_frame.pack(pady=10)
+
+        ctk.CTkButton(button_frame, text="立即关机", width=100, command=self._shutdown_now).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="取消", width=100, command=self.destroy).pack(side="left", padx=5)
+
+        self._center(parent)
+        self._tick()
+
+    def _countdown_text(self) -> str:
+        return f"{self._remaining} 秒后自动关机"
+
+    def _center(self, parent):
+        try:
+            parent.update_idletasks()
+            x = parent.winfo_rootx() + (parent.winfo_width() - 360) // 2
+            y = parent.winfo_rooty() + (parent.winfo_height() - 150) // 2
+            self.geometry(f"360x150+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+
+    def _tick(self):
+        if not self.winfo_exists():
+            return
+        if self._remaining <= 0:
+            self._shutdown_now()
+            return
+        self.count_label.configure(text=self._countdown_text())
+        self._remaining -= 1
+        self._tick_id = self.after(1000, self._tick)
+
+    def destroy(self):
+        # 定时器必须先撤，不然窗口没了回调还会炸一遍
+        if self._tick_id is not None:
+            try:
+                self.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        super().destroy()
+
+    def _shutdown_now(self):
+        self.destroy()
+        if self._on_shutdown:
+            self._on_shutdown()
+
+
 class DeleteTaskDialog(ctk.CTkToplevel):
     """删除任务对话框"""
 
@@ -809,7 +1131,7 @@ class DeleteTaskDialog(ctk.CTkToplevel):
 
 
 class AddTaskDialog(ctk.CTkToplevel):
-    """添加任务对话框 - 支持哈希校验"""
+    """添加任务对话框 - 支持多行批量与哈希校验"""
 
     def _revert_withdraw_after_windows_set_titlebar_color(self):
         # 与退出对话框相同：标题栏延迟回调可能晚于窗口销毁。
@@ -826,10 +1148,12 @@ class AddTaskDialog(ctk.CTkToplevel):
         super().__init__(parent)
 
         self.confirmed = False
-        self.url = ""
+        self.urls = []           # 解析后的链接列表（批量按行）
+        self.url = ""            # 兼容调用方：首条链接
         self.save_dir = ""
         self.expected_hash = ""
         self.hash_type = "md5"
+        self.start_later = False
 
         # 设置窗口
         self.title("添加下载任务")
@@ -844,11 +1168,12 @@ class AddTaskDialog(ctk.CTkToplevel):
         self._create_ui()
 
         # 居中显示
-        self._center_window(parent, 500, 320)
+        self._center_window(parent, 520, 430)
 
-        # 快捷键
+        # 快捷键：多行输入框里回车是换行，提交用 Ctrl+Enter
         self.bind("<Escape>", lambda _: self._on_cancel())
-        self.bind("<Return>", lambda _: self._on_confirm())
+        self.bind("<Return>", self._on_return)
+        self.bind("<Control-Return>", lambda _: self._on_confirm())
         self.focus_force()
 
     def _center_window(self, parent, width, height):
@@ -865,13 +1190,15 @@ class AddTaskDialog(ctk.CTkToplevel):
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # URL输入
-        url_label = ctk.CTkLabel(main_frame, text="下载链接:", font=("Arial", 12))
+        # URL输入（多行=批量，一行一个）
+        url_label = ctk.CTkLabel(main_frame, text="下载链接（每行一个，支持批量）:", font=("Arial", 12))
         url_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
 
-        self.url_entry = ctk.CTkEntry(main_frame, width=400, placeholder_text="请输入下载链接")
-        self.url_entry.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 15))
-        self.url_entry.focus_set()
+        self.url_text = ctk.CTkTextbox(main_frame, width=400, height=90)
+        self.url_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 15))
+        self.url_text.bind("<KeyRelease>", self._on_url_changed)
+        self.url_text.bind("<<Paste>>", lambda _event: self.after(50, self._on_url_changed))
+        self.url_text.focus_set()
 
         # 保存位置
         save_label = ctk.CTkLabel(main_frame, text="保存位置:", font=("Arial", 12))
@@ -895,24 +1222,35 @@ class AddTaskDialog(ctk.CTkToplevel):
 
         # 哈希类型选择
         self.hash_type_var = ctk.StringVar(value="md5")
-        hash_type_menu = ctk.CTkOptionMenu(
+        self.hash_type_menu = ctk.CTkOptionMenu(
             hash_frame,
             values=["md5", "sha256"],
             variable=self.hash_type_var,
             width=80
         )
-        hash_type_menu.pack(side="left")
+        self.hash_type_menu.pack(side="left")
 
         # 哈希值输入
         self.hash_entry = ctk.CTkEntry(hash_frame, width=310, placeholder_text="预期哈希值（留空跳过校验）")
         self.hash_entry.pack(side="left", padx=(10, 0))
 
-        # 按钮区域
-        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        button_frame.grid(row=6, column=0, columnspan=2, pady=(10, 0))
+        # 批量提示：多行时忽略校验字段
+        self.batch_hint_label = ctk.CTkLabel(main_frame, text="", font=("Arial", 11), text_color="gray")
+        self.batch_hint_label.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        confirm_btn = ctk.CTkButton(button_frame, text="添加", command=self._on_confirm, width=100)
-        confirm_btn.pack(side="left", padx=10)
+        # 按钮区域：开始下载 / 稍后下载 / 取消
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.grid(row=7, column=0, columnspan=2, pady=(10, 0))
+
+        start_btn = ctk.CTkButton(button_frame, text="开始下载", command=lambda: self._on_confirm(False), width=100)
+        start_btn.pack(side="left", padx=10)
+
+        later_btn = ctk.CTkButton(
+            button_frame, text="稍后下载", command=lambda: self._on_confirm(True), width=100,
+            fg_color=("gray85", "gray25"), hover_color=("gray80", "gray30"),
+            text_color=("gray10", "gray90")
+        )
+        later_btn.pack(side="left", padx=10)
 
         cancel_btn = ctk.CTkButton(
             button_frame, text="取消", command=self._on_cancel, width=100,
@@ -920,6 +1258,34 @@ class AddTaskDialog(ctk.CTkToplevel):
             text_color=("gray10", "gray90")
         )
         cancel_btn.pack(side="left", padx=10)
+
+        self._on_url_changed()
+
+    def parse_urls(self) -> list:
+        """按行解析链接：去空行、去首尾空格"""
+        try:
+            raw = self.url_text.get("1.0", "end")
+        except Exception:
+            return []
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def _on_url_changed(self, _event=None):
+        """链接行数变化时切换校验字段可用性和批量提示"""
+        multiple = len(self.parse_urls()) > 1
+        state = "disabled" if multiple else "normal"
+        self.hash_entry.configure(state=state)
+        self.hash_type_menu.configure(state=state)
+        self.batch_hint_label.configure(
+            text="多行批量添加时忽略文件校验" if multiple else "")
+        return None
+
+    def _on_return(self, event=None):
+        """多行输入框里回车只换行，别的控件回车才提交"""
+        widget = getattr(event, "widget", None)
+        if widget is not None and widget.winfo_class() == "Text":
+            return None
+        self._on_confirm(False)
+        return "break"
 
     def _on_browse(self):
         """浏览保存位置"""
@@ -929,19 +1295,26 @@ class AddTaskDialog(ctk.CTkToplevel):
             self.save_entry.delete(0, "end")
             self.save_entry.insert(0, directory)
 
-    def _on_confirm(self):
-        """确定"""
-        url = self.url_entry.get().strip()
-        if not url:
+    def _on_confirm(self, start_later: bool = False):
+        """确定：单链接带哈希校验，多链接只批量加任务"""
+        urls = self.parse_urls()
+        if not urls:
             from tkinter import messagebox
             messagebox.showerror("错误", "请输入下载链接！", parent=self)
             return
 
         self.confirmed = True
-        self.url = url
+        self.urls = urls
+        self.url = urls[0]
+        self.start_later = bool(start_later)
         self.save_dir = self.save_entry.get().strip() or None
-        self.expected_hash = self.hash_entry.get().strip() or None
-        self.hash_type = self.hash_type_var.get()
+        if len(urls) == 1:
+            self.expected_hash = self.hash_entry.get().strip() or None
+            self.hash_type = self.hash_type_var.get()
+        else:
+            # 批量没有单一哈希概念，直接忽略校验字段
+            self.expected_hash = None
+            self.hash_type = "md5"
         self.destroy()
 
     def _on_cancel(self):

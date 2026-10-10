@@ -48,6 +48,37 @@ def format_speed(speed_bytes_per_sec: float) -> str:
         return f"{speed_bytes_per_sec / (1024 * 1024):.2f} MB/s"
 
 
+def format_remaining(remaining_bytes: int, speed: float) -> str:
+    """
+    格式化剩余时间
+    Args:
+        remaining_bytes: 剩余字节数
+        speed: 当前速度（字节/秒）
+    Returns:
+        "mm:ss" / "h:mm:ss" / "超过 1 天"；未知或无法估算时返回 "--"
+    老王说：速度没拿到就别硬编一个剩余时间坑用户！
+    """
+    try:
+        remaining = int(remaining_bytes or 0)
+        rate = float(speed or 0)
+    except (TypeError, ValueError):
+        return "--"
+
+    if remaining <= 0 or rate <= 0:
+        return "--"
+
+    seconds = remaining / rate
+    if seconds > 24 * 3600:
+        return "超过 1 天"
+
+    total_seconds = int(seconds + 0.5)
+    hours, rest = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 def get_filename_from_url(url: str) -> str:
     """
     从URL中提取文件名

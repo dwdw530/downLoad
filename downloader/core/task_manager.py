@@ -126,7 +126,8 @@ class TaskManager:
     def add_task(self, url: str, filename: Optional[str] = None,
                  save_path: Optional[str] = None,
                  expected_hash: Optional[str] = None,
-                 hash_type: str = "md5", request_context=None) -> Optional[str]:
+                 hash_type: str = "md5", request_context=None,
+                 start_later: bool = False) -> Optional[str]:
         """
         添加下载任务
         Args:
@@ -135,12 +136,14 @@ class TaskManager:
             save_path: 保存路径（可选）
             expected_hash: 预期哈希值（可选，用于下载后校验）
             hash_type: 哈希类型（md5/sha256）
+            start_later: 是否稍后手动开始（不自动进入下载队列）
         Returns:
             任务ID，失败返回None
         """
         # 创建任务
         kwargs = {'request_context': request_context} if request_context is not None else {}
-        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type, **kwargs)
+        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type,
+                                                  start_later=start_later, **kwargs)
         if not task_id:
             return None
 
@@ -148,8 +151,9 @@ class TaskManager:
         if self.task_added_callback:
             self.task_added_callback(task_id)
 
-        # 尝试启动任务
-        self._try_start_next_task()
+        # 稍后下载不进队列调度，不然刚建完就被自动拉起来了
+        if not start_later:
+            self._try_start_next_task()
 
         return task_id
 

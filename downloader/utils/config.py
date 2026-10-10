@@ -46,6 +46,12 @@ class ConfigManager:
         },
         "close_behavior": "ask",  # 关闭行为：ask|minimize|exit
         "speed_limit": 0,  # 速度限制（字节/秒），0表示不限速
+        "ui_hide_completed": False,  # 任务列表是否隐藏已完成任务（搜索词不持久化）
+        "after_download": {  # 下载完成后的动作，默认全部关闭
+            "open_file": False,  # 打开文件
+            "open_folder": False,  # 打开所在文件夹
+            "shutdown": False,  # 全部任务完成后关机
+        },
     }
 
     def __init__(self, config_path: str = None):
@@ -179,6 +185,32 @@ class ConfigManager:
     def speed_limit(self, value: int):
         """设置速度限制"""
         self._config["speed_limit"] = max(0, value)  # 不能为负数
+
+    @property
+    def ui_hide_completed(self) -> bool:
+        """任务列表是否隐藏已完成任务"""
+        return bool(self._config.get("ui_hide_completed", False))
+
+    @ui_hide_completed.setter
+    def ui_hide_completed(self, value: bool):
+        self._config["ui_hide_completed"] = bool(value)
+
+    # ==================== 下载完成后动作 ====================
+
+    @property
+    def after_download(self) -> dict:
+        """下载完成后动作，老配置缺字段时补默认值，别让键不存在炸掉回调"""
+        cfg = self._config.get("after_download") or {}
+        return {key: bool(cfg.get(key, False))
+                for key in ("open_file", "open_folder", "shutdown")}
+
+    @after_download.setter
+    def after_download(self, value: dict):
+        cfg = value or {}
+        self._config["after_download"] = {
+            key: bool(cfg.get(key, False))
+            for key in ("open_file", "open_folder", "shutdown")
+        }
 
     # ==================== 代理配置 ====================
 

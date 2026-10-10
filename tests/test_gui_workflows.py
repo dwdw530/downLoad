@@ -7,10 +7,12 @@ import traceback
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from downloader.ui.main_window import MainWindow, AddTaskDialog, DeleteTaskDialog, CloseConfirmDialog
+from downloader.ui.main_window import (MainWindow, AddTaskDialog, DeleteTaskDialog, CloseConfirmDialog,
+                                      ShutdownConfirmDialog)
 from downloader.ui.history_dialog import HistoryDialog
 from downloader.ui.settings_dialog import SettingsDialog
 from downloader.utils.config import ConfigManager
+from downloader.utils.file_utils import format_size, format_remaining
 from test_features import FeatureFixture, PAYLOAD
 
 
@@ -83,7 +85,7 @@ class GuiFeatures(FeatureFixture):
 
     def test_add_download_progress_history_and_delete_record(self):
         def fill(dialog):
-            dialog.url_entry.insert(0, self.base_url + '/range')
+            dialog.url_text.insert('1.0', self.base_url + '/range')
             dialog.save_entry.insert(0, str(self.root / 'chosen'))
             dialog.hash_entry.insert(0, hashlib.sha256(PAYLOAD).hexdigest())
             dialog.hash_type_var.set('sha256')
@@ -246,3 +248,211 @@ class GuiFeatures(FeatureFixture):
         self.pump()
         self.assertEqual(self.db.get_task(task_id)['status'], 'paused')
         self.assertEqual(self.app.task_widgets[task_id]['speed_label'].cget('text'), '0 B/s')
+
+    def test_settings_persist_after_download_actions(self):
+        def fill(dialog):
+            dialog.after_open_file_var.set(True)
+            dialog.after_shutdown_var.set(True)
+            dialog._on_save()
+        self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+        reloaded = ConfigManager(self.config.config_path)
+        self.assertEqual(reloaded.after_download,
+                         {'open_file': True, 'open_folder': False, 'shutdown': True})
+
+    def test_completion_actions_stay_off_until_enabled(self):
+        # 不需要真实下载：动作开关关闭时，完成回调就应该什么都不做
+        task_id = self.create('/tiny')
+        self.app._on_task_added(task_id)
+        self.pump()
+        self.app._on_task_status_changed(task_id, 'completed', '')
+        self.pump(0.3)
+        self.assertEqual(self.config.after_download,
+                         {'open_file': False, 'open_folder': False, 'shutdown': False})
+        with patch('downloader.ui.main_window.os.startfile') as startfile, \
+                patch('downloader.ui.main_window.subprocess.Popen') as popen:
+            self.app._on_task_status_changed(task_id, 'completed', '')
+            self.pump(0.3)
+        startfile.assert_not_called()
+        popen.assert_not_called()
+
+    def test_completion_actions_open_file_and_folder_when_enabled(self):
+        task_id = self.create('/range')
+        self.assertTrue(self.manager.start_task(task_id))
+        task = self.wait_task(task_id, timeout=20)
+        self.pump(0.3)  # 先把真实完成事件排空，确保下面统计的只是本次触发
+        self.config.after_download = {'open_file': True, 'open_folder': True}
+        with patch('downloader.ui.main_window.os.startfile') as startfile, \
+                patch('downloader.ui.main_window.subprocess.Popen') as popen:
+            self.app._on_task_status_changed(task_id, 'completed', '')
+            self.pump(0.3)
+        startfile.assert_called_once_with(task['save_path'])
+        self.assertEqual(popen.call_args.args[0][0], 'explorer')
+
+    def test_verified_failure_does_not_trigger_completion_actions(self):
+        task_id = self.create('/tiny')
+        self.app._on_task_added(task_id)
+        self.pump()
+        self.config.after_download = {'open_file': True, 'open_folder': True, 'shutdown': True}
+        with patch('downloader.ui.main_window.os.startfile') as startfile, \
+                patch('downloader.ui.main_window.subprocess.Popen') as popen:
+            self.app._on_task_status_changed(task_id, 'verify_failed', 'hash mismatch')
+            self.pump(0.3)
+        startfile.assert_not_called()
+        popen.assert_not_called()
+
+    def test_shutdown_waits_for_the_last_active_task(self):
+        task_id = self.create('/tiny')
+        self.app._on_task_added(task_id)
+        self.pump()
+        self.config.after_download = {'shutdown': True}
+        with patch.object(self.manager, 'get_all_tasks', return_value=[{'status': 'downloading'}]), \
+                patch('downloader.ui.main_window.ShutdownConfirmDialog') as dialog_class, \
+                patch.object(self.app, 'wait_window') as wait_window:
+            self.app._handle_download_completed(task_id)
+        dialog_class.assert_not_called()
+        wait_window.assert_not_called()
+
+        with patch.object(self.manager, 'get_all_tasks', return_value=[{'status': 'completed'}]), \
+                patch('downloader.ui.main_window.ShutdownConfirmDialog') as dialog_class, \
+                patch.object(self.app, 'wait_window') as wait_window:
+            self.app._handle_download_completed(task_id)
+        dialog_class.assert_called_once()
+        wait_window.assert_called_once()
+
+    def test_shutdown_dialog_runs_callback_only_after_countdown(self):
+        calls = []
+        dialog = ShutdownConfirmDialog(self.app, on_shutdown=lambda: calls.append('shutdown'), countdown=0)
+        self.pump(0.3)
+        self.assertEqual(calls, ['shutdown'])
+        self.assertFalse(dialog.winfo_exists())
+
+    def test_shutdown_dialog_closing_cancels_shutdown(self):
+        calls = []
+        dialog = ShutdownConfirmDialog(self.app, on_shutdown=lambda: calls.append('shutdown'), countdown=1)
+        self.pump(0.1)
+        dialog.destroy()
+        self.pump(1.5)
+        self.assertEqual(calls, [])
+
+    def test_task_card_shows_size_and_remaining_time(self):
+        task_id = self.create('/tiny')
+        self.app._on_task_added(task_id)
+        self.pump()
+        total = len(PAYLOAD)
+        self.app._on_task_status_changed(task_id, 'downloading', '')
+        self.app._on_task_progress(task_id, 8192, total, 4096)
+        self.pump()
+        widgets = self.app.task_widgets[task_id]
+        self.assertEqual(widgets['size_label'].cget('text'),
+                         f"已下载 {format_size(8192)} / {format_size(total)}")
+        self.assertEqual(widgets['eta_label'].cget('text'), '剩余 00:06')
+        self.app._on_task_status_changed(task_id, 'paused', '')
+        self.pump()
+        self.assertEqual(widgets['eta_label'].cget('text'), '剩余 --')
+        self.assertEqual(widgets['speed_label'].cget('text'), '0 B/s')
+
+    def test_add_dialog_switches_hash_state_with_url_lines(self):
+        dialog = AddTaskDialog(self.app)
+        self.pump(0.25)
+        self.assertEqual(dialog.hash_entry.cget('state'), 'normal')
+        dialog.url_text.insert('1.0', 'https://example.invalid/1\nhttps://example.invalid/2')
+        dialog._on_url_changed()
+        self.assertEqual(dialog.hash_entry.cget('state'), 'disabled')
+        self.assertEqual(dialog.hash_type_menu.cget('state'), 'disabled')
+        self.assertTrue(dialog.batch_hint_label.cget('text'))
+        dialog.url_text.delete('1.0', 'end')
+        dialog.url_text.insert('1.0', 'https://example.invalid/1')
+        dialog._on_url_changed()
+        self.assertEqual(dialog.hash_entry.cget('state'), 'normal')
+        self.assertEqual(dialog.batch_hint_label.cget('text'), '')
+        dialog.destroy()
+
+    def test_add_dialog_enter_in_textbox_keeps_dialog_open(self):
+        dialog = AddTaskDialog(self.app)
+        self.pump(0.25)
+        inner_text = next(w for w in dialog.url_text.winfo_children() if w.winfo_class() == 'Text')
+        self.assertIsNone(dialog._on_return(SimpleNamespace(widget=inner_text)))
+        self.assertTrue(dialog.winfo_exists())
+        self.assertFalse(dialog.confirmed)
+        # 多行框以外的控件回车才提交
+        dialog.url_text.insert('1.0', self.base_url + '/range')
+        dialog._on_return(SimpleNamespace(widget=dialog.save_entry))
+        self.assertFalse(dialog.winfo_exists())
+        self.assertTrue(dialog.confirmed)
+
+    def test_start_later_creates_paused_task_without_queue_scheduling(self):
+        def fill(dialog):
+            dialog.url_text.insert('1.0', self.base_url + '/range')
+            dialog._on_confirm(True)
+        with patch.object(self.manager, '_try_start_next_task') as schedule:
+            self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
+            self.pump(0.3)
+        schedule.assert_not_called()
+        task = self.db.get_all_tasks()[0]
+        self.assertEqual(task['status'], 'paused')
+        self.assertEqual(self.app.task_widgets[task['task_id']]['action_btn'].cget('text'), '▶ 继续')
+
+    def test_start_now_creates_pending_task_and_starts_queue(self):
+        def fill(dialog):
+            dialog.url_text.insert('1.0', self.base_url + '/range')
+            dialog._on_confirm(False)
+        self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
+        task = self.db.get_all_tasks()[0]
+        self.assertIn(task['status'], ('pending', 'downloading', 'completed'))
+        self.assertNotEqual(task['status'], 'paused')
+
+    def test_batch_add_creates_tasks_and_reports_failures(self):
+        def fill(dialog):
+            dialog.url_text.insert(
+                '1.0', f"{self.base_url}/range\n{self.base_url}/tiny\n{self.base_url}/not-found")
+            dialog._on_confirm()
+        self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(self.db.get_all_tasks()) < 2:
+            self.pump(0.2)
+        self.pump(0.5)
+        self.assertEqual({task['filename'] for task in self.db.get_all_tasks()}, {'range', 'tiny'})
+        summaries = [call.args for call in self.mocks[2].call_args_list
+                     if call.args and call.args[0] == '添加结果']
+        self.assertEqual(len(summaries), 1)
+        self.assertIn('成功添加 2 个任务', summaries[0][1])
+        self.assertIn('失败 1 个', summaries[0][1])
+
+    def test_batch_add_skips_duplicate_urls(self):
+        def fill(dialog):
+            dialog.url_text.insert('1.0', f"{self.base_url}/range\n{self.base_url}/range")
+            dialog._on_confirm()
+        self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
+        self.pump(0.3)
+        self.assertEqual(len(self.db.get_all_tasks()), 1)
+        self.assertIn('已跳过 1 条重复链接', self.mocks[2].call_args.args[1])
+
+    def test_search_and_hide_completed_filter_tasks(self):
+        # 只走状态回调，不真跑下载：过滤只看 task_widgets 里缓存的 status
+        completed = self.create('/tiny', filename='alpha.bin')
+        pending = self.create('/tiny', filename='beta.bin')
+        self.app._on_task_added(completed)
+        self.app._on_task_added(pending)
+        self.pump(0.3)
+        self.app._on_task_status_changed(completed, 'completed', '')
+        self.pump(0.3)
+        self.assertEqual(len(self.app.task_widgets), 2)
+
+        self.app.hide_completed_var.set(True)
+        self.app._on_hide_completed_toggle()
+        self.assertFalse(self.app.task_widgets[completed]['frame'].winfo_manager())
+        self.assertTrue(self.app.task_widgets[pending]['frame'].winfo_manager())
+        self.assertEqual(self.app.filter_hint_label.cget('text'), '显示 1 / 2')
+
+        self.app.search_entry.insert(0, 'zzz')
+        self.app._apply_task_filter()
+        self.assertTrue(self.app.empty_label.winfo_manager())
+        self.assertEqual(self.app.empty_label.cget('text'), '没有匹配的任务')
+
+        self.app.search_entry.delete(0, 'end')
+        self.app.search_entry.insert(0, 'beta')
+        self.app._apply_task_filter()
+        self.assertFalse(self.app.empty_label.winfo_manager())
+        self.assertTrue(self.app.task_widgets[pending]['frame'].winfo_manager())
+
+        self.assertTrue(ConfigManager(self.config.config_path).ui_hide_completed)
