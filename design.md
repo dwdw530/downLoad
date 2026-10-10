@@ -206,7 +206,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ## 8. 配置
 
-`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
+`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）、`clipboard_monitor_enabled`（剪贴板监视，默认 true）、`clipboard_ignore_hosts`（忽略站点域名列表）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
 
 ### 8.1 任务列表显示与过滤
 
@@ -220,6 +220,19 @@ pending ──start──► downloading ──pause──► paused ──resum
 - 行数大于 1 时自动禁用文件校验控件（批量无单一哈希概念），单链接时保持原哈希校验能力。
 - 单链接沿用同步添加与即时提示；多链接走后台线程逐条 `add_task`（每条都要发探测请求，同步会阻塞 UI），完成后经 `_ui_events` 回主线程汇总成功/失败/跳过数量，失败原因最多列 3 条；日志只记数量，不记 URL。
 - 按钮为「开始下载」（`pending` 并进入队列调度）与「稍后下载」（`paused`，不进调度）；多行输入框内回车为换行，提交用 Ctrl+Enter。
+- 支持预填：`AddTaskDialog(parent, initial_url=...)`，剪贴板浮窗入口复用同一确认流程（`_process_add_dialog`）。
+
+### 8.3 速度曲线详情窗（v0.5.0）
+
+- 双击任务卡片（递归绑定 `<Double-Button-1>`，跳过 `CTkButton`/`CTkCheckBox` 子树）打开 `TaskDetailWindow`（`downloader/ui/task_detail_window.py`），非模态；已开则 lift，删除任务时自动关闭。
+- 速度历史由 `MainWindow._speed_history`（`{task_id: deque(maxlen=180)}`）持有，在 `_update_task_progress` 里且仅当缓存状态为 `downloading` 时追加（约 1 秒 1 点，约 3 分钟窗口）；**仅内存不落盘，重启清空**。曲线画在 `tk.Canvas`：纵轴峰值×1.1（下限 1KB/s），3 条网格线标注速度，折线 + stipple 填充 + 当前/峰值/平均值；`<Configure>` 触发重绘解决首次布局宽度为 1 的问题。
+- 状态与进度通过 `_push_detail_status` / `_push_detail_update` 同步；进度文案与卡片共用 `file_utils.format_progress_texts`，状态映射共用 `task_detail_window.get_status_text`。
+
+### 8.4 剪贴板监视（v0.5.0）
+
+- `MainWindow._poll_clipboard` 每秒轮询一次 `clipboard_get()`；`_check_clipboard_once` 的触发条件：开关开启（`clipboard_monitor_enabled`）、内容变化、`url_utils.extract_clipboard_url` 判定为单行 http(s) 链接、域名不在忽略列表（`host_is_ignored`，后缀匹配子域名）、主窗口可见（`winfo_viewable`）、无模态 grab（`grab_current`）。无论弹不弹都更新 `_clipboard_last_seen`，托盘隐藏/对话框打开期间复制的链接不补弹；启动时把现有剪贴板记为已见。
+- 命中后弹 `ClipboardLinkDialog`（`downloader/ui/clipboard_dialog.py`）：非模态、不抢焦点、`-topmost`，同时只开一个（新链接原地 `update_url`）。按钮：「添加任务」销毁浮窗后打开预填的 `AddTaskDialog` 走统一确认流程；「忽略此站点」把 `host_from_url` 结果（保留非 www 子域）写入 `clipboard_ignore_hosts` 并 `save()`；「关闭」仅关窗。
+- 轮询异常全吞（非文本内容返回 TclError、窗口销毁停表）；设置界面「剪贴板监视」节读写开关与忽略站点多行文本（setter 归一化：小写、去 www.、去重）。轮询与曲线均为纯内存/CPU 操作，无磁盘 I/O。
 
 完成后动作的触发链路：引擎状态回调把 `completed` 事件投递到 UI 事件队列（`MainWindow._handle_download_completed`），只有 `completed`（校验通过）才触发，`verify_failed` 不触发。开启关机时先检查是否还有 `downloading/pending/verifying` 任务，还有则等最后一个完成再弹倒计时确认框（默认 60 秒，关窗即取消）；确认或倒计时结束才执行 `shutdown /s /t 0`。
 

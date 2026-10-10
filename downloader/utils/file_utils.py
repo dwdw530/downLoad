@@ -79,6 +79,27 @@ def format_remaining(remaining_bytes: int, speed: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def format_progress_texts(downloaded_size: int, total_size: int, speed: float, status: str) -> tuple:
+    """
+    生成任务卡片与详情窗共用的进度文案
+    Args:
+        downloaded_size: 已下载字节数
+        total_size: 总字节数（<=0 视为未知）
+        speed: 当前速度（字节/秒）
+        status: 任务状态（仅 downloading 估算剩余时间）
+    Returns:
+        (大小文案, 剩余时间文案, 速度文案)
+    """
+    total_text = format_size(total_size) if total_size > 0 else "未知"
+    size_text = f"已下载 {format_size(downloaded_size)} / {total_text}"
+    if status == 'downloading':
+        remaining = max(0, total_size - downloaded_size) if total_size > 0 else 0
+        eta_text = f"剩余 {format_remaining(remaining, speed)}"
+    else:
+        eta_text = "剩余 --"
+    return size_text, eta_text, format_speed(speed)
+
+
 def get_filename_from_url(url: str) -> str:
     """
     从URL中提取文件名

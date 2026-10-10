@@ -12,6 +12,11 @@ from downloader.utils.config import ConfigManager
 class SettingsDialog(ctk.CTkToplevel):
     """设置对话框"""
 
+    def _revert_withdraw_after_windows_set_titlebar_color(self):
+        # 快速保存关闭时窗口可能已销毁，CTk 的延迟标题栏回调不能再来 deiconify
+        if self.winfo_exists():
+            super()._revert_withdraw_after_windows_set_titlebar_color()
+
     def __init__(self, parent, config_manager: ConfigManager,
                  on_save_callback: Optional[Callable] = None):
         super().__init__(parent)
@@ -21,7 +26,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("520x560")  # 加高给代理和完成后动作腾位置
+        self.geometry("520x680")  # 加高给代理、完成后动作和剪贴板监视腾位置
         self.resizable(False, False)
 
         # 模态对话框
@@ -145,6 +150,28 @@ class SettingsDialog(ctk.CTkToplevel):
         self.after_shutdown_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(after_frame, text="全部下载完成后关机", variable=self.after_shutdown_var).pack(anchor="w")
 
+        # ========== 剪贴板监视 ==========
+        clipboard_label = ctk.CTkLabel(main_frame, text="剪贴板监视:", font=("Arial", 12))
+        clipboard_label.grid(row=7, column=0, sticky="nw", pady=10)
+
+        clipboard_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        clipboard_frame.grid(row=7, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+
+        self.clipboard_monitor_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            clipboard_frame,
+            text="复制链接时提示添加任务",
+            variable=self.clipboard_monitor_var,
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            clipboard_frame, text="忽略站点（每行一个域名，含其子域名）:",
+            font=("Arial", 11), text_color="gray",
+        ).pack(anchor="w", pady=(8, 2))
+
+        self.ignore_hosts_textbox = ctk.CTkTextbox(clipboard_frame, width=300, height=70)
+        self.ignore_hosts_textbox.pack(anchor="w")
+
         # 按钮区域
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(fill="x", padx=20, pady=10)
@@ -183,6 +210,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self.after_open_file_var.set(after_cfg["open_file"])
         self.after_open_folder_var.set(after_cfg["open_folder"])
         self.after_shutdown_var.set(after_cfg["shutdown"])
+        # 剪贴板监视
+        self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
+        self.ignore_hosts_textbox.delete("1.0", "end")
+        self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
 
     def _browse_directory(self):
         """浏览目录"""
@@ -254,6 +285,9 @@ class SettingsDialog(ctk.CTkToplevel):
                 'shutdown': self.after_shutdown_var.get(),
             }
             self.config.after_download = after_config
+            # 剪贴板监视（忽略站点由 setter 归一化：小写、去www.、去重）
+            self.config.clipboard_monitor_enabled = bool(self.clipboard_monitor_var.get())
+            self.config.clipboard_ignore_hosts = self.ignore_hosts_textbox.get("1.0", "end").splitlines()
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
@@ -319,4 +353,8 @@ class SettingsDialog(ctk.CTkToplevel):
             self.after_open_file_var.set(after_default["open_file"])
             self.after_open_folder_var.set(after_default["open_folder"])
             self.after_shutdown_var.set(after_default["shutdown"])
+            # 剪贴板监视重置
+            self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
+            self.ignore_hosts_textbox.delete("1.0", "end")
+            self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

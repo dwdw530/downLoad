@@ -14,9 +14,9 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.5.0 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.4.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.5.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.4.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；历史版本 `v0.3.1`、`v0.3.0` 的发布记录与附件保持原样。
+发布统一走 GitHub Releases（当前 `v0.5.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；历史版本 `v0.4.0`、`v0.3.1`、`v0.3.0` 的发布记录与附件保持原样。
 
 ---
 
@@ -32,6 +32,8 @@
 | 批量添加 | 已实现 | 多行粘贴链接、同批去重、后台逐条添加并汇总 |
 | 任务筛选 | 已实现 | 文件名/链接搜索 + 隐藏已完成（可选持久化） |
 | 稍后下载 | 已实现 | 添加时可选仅入列表不自动开始 |
+| 速度曲线 | 已实现 | 双击任务卡片弹详情窗，最近约 3 分钟实时速度走势（仅内存） |
+| 剪贴板监视 | 已实现 | 复制链接自动弹提示（可开关、可忽略站点） |
 | 代理支持 | 已实现 | HTTP/HTTPS 代理，设置对话框配置 |
 | 速度限制 | 已实现 | 令牌桶限速，按任务总量在分块间分配 |
 | 文件校验 | 已实现 | MD5 / SHA256，下载后自动比对 |
@@ -110,10 +112,10 @@ python main.py
 python -B scripts/build_exe.py
 
 # 重建 EXE 并打 Windows 安装包（缺少 NSIS 时自动下载固定版本）
-python -B scripts/build_installer.py v0.4.0 --rebuild
+python -B scripts/build_installer.py v0.5.0 --rebuild
 
 # 打便携版 ZIP 与独立扩展 ZIP
-python -B scripts/package_release.py v0.4.0
+python -B scripts/package_release.py v0.5.0
 ```
 
 `build_exe.py` 通过两个 spec 分别打包主程序与桥接，再把 `video-tools/`、`chrome-extension/` 和浏览器安装脚本拷进 `dist`；构建时把当前环境的 `Library/bin` 置于 PATH 最前，避免混入 base 环境的 Tcl/Tk。发布文件清单在 `scripts/package_release.py` 中显式白名单，排除用户运行数据。详细步骤见 `docs/INSTALLER.md`。

@@ -9,6 +9,8 @@ import os
 import sys
 from typing import Any, Dict
 
+from downloader.utils.url_utils import normalize_host
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ class ConfigManager:
         "close_behavior": "ask",  # 关闭行为：ask|minimize|exit
         "speed_limit": 0,  # 速度限制（字节/秒），0表示不限速
         "ui_hide_completed": False,  # 任务列表是否隐藏已完成任务（搜索词不持久化）
+        "clipboard_monitor_enabled": True,  # 剪贴板监视：复制链接时弹出添加提示
+        "clipboard_ignore_hosts": [],  # 剪贴板监视忽略的站点域名列表
         "after_download": {  # 下载完成后的动作，默认全部关闭
             "open_file": False,  # 打开文件
             "open_folder": False,  # 打开所在文件夹
@@ -194,6 +198,41 @@ class ConfigManager:
     @ui_hide_completed.setter
     def ui_hide_completed(self, value: bool):
         self._config["ui_hide_completed"] = bool(value)
+
+    # ==================== 剪贴板监视 ====================
+
+    @property
+    def clipboard_monitor_enabled(self) -> bool:
+        """剪贴板监视是否启用"""
+        return bool(self._config.get("clipboard_monitor_enabled", True))
+
+    @clipboard_monitor_enabled.setter
+    def clipboard_monitor_enabled(self, value: bool):
+        self._config["clipboard_monitor_enabled"] = bool(value)
+
+    @property
+    def clipboard_ignore_hosts(self) -> list:
+        """剪贴板监视忽略的站点域名（读取时归一化去重）"""
+        seen = set()
+        result = []
+        for item in self._config.get("clipboard_ignore_hosts") or []:
+            host = normalize_host(item)
+            if host and host not in seen:
+                seen.add(host)
+                result.append(host)
+        return result
+
+    @clipboard_ignore_hosts.setter
+    def clipboard_ignore_hosts(self, value):
+        """保存前归一化：小写、去www.、去空白项、去重，保持顺序"""
+        seen = set()
+        result = []
+        for item in value or []:
+            host = normalize_host(item)
+            if host and host not in seen:
+                seen.add(host)
+                result.append(host)
+        self._config["clipboard_ignore_hosts"] = result
 
     # ==================== 下载完成后动作 ====================
 

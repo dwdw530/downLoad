@@ -2,7 +2,7 @@
 
 当前正式文件是 `dist/daw下载器.exe`。构建仍复用 `老王下载器.spec` 这一内部配置文件名；无需手动改 spec 路径。历史旧名称的 EXE 不再是当前入口。打包同时包含 `assets/icon.ico`、`assets/icon.png`，供窗口和托盘在冻结环境中加载。
 
-需要可选择安装路径、支持系统卸载的安装包时，运行 `build_installer.bat`，或 `python -B scripts/build_installer.py v0.4.0 --rebuild`。只封装已经验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.4.0-windows-x64-setup.exe`，构建、升级、数据保留与实际安装验收方法见 [Windows 安装包](docs/INSTALLER.md)。
+需要可选择安装路径、支持系统卸载的安装包时，运行 `build_installer.bat`，或 `python -B scripts/build_installer.py v0.5.0 --rebuild`。只封装已经验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.5.0-windows-x64-setup.exe`，构建、升级、数据保留与实际安装验收方法见 [Windows 安装包](docs/INSTALLER.md)。
 
 艹，想打包成exe双击就能跑？老王我手把手教你！
 

@@ -8,12 +8,16 @@ import logging
 import os
 import subprocess
 import threading
+from collections import deque
 from queue import Empty, SimpleQueue
 from tkinter import messagebox, filedialog, PhotoImage
 from typing import Dict
 from downloader.core.task_manager import TaskManager
-from downloader.utils.file_utils import format_speed, format_size, format_remaining
+from downloader.utils.file_utils import format_speed, format_progress_texts
+from downloader.utils.url_utils import extract_clipboard_url, host_from_url, host_is_ignored
 from downloader.ui.tray_manager import TrayManager
+from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
+from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,10 @@ class MainWindow(ctk.CTk):
         self._ui_events = SimpleQueue()
         self._shutdown_dialog_open = False  # 关机确认只能同时开一个，避免多任务同时完成时叠窗
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
+        self._speed_history = {}  # {task_id: deque(maxlen=180)} 速度曲线采样，仅内存不落盘
+        self._detail_windows = {}  # {task_id: TaskDetailWindow} 打开中的详情窗
+        self._clipboard_dialog = None  # 剪贴板提示浮窗（同时只开一个）
+        self._clipboard_last_seen = None  # 上一次见到的剪贴板内容，同一次内容只弹一次
 
         # 设置窗口
         self.title("daw下载器 v1.0")
@@ -77,6 +85,13 @@ class MainWindow(ctk.CTk):
 
         # 初始化系统托盘
         self._init_tray()
+
+        # 剪贴板监视：启动时先记下现有内容，避免冷启动就弹窗
+        try:
+            self._clipboard_last_seen = self.clipboard_get()
+        except Exception:
+            self._clipboard_last_seen = None
+        self.after(1000, self._poll_clipboard)
 
     def _init_tray(self):
         """初始化系统托盘"""
@@ -194,7 +209,10 @@ class MainWindow(ctk.CTk):
         """添加任务对话框（支持多行批量）"""
         dialog = AddTaskDialog(self)
         self.wait_window(dialog)
+        self._process_add_dialog(dialog)
 
+    def _process_add_dialog(self, dialog):
+        """添加框确认后的统一处理（工具栏入口与剪贴板浮窗共用）"""
         if not dialog.confirmed:
             return
 
@@ -313,41 +331,48 @@ class MainWindow(ctk.CTk):
         """设置保存回调（让运行时配置立即生效）"""
 
         def apply_runtime_settings():
-            config = self.task_manager.engine.config
-
-            # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
-            if 'download_dir' in settings:
-                config.download_dir = settings['download_dir']
-            if 'thread_count' in settings:
-                config.thread_count = settings['thread_count']
-            if 'timeout' in settings:
-                config.set('timeout', settings['timeout'])
-            if 'speed_limit' in settings:
-                config.speed_limit = settings['speed_limit']
-                for downloaders in list(self.task_manager.engine.active_downloaders.values()):
-                    limit = max(1, config.speed_limit // len(downloaders)) if config.speed_limit and downloaders else 0
-                    for downloader in downloaders:
-                        downloader.speed_limiter.set_limit(limit)
-
-            proxy_cfg = settings.get('proxy')
-            if isinstance(proxy_cfg, dict):
-                config.set_proxy(
-                    proxy_cfg.get('enabled', False),
-                    proxy_cfg.get('http', ''),
-                    proxy_cfg.get('https', ''),
-                )
-
-            # 并发数不马上同步，队列就会装死给你看，这里必须立刻刷新
-            max_concurrent = settings.get('max_concurrent_downloads')
-            if max_concurrent is not None:
-                self.task_manager.set_max_concurrent(max_concurrent)
-
-            # 恢复默认设置可能把隐藏已完成改回关，勾选框得跟着配置走
-            self.hide_completed_var.set(config.ui_hide_completed)
-            self._apply_task_filter()
+            # 回调在 settings_dialog destroy 之前触发，如果这里直接碰主窗口控件，
+            # 会撞上 CTk 延迟标题栏回调的时序问题；兜一层 after，
+            # 等设置框完全销毁、事件队列排空后再同步运行时状态
+            self.after(30, self._apply_saved_settings, settings)
 
         # 兜一层after，保证控件操作和队列调度都在主线程触发
         self.after(0, apply_runtime_settings)
+
+    def _apply_saved_settings(self, settings: Dict):
+        """应用设置保存后的运行时同步（在设置框销毁后执行）"""
+        config = self.task_manager.engine.config
+
+        # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
+        if 'download_dir' in settings:
+            config.download_dir = settings['download_dir']
+        if 'thread_count' in settings:
+            config.thread_count = settings['thread_count']
+        if 'timeout' in settings:
+            config.set('timeout', settings['timeout'])
+        if 'speed_limit' in settings:
+            config.speed_limit = settings['speed_limit']
+            for downloaders in list(self.task_manager.engine.active_downloaders.values()):
+                limit = max(1, config.speed_limit // len(downloaders)) if config.speed_limit and downloaders else 0
+                for downloader in downloaders:
+                    downloader.speed_limiter.set_limit(limit)
+
+        proxy_cfg = settings.get('proxy')
+        if isinstance(proxy_cfg, dict):
+            config.set_proxy(
+                proxy_cfg.get('enabled', False),
+                proxy_cfg.get('http', ''),
+                proxy_cfg.get('https', ''),
+            )
+
+        # 并发数不马上同步，队列就会装死给你看，这里必须立刻刷新
+        max_concurrent = settings.get('max_concurrent_downloads')
+        if max_concurrent is not None:
+            self.task_manager.set_max_concurrent(max_concurrent)
+
+        # 恢复默认设置可能把隐藏已完成改回关，勾选框得跟着配置走
+        self.hide_completed_var.set(config.ui_hide_completed)
+        self._apply_task_filter()
 
     def _on_history(self):
         """打开下载历史对话框"""
@@ -452,6 +477,9 @@ class MainWindow(ctk.CTk):
                                    command=lambda: self._on_delete_task(task_id))
         delete_btn.pack(side="left", padx=5)
 
+        # 双击卡片空白处打开详情窗（按钮区不绑，避免和单击命令打架）
+        self._bind_task_double_click(task_frame, task_id)
+
         # 保存widget引用
         self.task_widgets[task_id] = {
             'frame': task_frame,
@@ -471,6 +499,136 @@ class MainWindow(ctk.CTk):
         }
 
         self._apply_task_filter()
+
+    def _bind_task_double_click(self, widget, task_id: str):
+        """递归绑定双击打开详情窗；按钮/勾选框跳过，避免和单击命令打架"""
+        if isinstance(widget, (ctk.CTkButton, ctk.CTkCheckBox)):
+            return
+        widget.bind("<Double-Button-1>", lambda _event, tid=task_id: self._on_open_detail(tid))
+        for child in widget.winfo_children():
+            self._bind_task_double_click(child, task_id)
+
+    def _on_open_detail(self, task_id: str):
+        """双击卡片打开任务详情窗（速度曲线），已开则置前"""
+        window = self._detail_windows.get(task_id)
+        if window is not None:
+            if window.winfo_exists():
+                window.lift()
+                window.focus()
+                return
+            del self._detail_windows[task_id]
+
+        widgets = self.task_widgets.get(task_id)
+        if not widgets:
+            return
+        task = self.task_manager.get_task(task_id)
+        if not task:
+            return
+        # 卡片缓存的状态比库里新鲜（状态回调先改缓存），详情窗首屏用它
+        task['status'] = widgets.get('status') or task.get('status')
+        history = self._speed_history.get(task_id)
+        if history is None:
+            history = deque(maxlen=180)
+            self._speed_history[task_id] = history
+        self._detail_windows[task_id] = TaskDetailWindow(self, task, history)
+
+    def _push_detail_update(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
+        """把进度推给已打开的详情窗（窗口已关则顺手清理引用）"""
+        window = self._detail_windows.get(task_id)
+        if window is None:
+            return
+        if window.winfo_exists():
+            window.update_progress(downloaded_size, total_size, speed)
+        else:
+            del self._detail_windows[task_id]
+
+    def _push_detail_status(self, task_id: str, status: str):
+        """把状态变更推给已打开的详情窗"""
+        window = self._detail_windows.get(task_id)
+        if window is None:
+            return
+        if window.winfo_exists():
+            window.update_status(status)
+        else:
+            del self._detail_windows[task_id]
+
+    # ==================== 剪贴板监视 ====================
+
+    def _poll_clipboard(self):
+        """剪贴板监视：每秒轮询一次，发现新链接弹浮窗（异常全吞，别影响下载）"""
+        try:
+            if not self.winfo_exists():
+                return
+            self.after(1000, self._poll_clipboard)
+        except Exception:
+            return  # 窗口已销毁，停表
+        try:
+            self._check_clipboard_once()
+        except Exception as e:
+            logger.debug("剪贴板检查失败: %s", e)
+
+    def _check_clipboard_once(self):
+        """检查一次剪贴板：新链接且不在抑制/忽略场景才弹浮窗"""
+        config = self.task_manager.engine.config
+        if not config.clipboard_monitor_enabled:
+            return
+        try:
+            text = self.clipboard_get()
+        except Exception:
+            return  # 剪贴板里是图片/文件等非文本内容，静默跳过
+        url = extract_clipboard_url(text)
+        if not url:
+            return
+        if text == self._clipboard_last_seen:
+            return  # 同一次内容只弹一次
+        # 无论弹不弹都记为已见：托盘隐藏/对话框打开期间复制的链接不补弹
+        self._clipboard_last_seen = text
+        if self._clipboard_suppressed():
+            return
+        if host_is_ignored(url, config.clipboard_ignore_hosts):
+            return
+        self._show_clipboard_popup(url)
+
+    def _clipboard_suppressed(self) -> bool:
+        """主窗口隐藏（托盘）或有模态对话框持 grab 时不弹，避免打扰"""
+        if not self.winfo_viewable():
+            return True
+        if self.grab_current() is not None:
+            return True
+        return False
+
+    def _show_clipboard_popup(self, url: str):
+        """弹出剪贴板链接提示浮窗（已开则原地换链接）"""
+        if self._clipboard_dialog is not None and self._clipboard_dialog.winfo_exists():
+            self._clipboard_dialog.update_url(url)
+            return
+        self._clipboard_dialog = ClipboardLinkDialog(
+            self, url,
+            on_add=self._on_clipboard_add,
+            on_ignore_site=self._on_clipboard_ignore_site,
+        )
+
+    def _on_clipboard_add(self, url: str):
+        """浮窗「添加任务」：打开标准添加框并预填链接，走既有确认流程"""
+        dialog = AddTaskDialog(self, initial_url=url)
+        self.wait_window(dialog)
+        self._process_add_dialog(dialog)
+
+    def _on_clipboard_ignore_site(self, url: str):
+        """浮窗「忽略此站点」：域名写入忽略列表并持久化"""
+        host = host_from_url(url)
+        if not host:
+            return
+        config = self.task_manager.engine.config
+        hosts = list(config.clipboard_ignore_hosts)
+        if host in hosts:
+            return
+        hosts.append(host)
+        config.clipboard_ignore_hosts = hosts
+        if config.save():
+            logger.info("剪贴板监视已忽略站点: %s", host)
+        else:
+            logger.error("忽略站点写入配置失败: %s", host)
 
     def _configure_action_button(self, task_id: str, status: str, action_btn: ctk.CTkButton):
         """根据任务状态配置操作按钮"""
@@ -545,6 +703,12 @@ class MainWindow(ctk.CTk):
             if not delete_ok:
                 messagebox.showerror("错误", "删除任务失败，可能仍有后台线程占用文件。请稍后重试。")
                 return
+
+            # 关掉详情窗并清掉速度历史（历史仅内存，随任务一起消失）
+            window = self._detail_windows.pop(task_id, None)
+            if window is not None and window.winfo_exists():
+                window.destroy()
+            self._speed_history.pop(task_id, None)
 
             # 移除UI组件
             if task_id in self.task_widgets:
@@ -684,6 +848,9 @@ class MainWindow(ctk.CTk):
         action_btn = widgets['action_btn']
         self._configure_action_button(task_id, status, action_btn)
 
+        # 同步详情窗（暂停/完成后曲线自然冻结）
+        self._push_detail_status(task_id, status)
+
         self._apply_task_filter()
 
     def _update_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
@@ -693,6 +860,14 @@ class MainWindow(ctk.CTk):
 
         widgets = self.task_widgets[task_id]
 
+        # 速度曲线采样：只在下载中记录，启动回填的0速度样本不进曲线
+        if widgets.get('status') == 'downloading':
+            history = self._speed_history.get(task_id)
+            if history is None:
+                history = deque(maxlen=180)
+                self._speed_history[task_id] = history
+            history.append(float(speed or 0))
+
         # 更新进度条
         progress = downloaded_size / total_size if total_size > 0 else 0
         widgets['progress_bar'].set(progress)
@@ -700,17 +875,15 @@ class MainWindow(ctk.CTk):
         # 更新百分比
         widgets['progress_label'].configure(text=f"{progress * 100:.1f}%")
 
-        # 更新速度
-        widgets['speed_label'].configure(text=format_speed(speed))
+        # 已下载/总大小 + 剩余时间 + 速度：文案生成与详情窗共用一套逻辑
+        size_text, eta_text, speed_text = format_progress_texts(
+            downloaded_size, total_size, speed, widgets.get('status'))
+        widgets['speed_label'].configure(text=speed_text)
+        widgets['size_label'].configure(text=size_text)
+        widgets['eta_label'].configure(text=eta_text)
 
-        # 已下载/总大小 + 剩余时间：总大小未知时别编数字
-        total_text = format_size(total_size) if total_size > 0 else "未知"
-        widgets['size_label'].configure(text=f"已下载 {format_size(downloaded_size)} / {total_text}")
-        if widgets.get('status') == 'downloading':
-            remaining = max(0, total_size - downloaded_size) if total_size > 0 else 0
-            widgets['eta_label'].configure(text=f"剩余 {format_remaining(remaining, speed)}")
-        else:
-            widgets['eta_label'].configure(text="剩余 --")
+        # 同步详情窗
+        self._push_detail_update(task_id, downloaded_size, total_size, speed)
 
     def _start_ui_update_thread(self):
         """使用Tk定时器更新状态栏，窗口销毁后不再保留后台线程。"""
@@ -762,18 +935,8 @@ class MainWindow(ctk.CTk):
 
     @staticmethod
     def _get_status_text(status: str) -> str:
-        """获取状态文本"""
-        status_map = {
-            'pending': '等待中',
-            'downloading': '下载中',
-            'paused': '已暂停',
-            'completed': '已完成',
-            'failed': '失败',
-            'cancelled': '已取消',
-            'verifying': '校验中',
-            'verify_failed': '校验失败',
-        }
-        return status_map.get(status, status)
+        """获取状态文本（映射表在 task_detail_window，卡片与详情窗共用）"""
+        return get_status_text(status)
 
     def _on_window_close(self):
         """窗口关闭事件"""
@@ -1144,7 +1307,7 @@ class AddTaskDialog(ctk.CTkToplevel):
 
     focus = focus_set
 
-    def __init__(self, parent):
+    def __init__(self, parent, initial_url: str = None):
         super().__init__(parent)
 
         self.confirmed = False
@@ -1164,8 +1327,8 @@ class AddTaskDialog(ctk.CTkToplevel):
         self.transient(parent)
         self.grab_set()
 
-        # 创建UI
-        self._create_ui()
+        # 创建UI（剪贴板浮窗入口会预填链接）
+        self._create_ui(initial_url=initial_url)
 
         # 居中显示
         self._center_window(parent, 520, 430)
@@ -1185,7 +1348,7 @@ class AddTaskDialog(ctk.CTkToplevel):
         y = max(0, y)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
-    def _create_ui(self):
+    def _create_ui(self, initial_url: str = None):
         """创建UI"""
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -1198,6 +1361,8 @@ class AddTaskDialog(ctk.CTkToplevel):
         self.url_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 15))
         self.url_text.bind("<KeyRelease>", self._on_url_changed)
         self.url_text.bind("<<Paste>>", lambda _event: self.after(50, self._on_url_changed))
+        if initial_url:
+            self.url_text.insert("1.0", initial_url)
         self.url_text.focus_set()
 
         # 保存位置

@@ -2,11 +2,11 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.4.0/daw-downloader-v0.4.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.4.0/daw-downloader-v0.4.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.4.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.5.0/daw-downloader-v0.5.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.5.0/daw-downloader-v0.5.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.5.0)
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.4.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.5.0-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -76,6 +76,13 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py
 - 载荷为本次重新打包并实测的 `dist` 双 EXE（新增文件日志、分块进度节流、WAL 与视频失败诊断）；安装脚本、向导与卸载逻辑未改动。
 - 用 `7z` 核对安装包内容：25 项发布文件与发布清单一致，未包含 `data`、`temp`、`logs` 等运行数据。
 - 本次未重复执行完整安装向导验收；载荷中的双 EXE 已在独立目录实测启动与日志写入、WAL 生效、正常退出，并通过 111 项 Python 回归。
+
+## 2026-10-11 v0.5.0 构建
+
+- 安装包：`dist/daw-downloader-v0.5.0-windows-x64-setup.exe`，155,670,061 字节（148.46 MiB），文件版本 `0.5.0.0`。
+- SHA256：`d457875472a84e91304b41600ee4f86b8ca14e442ba93d718c4074c193a80b43`，与相邻 `.exe.sha256` 一致。
+- 载荷为本次重新打包并实测的 `dist` 双 EXE（速度曲线详情窗、剪贴板监视、设置对话框快速关闭修复）；`daw下载器.exe` SHA256 `a511e0f2da80d9fa1db10cb45a0e7ba7c192a0fa4dda8060f815ecc01132436c`，`BrowserBridge.exe` SHA256 `f69255b91567681b8a88bce7d0b27a053c385329f9332deb37ace56dbd398d50`。
+- 本次执行了完整安装验收 `scripts/smoke_installer.py --installer dist/daw-downloader-v0.5.0-windows-x64-setup.exe`：中文向导、含空格自定义路径、白名单载荷哈希、快捷方式、卸载项与浏览器注册、占用时拒绝升级/卸载、同目录升级保留配置与断点、卸载保留他方注册、重装保留数据共 6 组 PASS；结束后原浏览器注册已还原、`dist/data` 哈希未变。
 
 ## 2026-10-10 v0.4.0 构建
 

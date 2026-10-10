@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import threading
 import time
+import tkinter
 import traceback
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -11,6 +12,8 @@ from downloader.ui.main_window import (MainWindow, AddTaskDialog, DeleteTaskDial
                                       ShutdownConfirmDialog)
 from downloader.ui.history_dialog import HistoryDialog
 from downloader.ui.settings_dialog import SettingsDialog
+from downloader.ui.task_detail_window import TaskDetailWindow
+from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import format_size, format_remaining
 from test_features import FeatureFixture, PAYLOAD
@@ -456,3 +459,242 @@ class GuiFeatures(FeatureFixture):
         self.assertTrue(self.app.task_widgets[pending]['frame'].winfo_manager())
 
         self.assertTrue(ConfigManager(self.config.config_path).ui_hide_completed)
+
+
+class TaskDetailWindowTests(GuiFeatures):
+    """双击卡片打开详情窗：速度曲线数据流与生命周期"""
+
+    def _add_card(self, filename='detail.bin'):
+        task_id = self.create('/tiny', filename=filename)
+        self.app._on_task_added(task_id)
+        self.pump(0.3)
+        return task_id
+
+    def _frame_canvas(self, frame):
+        # CTkFrame 的直接子级里可能没有裸 Canvas，递归找第一个 CTkCanvas
+        stack = [frame]
+        while stack:
+            widget = stack.pop(0)
+            for child in widget.winfo_children():
+                if child.winfo_class() == 'Canvas':
+                    return child
+                stack.append(child)
+        raise AssertionError('task card has no canvas widget')
+
+    def test_double_click_on_card_opens_detail_window(self):
+        task_id = self._add_card()
+        frame = self.app.task_widgets[task_id]['frame']
+        canvas = self._frame_canvas(frame)
+        # Tk 的 bind 脚本里拿不到可调用对象，改从绑定表反查：双击已挂即可，
+        # 真正的打开逻辑由 test_second_open 等用例直接调 _on_open_detail 覆盖
+        script = canvas.bind('<Double-Button-1>')
+        self.assertTrue(script)
+        # 从脚本里提取 tcl 回调名并直接调用（lambda 只收 event 一个参数）
+        import re
+        match = re.search(r'\[(\d+[^\s%]*)\s', script)
+        self.assertIsNotNone(match, f'unexpected bind script: {script!r}')
+        self.app.tk.eval(f'{match.group(1)} {{}}')
+        self.pump(0.3)
+        window = self.app._detail_windows[task_id]
+        self.assertTrue(window.winfo_exists())
+        self.assertIn('detail.bin', window.title())
+
+    def test_action_button_stays_unbound(self):
+        task_id = self._add_card()
+        action_btn = self.app.task_widgets[task_id]['action_btn']
+        button_canvas = self._frame_canvas(action_btn)
+        self.assertFalse(button_canvas.bind('<Double-Button-1>'))
+
+    def test_second_open_reuses_existing_window(self):
+        task_id = self._add_card()
+        self.app._on_open_detail(task_id)
+        self.pump(0.2)
+        first = self.app._detail_windows[task_id]
+        self.app._on_open_detail(task_id)
+        self.pump(0.2)
+        self.assertIs(self.app._detail_windows[task_id], first)
+
+    def test_progress_feeds_history_and_detail_window(self):
+        task_id = self._add_card()
+        self.app._on_task_status_changed(task_id, 'downloading', '')
+        self.app._on_task_progress(task_id, 100, 1000, 2048)
+        self.app._on_task_progress(task_id, 200, 1000, 4096)
+        self.pump(0.3)
+        self.assertEqual(len(self.app._speed_history[task_id]), 2)
+        # 详情窗未打开时不推送，打开后首屏取最新值，下一条进度事件再同步
+        self.assertNotIn(task_id, self.app._detail_windows)
+        self.app._on_open_detail(task_id)
+        self.pump(0.2)
+        window = self.app._detail_windows[task_id]
+        self.assertIn('下载中', window.stats_label.cget('text'))
+        self.app._on_task_progress(task_id, 300, 1000, 8192)
+        self.pump(0.3)
+        self.assertIn('8.00 KB/s', window.stats_label.cget('text'))
+
+    def test_backfill_progress_without_downloading_status_not_recorded(self):
+        # 启动回填走 _update_task_progress，但状态不是 downloading，不能污染曲线
+        task_id = self._add_card()
+        self.app._on_task_progress(task_id, 100, 1000, 2048)
+        self.pump(0.3)
+        self.assertNotIn(task_id, self.app._speed_history)
+
+    def test_status_change_syncs_to_detail_window(self):
+        task_id = self._add_card()
+        self.app._on_task_status_changed(task_id, 'downloading', '')
+        self.pump(0.2)
+        self.app._on_open_detail(task_id)
+        self.pump(0.2)
+        window = self.app._detail_windows[task_id]
+        self.assertIn('下载中', window.stats_label.cget('text'))
+        self.app._on_task_status_changed(task_id, 'paused', '')
+        self.pump(0.2)
+        self.assertIn('已暂停', window.stats_label.cget('text'))
+        self.assertIn('剩余 --', window.stats_label.cget('text'))
+
+    def test_delete_task_closes_detail_window_and_clears_history(self):
+        task_id = self._add_card()
+        self.app._on_task_status_changed(task_id, 'downloading', '')
+        self.app._on_task_progress(task_id, 100, 1000, 2048)
+        self.pump(0.2)
+        self.app._on_open_detail(task_id)
+        self.pump(0.2)
+        self.assertTrue(self.app._speed_history[task_id])
+        self.dialog_action(lambda: self.app._on_delete_task(task_id), DeleteTaskDialog,
+                           lambda dialog: dialog._on_confirm())
+        self.pump(0.3)
+        self.assertNotIn(task_id, self.app._speed_history)
+        self.assertNotIn(task_id, self.app._detail_windows)
+        self.assertFalse(self.app._detail_windows.get(task_id) and True)
+
+
+class ClipboardMonitorTests(GuiFeatures):
+    """剪贴板监视：触发条件、浮窗交互与忽略站点"""
+
+    def setUp(self):
+        super().setUp()
+        # GuiFeatures.setUp 里主窗口是 withdraw 的，弹窗条件要求窗口可见；
+        # 用 deiconify 并等一拍，避免影响其它用例对 withdrawn 状态的断言
+        self.app.deiconify()
+        self.pump(0.3)
+        self.app._clipboard_last_seen = None
+
+    def _check(self, text):
+        self.app.clipboard_get = Mock(return_value=text)
+        self.app._check_clipboard_once()
+
+    def _popups(self):
+        return [w for w in self.app.winfo_children() if isinstance(w, ClipboardLinkDialog)]
+
+    def test_new_url_pops_dialog(self):
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        popups = self._popups()
+        self.assertEqual(len(popups), 1)
+        self.assertIn('https://example.com/file.zip', popups[0].url_label.cget('text'))
+
+    def test_same_content_does_not_popup_twice(self):
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 1)
+
+    def test_non_url_text_never_popups(self):
+        self._check('just some plain text')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 0)
+
+    def test_disabled_monitor_never_popups(self):
+        self.config.clipboard_monitor_enabled = False
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 0)
+
+    def test_ignored_host_never_popups(self):
+        self.config.clipboard_ignore_hosts = ['example.com']
+        self._check('https://dl.example.com/file.zip')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 0)
+
+    def test_modal_grab_suppresses_popup(self):
+        blocker = tkinter.Toplevel(self.app)
+        blocker.grab_set()
+        self.pump(0.1)
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 0)
+        blocker.grab_release()
+        blocker.destroy()
+
+    def test_hidden_window_suppresses_popup(self):
+        self.app.withdraw()
+        self.pump(0.1)
+        self._check('https://example.com/file.zip')
+        self.pump(0.2)
+        self.assertEqual(len(self._popups()), 0)
+        self.app.deiconify()
+        self.pump(0.1)
+    def test_popup_updates_url_in_place(self):
+        self._check('https://example.com/1.zip')
+        self.pump(0.2)
+        self._check('https://example.com/2.zip')
+        self.pump(0.2)
+        popups = self._popups()
+        self.assertEqual(len(popups), 1)
+        self.assertIn('2.zip', popups[0].url_label.cget('text'))
+
+    def test_ignore_site_button_persists_host(self):
+        self._check('https://dl.example.com/file.zip')
+        self.pump(0.2)
+        popup = self._popups()[0]
+        popup._on_ignore_click()
+        self.pump(0.2)
+        self.assertFalse(popup.winfo_exists())
+        # 忽略的是完整主机名，不吞掉无关子域（匹配靠后缀规则）
+        self.assertIn('dl.example.com', self.config.clipboard_ignore_hosts)
+        # 配置文件也要落地，重启后忽略列表仍在
+        reloaded = ConfigManager(self.config.config_path)
+        self.assertIn('dl.example.com', reloaded.clipboard_ignore_hosts)
+
+    def test_ignore_site_reuses_same_config_file_as_app(self):
+        # 忽略站点必须写进应用正在用的那份配置，不然设置界面看不到
+        self._check('https://dl.example.com/file.zip')
+        self.pump(0.2)
+        self._popups()[0]._on_ignore_click()
+        self.pump(0.2)
+        self.assertEqual(self.config.clipboard_ignore_hosts,
+                         ConfigManager(self.config.config_path).clipboard_ignore_hosts)
+
+    def test_add_button_invokes_callback_with_current_url(self):
+        callback = Mock()
+        popup = ClipboardLinkDialog(self.app, 'https://example.com/file.zip',
+                                    on_add=callback, on_ignore_site=Mock())
+        self.pump(0.2)
+        popup._on_add_click()
+        self.pump(0.2)
+        callback.assert_called_once_with('https://example.com/file.zip')
+        self.assertFalse(popup.winfo_exists())
+
+    def test_clipboard_add_flow_creates_task_via_prefilled_dialog(self):
+        url = self.base_url + '/range'
+        self._check(url)
+        self.pump(0.2)
+        popup = self._popups()[0]
+
+        def respond():
+            dialog = next(w for w in self.app.winfo_children() if isinstance(w, AddTaskDialog))
+            dialog._on_confirm(False)
+
+        self.app.after(250, respond)
+        popup._on_add_click()
+        self.pump(0.5)
+        tasks = self.db.get_all_tasks()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]['url'], url)
+
+    def test_add_dialog_prefills_initial_url(self):
+        dialog = AddTaskDialog(self.app, initial_url='https://example.com/prefill.zip')
+        self.pump(0.25)
+        self.assertEqual(dialog.parse_urls(), ['https://example.com/prefill.zip'])
+        dialog.destroy()
+

@@ -6,7 +6,7 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.4.0/daw-downloader-v0.4.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.5.0/daw-downloader-v0.5.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -19,6 +19,8 @@ Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoa
 ✅ **数据持久化** - SQLite存储，任务重启不丢失
 ✅ **批量添加** - 多行粘贴链接，一行一个，自动去重
 ✅ **任务筛选** - 按文件名/链接搜索，可隐藏已完成任务
+✅ **速度曲线** - 双击任务卡片弹出详情窗，实时查看最近 3 分钟的速度走势
+✅ **剪贴板监视** - 复制下载链接自动弹出提示（可开关、可忽略站点）
 ✅ **完成后动作** - 可设置下载完成后打开文件、打开所在文件夹或全部完成后关机（默认关闭）
 ✅ **简洁GUI** - 基于CustomTkinter，现代化界面
 
@@ -108,6 +110,13 @@ python main.py
 - 剩余时间只在下载中且速度大于 0 时显示，其它情况显示 `--`；总大小未知时显示 `X / 未知`
 - 列表上方可按 **文件名或链接** 搜索（不区分大小写，不支持通配符）
 - 勾选 **"隐藏已完成"** 后已完成任务不再显示，该选项会写入 `config.json` 的 `ui_hide_completed` 并在重启后保留；搜索词不保存
+- **双击任务卡片**（文件名、进度条等空白区域）打开任务详情窗：状态、进度、已下载/总大小、剩余时间、当前/峰值/平均速度，以及最近约 3 分钟的实时速度曲线；曲线仅在程序运行期间记录，重启后清空
+
+### 1.2 剪贴板监视
+- 复制单个 `http(s)://` 链接时自动弹出小提示窗，点 **"添加任务"** 进入标准添加框（链接已预填）
+- 弹窗不抢键盘焦点；点 **"忽略此站点"** 把该域名写入忽略列表并持久化（含其子域名，`www.` 会自动归一）
+- 同一次剪贴板内容只提示一次；多行文本、非 http(s) 链接不触发；主窗口最小化到托盘或有模态对话框打开时不弹，过后也不补弹
+- 可在 **设置 → 剪贴板监视** 里关闭该功能或编辑忽略站点列表（`clipboard_monitor_enabled` / `clipboard_ignore_hosts`）
 
 ### 2. 管理任务
 - **▶ 开始** - 启动下载
@@ -207,6 +216,8 @@ python -B scripts/smoke_exe.py
     "close_behavior": "ask",
     "speed_limit": 0,
     "ui_hide_completed": false,
+    "clipboard_monitor_enabled": true,
+    "clipboard_ignore_hosts": [],
     "after_download": {
         "open_file": false,
         "open_folder": false,
@@ -220,6 +231,8 @@ python -B scripts/smoke_exe.py
 `after_download` 控制下载完成后的动作，三项默认均为 `false`（不做任何动作）；只有校验通过（`completed`）才触发，校验失败（`verify_failed`）不触发。开启 `shutdown` 时，若队列里还有下载中/等待/校验中的任务，会等最后一个完成再弹出 60 秒倒计时确认框，点“取消”或直接关闭窗口都不会关机。
 
 `ui_hide_completed` 控制任务列表是否隐藏已完成任务，由主界面勾选框直接读写。
+
+`clipboard_monitor_enabled` 控制剪贴板监视开关（默认开启）；`clipboard_ignore_hosts` 为忽略站点域名列表，由设置界面或弹窗的「忽略此站点」写入，保存前会自动归一化（小写、去 `www.`、去重）。
 
 ## 日志与排障
 
