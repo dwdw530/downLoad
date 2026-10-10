@@ -42,6 +42,7 @@ downLoad_project/
 │   │   ├── registration.py       # 原生消息主机注册表注册
 │   │   └── security.py           # DPAPI 加密与请求头/域校验
 │   └── utils/                    # 工具函数
+│       ├── app_log.py            # 日志配置（文件日志、可回退目录）
 │       ├── config.py             # 配置读写
 │       └── file_utils.py         # 分块合并、哈希计算、格式化
 ├── chrome-extension/             # 浏览器扩展（Manifest V3）
@@ -195,6 +196,14 @@ python -B scripts/smoke_exe.py
 ```
 
 `close_behavior` 取值为 `ask`（每次询问）/ `minimize`（最小化到托盘）/ `exit`（直接退出）；`speed_limit` 单位为字节/秒，0 表示不限速。
+
+## 日志与排障
+
+程序日志默认写入 `logs/app.log`（相对程序目录，滚动保留 3 个 2 MB 文件）。安装版若装在不可写目录，会自动回退到 `%LOCALAPPDATA%\LaoWangDownloader\logs\app.log`；设置对话框中的下载失败、分块降级、哈希校验、配置读写等记录都在这里。
+
+- 打包后的 EXE 没有控制台，排障一律看该文件；源码运行时会同时在终端输出。
+- 需要更详细的内容（含异常堆栈）时，设置环境变量 `DAW_LOG_LEVEL=DEBUG` 再启动。
+- 日志不写入标准输出（stdout 是浏览器桥接的原生消息协议通道），也不记录视频链接与 Cookie。
 
 ## 数据库结构
 

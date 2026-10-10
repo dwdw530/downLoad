@@ -63,6 +63,7 @@ downLoad_project/
 │   │   ├── registration.py       # 原生消息主机注册表注册
 │   │   └── security.py           # DPAPI 加密与请求头/域校验
 │   └── utils/
+│       ├── app_log.py            # 日志配置（文件日志、可回退目录）
 │       ├── config.py             # 配置读写
 │       └── file_utils.py         # 分块合并、哈希计算、格式化
 ├── chrome-extension/             # 浏览器扩展（Manifest V3）

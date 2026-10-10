@@ -3,11 +3,15 @@
 文件工具模块
 老王说:  文件操作要稳，一个不小心就炸了！
 """
+import logging
 import os
 import hashlib
 import threading
 from typing import List, Callable, Optional
 from urllib.parse import urlparse, unquote
+
+
+logger = logging.getLogger(__name__)
 
 
 def format_size(size_bytes: int) -> str:
@@ -85,7 +89,7 @@ def merge_chunks(chunk_files: List[str], output_file: str, delete_chunks: bool =
         with open(output_file, 'wb') as outfile:
             for chunk_file in chunk_files:
                 if not os.path.exists(chunk_file):
-                    print(f"[错误] 分块文件不存在: {chunk_file}")
+                    logger.error("分块文件不存在: %s", chunk_file)
                     return False
                 with open(chunk_file, 'rb') as infile:
                     while True:
@@ -100,11 +104,11 @@ def merge_chunks(chunk_files: List[str], output_file: str, delete_chunks: bool =
                 try:
                     os.remove(chunk_file)
                 except Exception as e:
-                    print(f"[警告] 删除临时文件失败: {chunk_file}, {e}")
+                    logger.warning("删除临时文件失败: %s, %s", chunk_file, e)
 
         return True
     except Exception as e:
-        print(f"[错误] 合并文件失败: {e}")
+        logger.error("合并文件失败: %s", e)
         return False
 
 
@@ -121,7 +125,7 @@ def delete_file(file_path: str) -> bool:
             os.remove(file_path)
         return True
     except Exception as e:
-        print(f"[错误] 删除文件失败: {file_path}, {e}")
+        logger.error("删除文件失败: %s, %s", file_path, e)
         return False
 
 
@@ -161,7 +165,7 @@ def calculate_file_hash(file_path: str,
     elif hash_type == "sha256":
         hasher = hashlib.sha256()
     else:
-        print(f"[错误] 不支持的哈希类型: {hash_type}")
+        logger.error("不支持的哈希类型: %s", hash_type)
         return ""
 
     try:
@@ -181,7 +185,7 @@ def calculate_file_hash(file_path: str,
 
         return hasher.hexdigest().lower()
     except Exception as e:
-        print(f"[错误] 计算哈希失败: {e}")
+        logger.error("计算哈希失败: %s", e)
         return ""
 
 

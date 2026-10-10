@@ -3,12 +3,16 @@
 数据库管理模块
 老王说：这玩意儿是整个项目的底层基础，千万别给我写出bug！
 """
+import logging
 import sqlite3
 import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import threading
 from downloader.utils.config import get_app_root
+
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
@@ -143,7 +147,7 @@ class DatabaseManager:
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
                 return True
             except Exception as e:
-                print(f"[错误] 创建任务失败: {e}")
+                logger.error("创建任务失败: %s", e)
                 return False
             finally:
                 if conn:
@@ -199,7 +203,7 @@ class DatabaseManager:
                               for chunk_index, start_byte, end_byte, temp_file in chunks])
                 return True
             except Exception as e:
-                print(f"[错误] 原子创建任务失败: {e}")
+                logger.error("原子创建任务失败: %s", e)
                 return False
             finally:
                 if conn:
@@ -268,7 +272,7 @@ class DatabaseManager:
                         ''', (status, error_message, task_id))
                 return True
             except Exception as e:
-                print(f"[错误] 更新任务状态失败: {e}")
+                logger.error("更新任务状态失败: %s", e)
                 return False
             finally:
                 if conn:
@@ -298,7 +302,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 更新任务进度失败: {e}")
+                logger.error("更新任务进度失败: %s", e)
                 return False
 
     def mark_task_singlethread(self, task_id: str) -> bool:
@@ -319,7 +323,7 @@ class DatabaseManager:
                     ''', (task_id,))
                 return True
             except Exception as e:
-                print(f"[错误] 标记单线程模式失败: {e}")
+                logger.error("标记单线程模式失败: %s", e)
                 return False
             finally:
                 if conn:
@@ -347,7 +351,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 更新哈希失败: {e}")
+                logger.error("更新哈希失败: %s", e)
                 return False
 
     def set_expected_hash(self, task_id: str, expected_hash: str, hash_type: str) -> bool:
@@ -371,7 +375,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 设置预期哈希失败: {e}")
+                logger.error("设置预期哈希失败: %s", e)
                 return False
 
     def delete_task(self, task_id: str) -> bool:
@@ -385,7 +389,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 删除任务失败: {e}")
+                logger.error("删除任务失败: %s", e)
                 return False
 
     # ==================== 分块表操作 ====================
@@ -411,7 +415,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 创建分块失败: {e}")
+                logger.error("创建分块失败: %s", e)
                 return False
 
     def get_chunks(self, task_id: str) -> List[Dict]:
@@ -460,7 +464,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 更新分块进度失败: {e}")
+                logger.error("更新分块进度失败: %s", e)
                 return False
 
     def increment_chunk_retry(self, chunk_id: int) -> bool:
@@ -474,7 +478,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 更新重试次数失败: {e}")
+                logger.error("更新重试次数失败: %s", e)
                 return False
 
     # ==================== 历史记录操作 ====================
@@ -495,7 +499,7 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 添加历史记录失败: {e}")
+                logger.error("添加历史记录失败: %s", e)
                 return False
 
     def get_history(self, limit: int = 100) -> List[Dict]:
@@ -519,5 +523,5 @@ class DatabaseManager:
                 conn.close()
                 return True
             except Exception as e:
-                print(f"[错误] 清空历史记录失败: {e}")
+                logger.error("清空历史记录失败: %s", e)
                 return False

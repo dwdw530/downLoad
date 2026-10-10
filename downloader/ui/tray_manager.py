@@ -3,11 +3,14 @@
 系统托盘管理
 老王说：托盘这玩意儿得整好，用户习惯最小化到托盘！
 """
+import logging
 import os
 import sys
 from pathlib import Path
 import threading
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # 托盘依赖检测，打包后可能缺失这些库
 HAS_TRAY_SUPPORT = False
@@ -17,7 +20,7 @@ try:
     from pystray import MenuItem, Menu
     HAS_TRAY_SUPPORT = True
 except ImportError as e:
-    print(f"[警告] 托盘依赖未安装({e})，托盘功能不可用")
+    logger.warning("托盘依赖未安装(%s)，托盘功能不可用", e)
     Image = None
     pystray = None
 
@@ -27,7 +30,7 @@ try:
     from plyer import notification
     HAS_NOTIFICATION = True
 except ImportError:
-    print("[警告] plyer未安装，下载完成通知功能不可用")
+    logger.warning("plyer未安装，下载完成通知功能不可用")
     notification = None
 
 
@@ -79,7 +82,7 @@ class TrayManager:
                 with Image.open(self._icon_path) as image:
                     return image.convert('RGBA')
             except Exception as e:
-                print(f"[警告] 加载图标失败: {e}")
+                logger.warning("加载图标失败: %s", e)
 
         # Preserve a recognizable download symbol even if external resources are missing.
         from PIL import ImageDraw
@@ -123,7 +126,7 @@ class TrayManager:
     def start(self):
         """启动托盘图标（在单独线程中运行）"""
         if not HAS_TRAY_SUPPORT:
-            print("[信息] 托盘功能不可用，跳过启动")
+            logger.info("托盘功能不可用，跳过启动")
             return
 
         if self._running:
@@ -141,7 +144,7 @@ class TrayManager:
                 )
                 self.icon.run()
             except Exception as e:
-                print(f"[错误] 托盘运行失败: {e}")
+                logger.error("托盘运行失败: %s", e)
                 self._running = False
 
         self._thread = threading.Thread(target=run_tray, daemon=True)
@@ -166,7 +169,7 @@ class TrayManager:
             timeout: 显示时长（秒）
         """
         if not HAS_NOTIFICATION:
-            print(f"[通知] {title}: {message}")
+            logger.info("通知 %s: %s", title, message)
             return
 
         try:
@@ -179,8 +182,8 @@ class TrayManager:
                 app_icon=self._icon_path if self._icon_path.endswith('.ico') else None
             )
         except Exception as e:
-            print(f"[警告] 发送通知失败: {e}")
-            print(f"[通知] {title}: {message}")
+            logger.warning("发送通知失败: %s", e)
+            logger.info("通知 %s: %s", title, message)
 
     def notify_download_complete(self, filename: str):
         """下载完成通知"""

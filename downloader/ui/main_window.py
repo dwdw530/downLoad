@@ -4,6 +4,7 @@ GUI主窗口
 老王说：界面简单够用就行，别搞那些花里胡哨的！
 """
 import customtkinter as ctk
+import logging
 import os
 import subprocess
 from queue import Empty, SimpleQueue
@@ -12,6 +13,9 @@ from typing import Dict
 from downloader.core.task_manager import TaskManager
 from downloader.utils.file_utils import format_speed
 from downloader.ui.tray_manager import TrayManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(ctk.CTk):
@@ -86,7 +90,7 @@ class MainWindow(ctk.CTk):
             else:
                 self.iconify()
         except Exception as e:
-            print(f"[错误] 最小化失败: {e}")
+            logger.error("最小化失败: %s", e)
             self.iconify()
 
     def _exit_app(self):
@@ -100,7 +104,7 @@ class MainWindow(ctk.CTk):
             # 退出不清理线程？那就是找骂：ThreadPoolExecutor能把进程吊到天荒地老
             self.task_manager.shutdown()
         except Exception as e:
-            print(f"[错误] 退出清理失败: {e}")
+            logger.error("退出清理失败: %s", e)
         finally:
             # destroy 比 quit 更干脆：关窗口 + 结束mainloop
             try:
@@ -380,7 +384,7 @@ class MainWindow(ctk.CTk):
                 try:
                     if os.path.exists(task['save_path']):
                         os.remove(task['save_path'])
-                        print(f"[删除] 文件已删除: {task['save_path']}")
+                        logger.info("文件已删除: %s", task['save_path'])
 
                     temporary_files = [chunk['temp_file'] for chunk in self.task_manager.db.get_chunks(task_id)]
                     temporary_files.append(os.path.join(self.task_manager.engine.config.temp_dir, f'{task_id}.tmp'))
@@ -542,7 +546,7 @@ class MainWindow(ctk.CTk):
                         self._minimize_app()
             except Exception as e:
                 # 兜底：对话框出幺蛾子也不能把用户卡死在“关不掉”的地狱里
-                print(f"[错误] 关闭确认弹窗异常: {e}")
+                logger.error("关闭确认弹窗异常: %s", e)
                 if messagebox.askyesno("退出确认", "关闭窗口失败了，是否直接退出程序？", parent=self):
                     self._exit_app()
         elif close_behavior == "exit":

@@ -3,6 +3,7 @@
 下载引擎
 老王说：这是整个下载器的大脑，得写得聪明点！
 """
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,9 @@ from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
+
+
+logger = logging.getLogger(__name__)
 
 
 class DownloadEngine:
@@ -73,7 +77,7 @@ class DownloadEngine:
             try:
                 thread_pool.shutdown(wait=wait, cancel_futures=True)
             except Exception as e:
-                print(f"[警告] 关闭线程池失败: task={task_id}, err={e}")
+                logger.warning("关闭线程池失败: task=%s, err=%s", task_id, e)
 
     def set_progress_callback(self, callback: Callable):
         """
@@ -120,7 +124,7 @@ class DownloadEngine:
                 return False, 0
         except Exception as e:
             detail = type(e).__name__ if request_context else str(e)
-            print(f"[错误] 检查URL失败: {detail}")
+            logger.error("检查URL失败: %s", detail)
             return False, 0
 
     def create_download_task(self, url: str, filename: Optional[str] = None,
@@ -280,7 +284,7 @@ class DownloadEngine:
         # 获取任务信息
         task = self.db.get_task(task_id)
         if not task:
-            print(f"[错误] 任务不存在: {task_id}")
+            logger.error("任务不存在: %s", task_id)
             return False
 
         # 艹，启动前先清掉历史残留活跃线程，避免重复下载器互相踩状态
@@ -325,7 +329,7 @@ class DownloadEngine:
         chunks = self.db.get_chunks(task_id)
 
         if not chunks:
-            print(f"[错误] 没有分块信息: {task_id}")
+            logger.error("没有分块信息: %s", task_id)
             self.db.update_task_status(task_id, 'failed', '没有分块信息')
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '没有分块信息')
@@ -399,7 +403,7 @@ class DownloadEngine:
                             all_success = False
                             self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes, 'failed')
                     except Exception as e:
-                        print(f"[错误] 分块下载异常: {e}")
+                        logger.error("分块下载异常: %s", type(e).__name__)
                         if not self._is_task_cancelled(task_id):
                             all_success = False
             finally:
@@ -444,7 +448,7 @@ class DownloadEngine:
             return False
 
         try:
-            print(f"[警告] 检测到分块下载失败，自动降级单线程重试: {task_id}")
+            logger.warning("检测到分块下载失败，自动降级单线程重试: %s", task_id)
 
             # 清理分块临时文件并重置分块状态，避免脏块影响后续重试
             chunks = self.db.get_chunks(task_id)
@@ -454,7 +458,7 @@ class DownloadEngine:
                     try:
                         os.remove(temp_file)
                     except Exception as e:
-                        print(f"[警告] 删除分块临时文件失败: {temp_file}, {e}")
+                        logger.warning("删除分块临时文件失败: %s, %s", temp_file, e)
                 self.db.update_chunk_progress(chunk['chunk_id'], 0, 'pending')
 
             # 切换任务为单线程模式，并把任务进度归零后重新开始
@@ -473,7 +477,7 @@ class DownloadEngine:
 
             return self._start_singlethread_download(single_task, resume=False, run_id=run_id)
         except Exception as e:
-            print(f"[错误] 自动降级单线程失败: {e}")
+            logger.error("自动降级单线程失败: %s", e)
             return False
 
     def _start_singlethread_download(self, task: dict, resume: bool, run_id: int) -> bool:
@@ -589,21 +593,21 @@ class DownloadEngine:
             # 艹，任务都取消了还合并个锤子，直接撤
             return
 
-        print(f"[合并] 开始合并文件，目标路径: {save_path}")
+        logger.info("开始合并文件，目标路径: %s", save_path)
 
         # 获取所有分块文件
         chunk_files = [chunk['temp_file'] for chunk in sorted(chunks, key=lambda x: x['chunk_index'])]
-        print(f"[合并] 分块文件数: {len(chunk_files)}")
+        logger.info("分块文件数: %s", len(chunk_files))
 
         # 合并文件
         if merge_chunks(chunk_files, save_path, delete_chunks=True):
-            print(f"[成功] 文件已保存到: {save_path}")
-            print(f"[检查] 文件是否存在: {os.path.exists(save_path)}")
+            logger.info("文件已保存到: %s", save_path)
+            logger.info("文件是否存在: %s", os.path.exists(save_path))
 
             # 校验并完成任务
             self._verify_and_finish(task_id, save_path)
         else:
-            print(f"[错误] 文件合并失败！")
+            logger.error("文件合并失败")
             if self._is_task_cancelled(task_id):
                 return
             self.db.update_task_status(task_id, 'failed', '文件合并失败')
@@ -638,23 +642,23 @@ class DownloadEngine:
             self.status_callback(task_id, 'verifying', '正在校验...')
 
         # 计算文件哈希
-        print(f"[校验] 开始计算{hash_type.upper()}哈希...")
+        logger.info("开始计算%s哈希...", hash_type.upper())
         actual_hash = calculate_file_hash(save_path, hash_type)
         if run_id is not None and not self._is_current_task_run(task_id, run_id):
             return
 
         if actual_hash:
-            print(f"[校验] 文件哈希: {actual_hash}")
+            logger.info("文件哈希: %s", actual_hash)
             # 有预期哈希值，进行对比
             if expected_hash:
                 if actual_hash == expected_hash.lower():
                     # 校验通过
-                    print(f"[校验] 校验通过！")
+                    logger.info("校验通过")
                     self.db.update_task_hash(task_id, actual_hash, 1)
                     self._finish_task(task_id, save_path, 'completed', '下载完成，校验通过')
                 else:
                     # 校验失败
-                    print(f"[校验] 校验失败！期望:{expected_hash}, 实际:{actual_hash}")
+                    logger.warning("校验失败: 期望 %s, 实际 %s", expected_hash, actual_hash)
                     self.db.update_task_hash(task_id, actual_hash, -1)
                     # 艹，verify_failed 也是终态，TaskManager会按终态释放并发槽位
                     self._finish_task(task_id, save_path, 'verify_failed',
@@ -682,7 +686,7 @@ class DownloadEngine:
                 avg_speed = task['total_size'] / elapsed_time if elapsed_time > 0 else 0
                 self.db.add_history(task_id, task['filename'], task['total_size'], elapsed_time, avg_speed)
             except Exception as e:
-                print(f"[警告] 添加历史记录失败: {e}")
+                logger.warning("添加历史记录失败: %s", e)
 
         if task and status in ('completed', 'verify_failed'):
             self.db.update_task_progress(task_id, task['total_size'], 0)
@@ -809,7 +813,7 @@ class DownloadEngine:
             try:
                 self._stop_active_task_workers(task_id, invalidate_run=True, wait=True)
             except Exception as e:
-                print(f"[错误] 退出清理任务失败: task={task_id}, err={e}")
+                logger.error("退出清理任务失败: task=%s, err=%s", task_id, e)
 
         self.active_downloaders.clear()
         self.thread_pools.clear()

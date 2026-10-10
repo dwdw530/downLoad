@@ -4,9 +4,13 @@
 老王说：配置文件就该简单明了，别搞那些花里胡哨的！
 """
 import json
+import logging
 import os
 import sys
 from typing import Any, Dict
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_app_root() -> str:
@@ -75,7 +79,7 @@ class ConfigManager:
                     if key not in self._config:
                         self._config[key] = value
             except Exception as e:
-                print(f"[错误] 加载配置文件失败: {e}，使用默认配置")
+                logger.error("加载配置文件失败: %s，使用默认配置", e)
                 self._config = self.DEFAULT_CONFIG.copy()
         else:
             # 配置文件不存在，使用默认配置并保存
@@ -89,7 +93,7 @@ class ConfigManager:
                 json.dump(self._config, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"[错误] 保存配置文件失败: {e}")
+            logger.error("保存配置文件失败: %s", e)
             return False
 
     def get(self, key: str, default: Any = None) -> Any:

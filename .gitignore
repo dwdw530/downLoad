@@ -26,3 +26,8 @@ __pycache__/
 /dist/*-setup.exe
 /dist/*-setup.exe.sha256
 
+
+# 应用运行日志
+/logs/
+# 打包目录下的运行日志
+/dist/logs/

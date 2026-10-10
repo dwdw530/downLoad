@@ -3,11 +3,15 @@
 任务管理器
 老王说：队列管理得井井有条，不然乱套了！
 """
+import logging
 import threading
 import os
 from typing import List, Dict, Optional, Callable
 from downloader.core.download_engine import DownloadEngine
 from downloader.database.db_manager import DatabaseManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskManager:
@@ -187,7 +191,7 @@ class TaskManager:
             if self._scheduling_paused or task_id in self._running_tasks:
                 return False
             if len(self._running_tasks) >= self.max_concurrent:
-                print(f"[提示] 已达到最大并发数，任务将等待: {task_id}")
+                logger.info("已达到最大并发数，任务将等待: %s", task_id)
                 return False
 
             self._running_tasks.add(task_id)
@@ -229,7 +233,7 @@ class TaskManager:
                 return False
             # 艹，恢复任务也得走并发门禁，不能偷偷绕过最大并发
             if task_id not in self._running_tasks and len(self._running_tasks) >= self.max_concurrent:
-                print(f"[提示] 已达到最大并发数，任务转入等待队列: {task_id}")
+                logger.info("已达到最大并发数，任务转入等待队列: %s", task_id)
                 self.db.update_task_status(task_id, 'pending', '等待可用下载槽位')
                 if self.task_status_changed_callback:
                     self.task_status_changed_callback(task_id, 'pending', '等待可用下载槽位')
@@ -406,7 +410,7 @@ class TaskManager:
                     # 兜底：即使下载器实例丢了，也要把状态拍平为paused，防止重启后僵尸状态
                     self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
             except Exception as e:
-                print(f"[错误] 退出暂停任务失败: {task_id}, err={e}")
+                logger.error("退出暂停任务失败: %s, err=%s", task_id, e)
                 self.db.update_task_status(task_id, 'paused', '程序退出自动暂停（异常兜底）')
 
         # 再兜底清理引擎资源

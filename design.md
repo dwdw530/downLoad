@@ -36,6 +36,7 @@ downloader/
 │   ├── registration.py        原生消息主机注册表注册与注销
 │   └── security.py            DPAPI 加解密、请求头白名单、跨源跳转与 Content-Type 校验
 └── utils/
+    ├── app_log.py             日志配置（文件日志、可回退目录、stdout 禁区）
     ├── config.py              配置读写与 get_app_root()
     └── file_utils.py          分块合并、哈希计算、大小/速度格式化
 ```
@@ -198,7 +199,15 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 `data/config.json`，默认值见 `config.py:29`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
 
-## 9. 构建与发布
+## 9. 日志与排障
+
+- **配置入口**：`main.py` 启动时调用 `setup_logging()`（`downloader/utils/app_log.py`），其余模块统一用 `logging.getLogger(__name__)`，全部位于 `downloader` 命名空间下。
+- **输出目标**：默认写 `<程序目录>/logs/app.log`（`RotatingFileHandler`，2 MB × 3，UTF-8）；目录不可写时回退 `%LOCALAPPDATA%\LaoWangDownloader\logs`；两者都不可用时静默降级，不阻断启动。
+- **stdout 禁区**：`native_host.py` 用 stdout 传输长度前缀 JSON，任何 handler 都不得写入 stdout。因此冻结环境只挂文件 handler，开发环境额外挂 stderr。
+- **脱敏**：网络相关异常用 `app_log.safe_error(error, sensitive=True)` 只记类型名，避免异常消息里的链接或 Cookie 落盘；顶层未捕获异常默认也只记类型名，需要完整堆栈时设 `DAW_LOG_LEVEL=DEBUG`。
+- **级别**：默认 `INFO`，可用环境变量 `DAW_LOG_LEVEL` 覆盖；开发环境 `logs/` 已被 `.gitignore` 排除。
+
+## 10. 构建与发布
 
 - **build_exe.py**：调用 PyInstaller 依次打包 `老王下载器.spec`（主程序，`console=False`）与 `browser_bridge.spec`（桥接，`console=True`），再把 `video-tools/`、`chrome-extension/` 与浏览器安装脚本拷入 `dist`。构建子进程的 PATH 前置 `sys.prefix/Library/bin`，保证 Tcl/Tk 等依赖来自当前环境。不清理整个 `dist`，保留用户数据。
 - **build_installer.py**：用固定 SHA256 的便携 NSIS 3.13 编译 `installer/daw-downloader.nsi`，生成可选路径、可卸载的安装包与独立 `.sha256` 文件。

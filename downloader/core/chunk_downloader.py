@@ -3,12 +3,16 @@
 分块下载器
 老王说：这玩意儿是核心中的核心，写不好整个下载器都白搭！
 """
+import logging
 import os
 import re
 import requests
 from downloader.browser.security import browser_get
 import time
 from typing import Callable, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 class SpeedLimiter:
@@ -164,7 +168,7 @@ class ChunkDownloader:
                     return True
             except Exception as e:
                 detail = type(e).__name__ if self.request_context else str(e)
-                print(f"[错误] 分块{self.chunk_id}下载失败（尝试{attempt + 1}/{self.retry_times}）: {detail}")
+                logger.warning("分块%s下载失败（尝试%s/%s）: %s", self.chunk_id, attempt + 1, self.retry_times, detail)
                 if attempt < self.retry_times - 1:
                     time.sleep(1)  # 重试前等待1秒
                 else:
@@ -204,7 +208,7 @@ class ChunkDownloader:
         ) as response:
             expected_status = 206 if self.use_range else 200
             if response.status_code != expected_status:
-                print(f"[错误] 分块{self.chunk_id}请求失败: HTTP {response.status_code}")
+                logger.warning("分块%s请求失败: HTTP %s", self.chunk_id, response.status_code)
                 return False
 
             if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
