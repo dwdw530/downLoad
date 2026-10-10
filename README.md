@@ -2,6 +2,8 @@
 
 一个类似IDM的多线程下载器，支持断点续传、队列管理等功能。
 
+> **仅支持 64 位 Windows。** 程序依赖 Windows 的 DPAPI 加密、Chrome 原生消息注册表和 NSIS 安装包，代码中没有跨平台分支；在 Linux/macOS 上需要自行改造才能运行。
+
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
 Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.3.0/daw-downloader-v0.3.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
@@ -20,28 +22,41 @@ Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoa
 ## 项目结构
 
 ```
-downDemo/
-├── downloader/
-│   ├── core/              # 核心下载引擎
-│   │   ├── chunk_downloader.py
-│   │   ├── download_engine.py
-│   │   └── task_manager.py
-│   ├── database/          # 数据库管理
-│   │   └── db_manager.py
-│   ├── ui/                # GUI界面
-│   │   ├── main_window.py
-│   │   └── settings_dialog.py
-│   └── utils/             # 工具函数
-│       ├── config.py
-│       └── file_utils.py
-├── data/                  # 数据目录（自动创建）
-│   ├── downloads.db       # SQLite数据库
-│   └── config.json        # 用户配置
-├── downloads/             # 默认下载目录（自动创建）
-├── temp/                  # 临时分块文件（自动创建）
-├── main.py                # 启动入口
-├── requirements.txt       # 依赖清单
-└── README.md
+downLoad_project/
+├── downloader/                   # 核心包
+│   ├── core/                     # 下载引擎
+│   │   ├── download_engine.py    # 引擎总控：探测、分块、调度、合并、校验
+│   │   ├── chunk_downloader.py   # 单分块下载器 + 令牌桶限速
+│   │   ├── task_manager.py       # 任务队列、状态机、并发门禁
+│   │   └── youtube_downloader.py # 视频页/流媒体封装（yt-dlp + FFmpeg）
+│   ├── database/                 # 数据持久化
+│   │   └── db_manager.py         # SQLite：任务、分块、历史
+│   ├── ui/                       # GUI（CustomTkinter）
+│   │   ├── main_window.py        # 主窗口、任务卡片与各对话框
+│   │   ├── settings_dialog.py    # 设置对话框
+│   │   ├── history_dialog.py     # 下载历史对话框
+│   │   └── tray_manager.py       # 系统托盘与完成通知
+│   ├── browser/                  # 浏览器桥接
+│   │   ├── bridge.py             # 本机回环 IPC 服务与单实例互斥
+│   │   ├── native_host.py        # Chrome 原生消息主机
+│   │   ├── registration.py       # 原生消息主机注册表注册
+│   │   └── security.py           # DPAPI 加密与请求头/域校验
+│   └── utils/                    # 工具函数
+│       ├── config.py             # 配置读写
+│       └── file_utils.py         # 分块合并、哈希计算、格式化
+├── chrome-extension/             # 浏览器扩展（Manifest V3）
+├── installer/                    # NSIS 安装脚本与使用说明
+├── scripts/                      # 构建、发布与冒烟测试脚本
+├── assets/                       # 图标资源
+├── data/                         # 运行数据（自动创建，发布包不含该目录）
+│   ├── downloads.db              # SQLite数据库
+│   └── config.json               # 用户配置
+├── temp/                         # 临时分块文件（自动创建）
+├── main.py                       # 桌面程序入口
+├── browser_host.py               # 桥接 EXE 入口
+├── 老王下载器.spec               # 主程序 PyInstaller 配置
+├── browser_bridge.spec           # 桥接 PyInstaller 配置
+└── requirements.txt              # 依赖清单
 ```
 
 ## Chrome 视频下载助手
@@ -129,7 +144,7 @@ python main.py
 - 继续时从已下载位置重新开始
 
 #### 任务队列管理
-- 状态机：pending → downloading → completed/failed/cancelled
+- 状态机：pending → downloading → verifying → completed / verify_failed；下载中可暂停为 paused 再继续，任意非完成状态可转为 cancelled 或 failed
 - 支持并发控制（默认同时下载3个任务）
 - 任务完成后自动启动队列中的下一个任务
 
@@ -161,18 +176,29 @@ python -B scripts/smoke_exe.py
 
 ```json
 {
-    "download_dir": "downloads",
+    "download_dir": "C:\\Users\\<用户名>\\Downloads\\daw下载器",
     "temp_dir": "temp",
     "thread_count": 8,
     "max_concurrent_downloads": 3,
     "retry_times": 3,
     "chunk_size": 1048576,
     "timeout": 30,
-    "user_agent": "PyDownloader/1.0"
+    "user_agent": "PyDownloader/1.0",
+    "proxy": {
+        "enabled": false,
+        "http": "",
+        "https": ""
+    },
+    "close_behavior": "ask",
+    "speed_limit": 0
 }
 ```
 
+`close_behavior` 取值为 `ask`（每次询问）/ `minimize`（最小化到托盘）/ `exit`（直接退出）；`speed_limit` 单位为字节/秒，0 表示不限速。
+
 ## 数据库结构
+
+任务表还包含校验（`expected_hash` / `actual_hash` / `hash_verified`）、浏览器上下文（`browser_context`）、任务类型与视频清晰度（`download_type` / `video_height`）等列，完整字段与状态机见 [design.md](design.md) 的「数据模型」。
 
 ### download_tasks（任务表）
 - task_id: 任务ID（UUID）
@@ -230,15 +256,12 @@ pip install customtkinter
 2. UI组件 → `downloader/ui/`
 3. 工具函数 → `downloader/utils/`
 
-## TODO（未来计划）
+## 后续计划
 
-- [ ] 代理支持
-- [ ] 速度限制
-- [ ] 下载历史查看
-- [ ] 文件校验（MD5/SHA256）
-- [ ] 自动分类（按文件类型）
-- [ ] 浏览器集成
-- [ ] 系统托盘
+- [ ] 自动分类（按文件类型分目录）
+- [ ] 计划任务（定时下载）
+
+> 代理、限速、下载历史、MD5/SHA256 校验、浏览器集成、系统托盘均已实现，详见上文「功能特性」与「设置」。
 
 ## 开源协议
 

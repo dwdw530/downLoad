@@ -1,261 +1,162 @@
-# 🎉 老王下载器 - 项目完成总结
+# daw下载器 · 项目总结
 
-艹，终于全部搞定了！老王我给你整了个完整的下载器！
+老王一句话：一个 Windows 桌面多线程下载器，走 IDM 那套玩法——分块并发、断点续传、队列调度，外挂一条浏览器视频下载链路（扩展 + 原生消息桥接）。
+
+> **仅支持 64 位 Windows。** 程序依赖 DPAPI 加密、Chrome 原生消息注册表和 NSIS 安装包，代码中没有跨平台分支。
 
 ---
 
-## 📦 **项目文件清单**
+## 正式产物
 
-### **核心程序**
-```
-dist/
-└── 老王下载器.exe          ✅ 可执行文件（14MB，双击运行）
-```
+| 产物 | 位置 | 说明 |
+|------|------|------|
+| 桌面程序 | `dist/daw下载器.exe` | 便携版入口，原名“老王下载器” |
+| 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
+| 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.5.0 |
+| 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
+| 安装包 | `dist/daw-downloader-v0.3.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-### **源代码**
+发布统一走 GitHub Releases（当前 `v0.3.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验。
+
+---
+
+## 功能特性
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 多线程分块下载 | 已实现 | 1-16 线程，按文件大小自动收敛线程数 |
+| 断点续传 | 已实现 | 分块进度实时入库，暂停/重启可续 |
+| 任务队列管理 | 已实现 | 并发上限 1-5，FIFO 调度 |
+| 实时进度显示 | 已实现 | 进度条、速度、状态实时刷新 |
+| 批量操作 | 已实现 | 暂停全部 / 继续全部 |
+| 代理支持 | 已实现 | HTTP/HTTPS 代理，设置对话框配置 |
+| 速度限制 | 已实现 | 令牌桶限速，按任务总量在分块间分配 |
+| 文件校验 | 已实现 | MD5 / SHA256，下载后自动比对 |
+| 下载历史 | 已实现 | 历史对话框查看与清空 |
+| 系统托盘 | 已实现 | 最小化到托盘、下载完成通知 |
+| 浏览器集成 | 已实现 | 扩展识别网页视频，经桥接送入下载器 |
+| 通用流媒体 | 已实现 | HLS（M3U8）/ DASH（MPD）分片下载与合并 |
+| 自动分类 | 未实现 | 按文件类型分目录 |
+| 计划任务 | 未实现 | 定时下载 |
+
+---
+
+## 源码结构
+
 ```
-downDemo/
-├── downloader/              ✅ 核心模块
+downLoad_project/
+├── downloader/                   # 核心包（21 个模块，约 5000 行）
 │   ├── core/
-│   │   ├── chunk_downloader.py      # 分块下载器
-│   │   ├── download_engine.py       # 下载引擎
-│   │   └── task_manager.py          # 任务管理器
-│   ├── database/
-│   │   └── db_manager.py            # SQLite数据库管理
+│   │   ├── download_engine.py    # 引擎总控：探测、分块、调度、合并、校验
+│   │   ├── chunk_downloader.py   # 单分块下载器 + 令牌桶限速
+│   │   ├── task_manager.py       # 任务队列、状态机、并发门禁
+│   │   └── youtube_downloader.py # 视频页/流媒体封装（yt-dlp + FFmpeg）
+│   ├── database/db_manager.py    # SQLite：任务、分块、历史
 │   ├── ui/
-│   │   ├── main_window.py           # 主窗口GUI
-│   │   └── settings_dialog.py       # 设置对话框
+│   │   ├── main_window.py        # 主窗口、任务卡片与各对话框
+│   │   ├── settings_dialog.py    # 设置对话框
+│   │   ├── history_dialog.py     # 下载历史对话框
+│   │   └── tray_manager.py       # 系统托盘与完成通知
+│   ├── browser/
+│   │   ├── bridge.py             # 本机回环 IPC 服务与单实例互斥
+│   │   ├── native_host.py        # Chrome 原生消息主机
+│   │   ├── registration.py       # 原生消息主机注册表注册
+│   │   └── security.py           # DPAPI 加密与请求头/域校验
 │   └── utils/
-│       ├── config.py                # 配置管理
-│       └── file_utils.py            # 文件工具
-├── assets/                  ✅ 资源文件
-│   ├── icon.ico                     # 程序图标（ICO格式）
-│   └── icon.png                     # 图标预览（PNG格式）
-├── scripts/
-│   └── generate_icon.py             # 图标生成器
-├── main.py                  ✅ 启动入口
-├── build.bat                ✅ 一键打包脚本
-├── requirements.txt         ✅ 依赖清单
-├── README.md                ✅ 使用文档
-├── BUILD_EXE.md             ✅ 打包教程
-└── design.md                ✅ 设计文档
+│       ├── config.py             # 配置读写
+│       └── file_utils.py         # 分块合并、哈希计算、格式化
+├── chrome-extension/             # 浏览器扩展（Manifest V3）
+├── installer/                    # NSIS 安装脚本与使用说明
+├── scripts/                      # 构建、发布与冒烟测试脚本
+├── assets/                       # 图标资源
+├── main.py                       # 桌面程序入口
+├── browser_host.py               # 桥接 EXE 入口
+├── 老王下载器.spec               # 主程序 PyInstaller 配置
+└── browser_bridge.spec           # 桥接 PyInstaller 配置
 ```
 
----
-
-## 🚀 **快速开始**
-
-### **方式1：直接运行exe（推荐）**
-
-1. 找到文件：`dist/老王下载器.exe`
-2. 双击运行
-3. 开始下载！
-
-**注意：** 首次运行会自动创建 `data/`、`downloads/`、`temp/` 目录。
+运行数据 `data/`（`downloads.db` + `config.json`）和 `temp/` 由程序自动创建；发布包按白名单排除这些运行数据，源码仓库中保留初始状态的文件。
 
 ---
 
-### **方式2：源码运行（开发调试）**
+## 快速开始
+
+### 方式一：直接运行 EXE
+
+1. 运行 `dist/daw下载器.exe`（便携版），或安装 `dist/*-setup.exe` 后从开始菜单启动
+2. 添加下载链接，开始下载
+
+首次运行会自动在程序目录下创建 `data/` 和 `temp/`。
+
+### 方式二：源码运行（开发调试）
 
 ```bash
-# 1. 激活conda环境
 conda activate py310_env
-
-# 2. 安装依赖
-pip install customtkinter requests
-
-# 3. 运行程序
+pip install -r requirements.txt
 python main.py
 ```
 
 ---
 
-## ⚙️ **功能特性**
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| ✅ 多线程分块下载 | 已实现 | 最多16线程，默认8线程 |
-| ✅ 断点续传 | 已实现 | 随时暂停/继续，进度保存到数据库 |
-| ✅ 任务队列管理 | 已实现 | 最多同时下载3个任务 |
-| ✅ 实时进度显示 | 已实现 | 进度条、速度、状态实时更新 |
-| ✅ 批量操作 | 已实现 | 暂停全部/继续全部 |
-| ✅ 设置对话框 | 已实现 | 线程数、并发数、超时等配置 |
-| ✅ SQLite数据持久化 | 已实现 | 任务重启不丢失 |
-| ✅ 现代化GUI | 已实现 | CustomTkinter深色主题 |
-
----
-
-## 📖 **使用说明**
-
-### **1. 添加下载任务**
-- 点击 **"➕ 添加任务"**
-- 输入下载链接（支持HTTP/HTTPS）
-- 选择保存位置（可选）
-
-### **2. 管理任务**
-- **▶ 开始** - 启动下载
-- **⏸ 暂停** - 暂停并保存进度
-- **✗ 取消** - 取消任务
-- **🗑 删除** - 删除任务记录
-- **📁 打开** - 打开文件所在文件夹（完成后）
-
-### **3. 设置**
-点击 **"⚙ 设置"** 可配置：
-- 默认下载目录
-- 下载线程数（1-16）
-- 同时下载任务数（1-5）
-- 请求超时时间
-
----
-
-## 🔧 **二次开发**
-
-### **修改源码后重新打包**
+## 打包与发布
 
 ```bash
-# 方式1：使用build.bat（推荐）
-双击 build.bat
+# 只重建两个 EXE，更新 dist
+python -B scripts/build_exe.py
 
-# 方式2：手动打包
-conda activate py310_env
-pyinstaller --onefile --windowed --icon=assets/icon.ico --name="老王下载器" main.py
+# 重建 EXE 并打 Windows 安装包（缺少 NSIS 时自动下载固定版本）
+python -B scripts/build_installer.py v0.3.0 --rebuild
+
+# 打便携版 ZIP 与独立扩展 ZIP
+python -B scripts/package_release.py v0.3.0
 ```
 
-### **修改图标**
-
-```bash
-# 重新生成图标
-python scripts/generate_icon.py
-
-# 或者替换 assets/icon.ico 文件（必须是.ico格式）
-```
+`build_exe.py` 通过两个 spec 分别打包主程序与桥接，再把 `video-tools/`、`chrome-extension/` 和浏览器安装脚本拷进 `dist`；构建时把当前环境的 `Library/bin` 置于 PATH 最前，避免混入 base 环境的 Tcl/Tk。发布文件清单在 `scripts/package_release.py` 中显式白名单，排除用户运行数据。详细步骤见 `docs/INSTALLER.md`。
 
 ---
 
-## 📂 **数据存储**
-
-程序运行时会自动创建以下目录：
+## 数据存储
 
 ```
 data/
-├── downloads.db             # SQLite数据库（任务记录）
-└── config.json              # 用户配置
-downloads/                   # 默认下载目录
-temp/                        # 临时分块文件
+├── downloads.db    # SQLite：任务、分块、下载历史
+└── config.json     # 用户配置
+temp/               # 临时分块文件（.partN / .tmp）
 ```
 
-**删除任务时不会删除已下载的文件，只删除数据库记录。**
+删除任务默认只删数据库记录，是否同时删除已下载文件由用户在确认框中勾选。
 
 ---
 
-## 🐛 **常见问题**
+## 技术栈
 
-### Q1: exe文件太大（14MB）？
-**A:** 这是正常的！PyInstaller会打包Python解释器和所有依赖。优化方法见 `BUILD_EXE.md`。
-
-### Q2: 杀毒软件报毒？
-**A:** 误报，添加到白名单即可。PyInstaller打包的exe经常被误报。
-
-### Q3: 下载速度不快？
-**A:** 可能原因：
-- 服务器不支持多线程（会自动降级为单线程）
-- 网络带宽限制
-- 服务器限速
-- 尝试调整线程数（设置 → 下载线程数）
-
-### Q4: 双击exe没反应？
-**A:**
-1. 在cmd中运行exe，查看错误信息
-2. 确保没有被杀毒软件拦截
-3. 检查是否有权限问题
+- **语言**：Python 3.10（`py310_env`，实测 3.10.14）
+- **GUI**：CustomTkinter
+- **HTTP**：requests（`concurrent.futures` 线程池）
+- **数据库**：SQLite3
+- **视频**：yt-dlp + FFmpeg + ffprobe + Node（随包分发）
+- **打包**：PyInstaller（EXE）+ NSIS（安装包）
 
 ---
 
-## 📊 **技术架构**
-
-### **技术栈**
-- **语言**: Python 3.11.3
-- **GUI**: CustomTkinter
-- **HTTP**: requests
-- **并发**: concurrent.futures
-- **数据库**: SQLite3
-- **打包**: PyInstaller 6.17.0
-
-### **核心原理**
-1. **分块下载**: HEAD请求获取大小 → 计算分块 → 线程池并发下载 → 合并文件
-2. **断点续传**: 分块进度实时写入数据库 → 暂停保存进度 → 继续从断点下载
-3. **任务队列**: 状态机管理 → 并发控制 → 自动调度
-
----
-
-## 📝 **代码统计**
-
-- **总行数**: ~1800行
-- **Python文件**: 15个
-- **核心模块**: 9个
-- **开发时间**: 1天（老王我火速完工）
-
----
-
-## 🎯 **TODO（未来计划）**
-
-- [ ] 代理支持
-- [ ] 速度限制
-- [ ] 文件校验（MD5/SHA256）
-- [ ] 自动分类（按文件类型）
-- [ ] 浏览器集成
-- [ ] 系统托盘
-- [ ] 下载历史查看
-
----
-
-## 📄 **文档索引**
+## 文档索引
 
 | 文档 | 说明 |
 |------|------|
 | `README.md` | 项目说明、功能特性、使用教程 |
-| `BUILD_EXE.md` | 打包exe详细教程 |
-| `design.md` | 设计文档、技术方案 |
-| 本文档 | 项目总结、快速开始 |
+| `BUILD_EXE.md` | 打包 EXE 详细教程 |
+| `design.md` | 架构设计：模块职责、状态机、数据模型 |
+| `docs/BROWSER_VIDEO.md` | 浏览器视频集成说明 |
+| `docs/INSTALLER.md` | 安装包构建、安装、升级与卸载 |
+| 本文档 | 项目总结与快速开始 |
 
 ---
 
-## 🎁 **分发说明**
+## 后续计划
 
-### **给别人使用**
-只需要把 `dist/老王下载器.exe` 发给对方即可，无需安装Python！
-
-### **打包压缩**
-```bash
-# 创建一个压缩包
-老王下载器_v1.0.zip
-├── 老王下载器.exe
-└── 使用说明.txt
-```
+- [ ] 自动分类（按文件类型分目录）
+- [ ] 计划任务（定时下载）
 
 ---
 
-## ✨ **老王的暴躁总结**
-
-艹，这个项目老王我写得贼tm满意！
-
-**亮点：**
-- ✅ 代码简洁（KISS原则）
-- ✅ 功能完整（多线程、断点续传、队列管理）
-- ✅ 界面现代化（CustomTkinter深色主题）
-- ✅ 数据持久化（SQLite稳如老狗）
-- ✅ 打包完美（14MB单文件exe）
-- ✅ 文档齐全（README + 打包教程 + 设计文档）
-
-**使用方法：**
-1. 双击 `dist/老王下载器.exe`
-2. 添加下载任务
-3. 开始下载！
-
-**遇到问题？**
-1. 查看文档：`README.md`、`BUILD_EXE.md`
-2. 来找老王我！
-
----
-
-**艹，用得爽就行了！有bug来找老王！** 😤
+**用得爽就给个 Star，用得憋屈就提 Issue！** 😤

@@ -1,489 +1,208 @@
-  先搞清楚你到底要啥功能：
-
-  IDM的核心功能包括：
-    1. 多线程分块下载（这是核心中的核心，不然跟普通下载有啥区别）
-    2. 断点续传（下到一半断网了还能继续）
-    3. 下载队列管理（排队下载，批量任务）
-    4. 浏览器集成（监听浏览器下载链接）
-    5. 下载加速（多连接并发）
-    6. 自动分类（按文件类型分文件夹）
-    7. 计划任务（定时下载）
-    8. 代理支持
-    9. 速度限制（限速下载）
+# daw下载器 · 架构设计
 
-  老王我得问你几个关键问题：
+> 本文档由项目早期的需求澄清会话记录重写而来，原文（含当时的对话与技术选型过程）保留在 git 提交历史中。内容以当前代码为准。
 
-    1. 你想做哪个平台的？
-    - Windows桌面应用？（像IDM原版）
-    - 跨平台的？（Windows/Mac/Linux都能用）
-    - Web版的？（浏览器里跑）
-    2. 技术栈你有偏好吗？
-    - Electron（跨平台，用Web技术，老王觉得挺合适）
-    - .NET/WPF（纯Windows）
-    - Python + PyQt/Tkinter（简单但性能一般）
-    - Rust/Go（性能猛但开发慢）
-    3. 核心功能你想要哪些？
-    - 全要？（那工作量可不小，老王我得规划个把月）
-    - 还是先做MVP（最小可行产品）？比如就做多线程下载+断点续传+队列管理这几个核心功能？
-    4. UI要求高不高？
-    - 简单能用就行？
-    - 还是要做得跟IDM一样精致？
+## 1. 概述与平台约束
 
-  你先告诉老王我这几个问题，老王好给你规划个靠谱的方案。别tm上来就让我写代码，需求不清楚写个锤子！
+daw下载器是一个 Windows 桌面多线程下载器，核心能力是分块并发下载与断点续传，并额外提供一条浏览器视频下载链路。项目刻意保持结构简单（KISS），不做过度抽象。
 
-> 做windows桌面应用，Python可以吧，先做核心功能，基本功能肯定要的，UI要求一般吧
-> 我的conda 有两个环境，选那个py310的，你先做设计规划吧，ultrathink
+**平台约束：仅支持 64 位 Windows。** 以下能力强绑定 Windows，代码中没有跨平台分支：
 
-● 艹，好嘞！Python做Windows桌面应用，py310环境，先搞核心功能，这个思路对了！老王我这就给你整个靠谱的设计方案！
+- 浏览器请求上下文使用 DPAPI（`CryptProtectData` / `CryptUnprotectData`）加密后入库；
+- 单实例互斥与进程清理使用 Win32 互斥体与 `taskkill`；
+- 浏览器原生消息主机通过注册表 `HKCU\Software\Google\Chrome\NativeMessagingHosts` 注册；
+- 子进程以 `CREATE_NO_WINDOW` 启动；
+- 安装包基于 NSIS。
 
-● 好嘞！老王我先看看你这个环境情况：
+## 2. 目录与模块职责
 
-● Bash(bash -c "conda env list")
-  ⎿  # conda environments:
-​     #
-​     base                  *  D:\anaconda3
-​     py310_env                D:\anaconda3\envs\py310_env
-
-● Bash(bash -c "ls -lah")
-  ⎿  total 8.0K
-​     drwxr-xr-x 1 lenovo 197121 0 12月 13 19:06 .
-​     drwxr-xr-x 1 lenovo 197121 0 12月 13 14:01 ..
-​     drwxr-xr-x 1 lenovo 197121 0 12月 13 19:06 .claude
-
-● Bash(bash -c "conda activate py310_env && python --version")
-  ⎿  Error: Exit code 1
-
-     CommandNotFoundError: Your shell has not been properly configured to use 'conda activate'.
-     If using 'conda activate' from a batch script, change your
-     invocation to 'CALL conda.bat activate'.
-    
-     To initialize your shell, run
-    
-         $ conda init <SHELL_NAME>
-    
-     … +12 lines (ctrl+o to see all)
-
-● 艹，这个conda在bash里不好使，老王换个方式：
-
-● Bash(pwsh.exe -Command "conda activate py310_env; python --version")
-  ⎿  Python 3.11.3
-
-● 乖乖，是Python 3.11.3，比3.10还新，完全够用！现在老王我开始深度调研技术方案：
-
-● 艹，老王我开始深度思考技术方案了！
-
-  技术栈调研分析
-
-  1️⃣ GUI框架选择
-
-  候选方案：
-  - PyQt5/PySide6：功能最强，UI最专业，但学习曲线陡，打包后体积大（100MB+）
-  - CustomTkinter：现代化Tkinter，轻量（<10MB），开发快，UI也不错
-  - wxPython：跨平台老牌框架，但社区活跃度不如前两者
-
-  老王推荐：CustomTkinter ✅
-  - 理由：简单够用、轻量、UI现代化、开发速度快、打包后体积小
-
-  2️⃣ HTTP下载库
-
-  候选方案：
-  - requests：最成熟，文档全，但同步阻塞
-  - httpx：支持异步，API类似requests
-  - aiohttp：纯异步，高性能
-
-  老王推荐：requests + concurrent.futures ✅
-  - 理由：成熟稳定、社区大、支持Range请求（分块下载核心）、配合线程池够用
-
-  3️⃣ 并发方案
-
-  候选方案：
-  - threading：传统多线程，简单粗暴
-  - concurrent.futures.ThreadPoolExecutor：线程池，优雅高效
-  - asyncio + aiohttp：异步IO，性能最好但复杂
-
-  老王推荐：concurrent.futures.ThreadPoolExecutor ✅
-  - 理由：线程池管理简单、适合IO密集型任务、代码清晰
-
-  4️⃣ 数据存储
-
-  老王推荐：SQLite3 ✅
-  - 存储下载任务、断点续传信息、下载历史
-  - Python内置，无需额外依赖
-
-  5️⃣ 配置管理
-
-  老王推荐：JSON ✅
-  - 存储用户配置：下载目录、线程数、代理设置等
-
----
-
-> 不，我不希望污染base环境
-
-● 艹，对对对！老王我懂，肯定用py310_env环境，不动base！这是基本素养！
-
-  继续老王的设计：
-
-  核心架构设计
-
-  下载器项目结构（KISS原则）
-  ├── downloader/
-  │   ├── __init__.py
-  │   ├── core/                    # 核心下载引擎
-  │   │   ├── __init__.py
-  │   │   ├── download_engine.py   # 多线程下载核心
-  │   │   ├── chunk_downloader.py  # 分块下载器
-  │   │   └── task_manager.py      # 任务队列管理
-  │   ├── database/                # 数据持久化
-  │   │   ├── __init__.py
-  │   │   ├── db_manager.py        # SQLite管理
-  │   │   └── models.py            # 数据模型
-  │   ├── ui/                      # GUI界面
-  │   │   ├── __init__.py
-  │   │   ├── main_window.py       # 主窗口
-  │   │   ├── task_item.py         # 任务列表项
-  │   │   └── settings_dialog.py   # 设置对话框
-  │   └── utils/                   # 工具函数
-  │       ├── __init__.py
-  │       ├── config.py            # 配置管理
-  │       └── file_utils.py        # 文件操作工具
-  ├── data/                        # 数据目录
-  │   ├── downloads.db             # SQLite数据库
-  │   └── config.json              # 用户配置
-  ├── downloads/                   # 默认下载目录
-  ├── temp/                        # 临时分块文件
-  ├── main.py                      # 启动入口
-  ├── requirements.txt             # 依赖清单
-  └── README.md
-
-  核心模块职责
-
-    1. DownloadEngine（下载引擎）
-
-  # 核心功能：
-  - 检查URL是否支持Range请求（分块下载）
-  - 获取文件大小和MIME类型
-  - 创建分块任务（默认8线程）
-  - 启动线程池执行下载
-  - 监控各分块进度
-  - 合并分块文件
-
-    2. ChunkDownloader（分块下载器）
-
-  # 单个分块的下载逻辑：
-  - 根据Range头下载指定字节范围
-  - 实时更新进度到数据库（断点续传关键）
-  - 支持暂停/继续/取消
-  - 异常重试机制（最多3次）
-
-    3. TaskManager（任务管理器）
-
-  # 任务队列管理：
-  - 添加/删除/暂停/继续任务
-  - 任务状态机：pending → downloading → paused → completed → failed
-  - 同时下载任务数限制（默认3个）
-  - 队列调度算法（FIFO）
-
-    4. DatabaseManager（数据库管理）
-
-  # 数据持久化：
-  - 任务表：task_id, url, filename, save_path, total_size, status, created_at
-  - 分块表：chunk_id, task_id, chunk_index, start_byte, end_byte, downloaded_bytes, status
-  - 历史表：download_history（完成的任务记录）
-
-    5. MainWindow（主界面）
-
-  # UI组件：
-  - 顶部工具栏：添加任务、暂停全部、继续全部、设置
-  - 任务列表：显示所有下载任务（文件名、进度条、速度、状态）
-  - 底部状态栏：总速度、剩余任务数
-  - 右键菜单：暂停、继续、取消、打开文件夹
-
----
-
-● 数据库Schema设计
-
-  -- 任务表（核心）
-  CREATE TABLE download_tasks (
-​      task_id TEXT PRIMARY KEY,              -- UUID
-​      url TEXT NOT NULL,                     -- 下载链接
-​      filename TEXT NOT NULL,                -- 文件名
-​      save_path TEXT NOT NULL,               -- 保存路径
-​      total_size INTEGER DEFAULT 0,          -- 文件总大小（字节）
-​      downloaded_size INTEGER DEFAULT 0,     -- 已下载大小
-​      status TEXT DEFAULT 'pending',         -- pending|downloading|paused|completed|failed|cancelled
-​      support_range INTEGER DEFAULT 1,       -- 是否支持断点续传（0=否，1=是）
-​      thread_count INTEGER DEFAULT 8,        -- 线程数
-​      speed REAL DEFAULT 0.0,                -- 当前速度（字节/秒）
-​      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-​      started_at TIMESTAMP,
-​      completed_at TIMESTAMP,
-​      error_message TEXT                     -- 失败原因
-  );
-
-  -- 分块表（断点续传关键）
-  CREATE TABLE download_chunks (
-​      chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
-​      task_id TEXT NOT NULL,                 -- 关联任务ID
-​      chunk_index INTEGER NOT NULL,          -- 分块序号
-​      start_byte INTEGER NOT NULL,           -- 起始字节
-​      end_byte INTEGER NOT NULL,             -- 结束字节
-​      downloaded_bytes INTEGER DEFAULT 0,    -- 已下载字节数
-​      status TEXT DEFAULT 'pending',         -- pending|downloading|completed|failed
-​      temp_file TEXT,                        -- 临时文件路径
-​      retry_count INTEGER DEFAULT 0,         -- 重试次数
-​      FOREIGN KEY (task_id) REFERENCES download_tasks(task_id) ON DELETE CASCADE
-  );
-
-  -- 下载历史表（可选，用于统计）
-  CREATE TABLE download_history (
-​      id INTEGER PRIMARY KEY AUTOINCREMENT,
-​      task_id TEXT NOT NULL,
-​      filename TEXT NOT NULL,
-​      file_size INTEGER,
-​      download_time REAL,                    -- 下载耗时（秒）
-​      avg_speed REAL,                        -- 平均速度
-​      completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
-
-  -- 索引
-  CREATE INDEX idx_task_status ON download_tasks(status);
-  CREATE INDEX idx_chunk_task ON download_chunks(task_id);
-  CREATE INDEX idx_chunk_status ON download_chunks(task_id, status);
-
----
-
-● 🔥 IDM风格下载器 - 完整技术方案 🔥
-
----
-  📋 项目概述
-
-  项目名称：PyDownloader（老王下载器）
-  目标：实现类似IDM的多线程下载器，支持断点续传、队列管理
-  平台：Windows 桌面应用
-  Python版本：3.11.3（py310_env环境）
-
----
-  🛠️ 技术栈
-
-| 组件     | 技术选型           | 理由                    |
-| -------- | ------------------ | ----------------------- |
-| GUI框架  | CustomTkinter      | 轻量、现代化UI、开发快  |
-| HTTP库   | requests           | 成熟稳定、支持Range请求 |
-| 并发方案 | concurrent.futures | 线程池，适合IO密集      |
-| 数据存储 | SQLite3            | Python内置、轻量        |
-| 配置管理 | JSON               | 简单够用                |
-
-  依赖清单（requirements.txt）：
-  customtkinter>=5.2.0
-  requests>=2.31.0
-
----
-  🏗️ 核心架构
-
-  模块划分（KISS原则）
-
-  downloader/
-  ├── core/              # 下载引擎（多线程、分块）
-  ├── database/          # SQLite管理（任务、断点）
-  ├── ui/                # GUI界面（主窗口、任务列表）
-  └── utils/             # 工具（配置、文件操作）
-
-  核心类设计
-
-    1. DownloadEngine：下载引擎总控
-    - 检测Range支持
-    - 创建分块任务
-    - 启动线程池
-    - 监控进度
-    - 合并文件
-    2. ChunkDownloader：单块下载器
-    - Range请求
-    - 实时写入临时文件
-    - 进度回调
-    - 异常重试（3次）
-    3. TaskManager：任务队列管理
-    - 任务CRUD
-    - 状态机管理
-    - 并发控制（同时下载3个）
-    4. DBManager：数据库管理
-    - 任务持久化
-    - 分块信息存储
-    - 断点续传支持
-    5. MainWindow：主界面
-    - 任务列表（TreeView）
-    - 进度条（实时更新）
-    - 工具栏（添加/暂停/继续/设置）
-
----
-  💾 数据库设计
-
-  三张核心表
-
-    1. download_tasks：任务表
-    - 存储URL、文件名、状态、进度等
-    2. download_chunks：分块表
-    - 存储每个分块的Range信息和进度
-    - 断点续传的关键
-    3. download_history：历史表（可选）
-    - 统计下载记录
-
----
-  ⚙️ 核心功能实现
-
-    1. 多线程分块下载
-
-  流程：
-    1. HEAD请求获取文件大小
-    2. 检查Accept-Ranges头（是否支持分块）
-    3. 如果支持：计算分块（total_size / thread_count）
-    4. 创建线程池，每个线程下载一个分块
-    5. 每个分块写入临时文件（.part0, .part1...）
-    6. 监控所有分块进度
-    7. 全部完成后合并分块文件
-    8. 删除临时文件
-
-  关键代码逻辑：
-  # 分块计算
-  chunk_size = total_size // thread_count
-  chunks = [
-​      (i, i * chunk_size, (i + 1) * chunk_size - 1)
-​      for i in range(thread_count)
-  ]
-  chunks[-1] = (thread_count - 1, chunks[-1][1], total_size - 1)  # 最后一块到文件末尾
-
-  # Range请求头
-  headers = {'Range': f'bytes={start_byte}-{end_byte}'}
-
-    2. 断点续传
-
-  核心逻辑：
-  - 每个分块下载时，实时更新downloaded_bytes到数据库
-  - 暂停时保存当前进度
-  - 继续时：
-  # 从数据库读取未完成的分块
-  incomplete_chunks = db.get_incomplete_chunks(task_id)
-  for chunk in incomplete_chunks:
-​      # 从已下载位置继续
-​      start = chunk.start_byte + chunk.downloaded_bytes
-​      end = chunk.end_byte
-​      download_chunk(start, end, chunk.temp_file, append=True)
-
-    3. 任务队列管理
-
-  状态机：
-  pending → downloading → completed
-​     ↓           ↓
-  cancelled   paused → downloading
-​     ↓           ↓
-   failed     cancelled
-
-  并发控制：
-  MAX_CONCURRENT_DOWNLOADS = 3  # 同时最多下载3个任务
-
-  # 当有任务完成/暂停/取消时，从pending队列取下一个任务
-
-    4. 进度实时更新
-
-  回调机制：
-  def on_progress_update(task_id, downloaded_size, total_size, speed):
-​      # 更新数据库
-​      db.update_task_progress(task_id, downloaded_size, speed)
-​      # 通知UI更新（使用事件或队列）
-​      ui_queue.put({
-​          'task_id': task_id,
-​          'progress': downloaded_size / total_size * 100,
-​          'speed': format_speed(speed)  # 转换为 KB/s, MB/s
-​      })
-
----
-  🎨 UI设计
-
-  主窗口布局
-
-  ┌─────────────────────────────────────────┐
-  │  [+添加] [⏸暂停] [▶继续] [⚙设置]      │  ← 工具栏
-  ├─────────────────────────────────────────┤
-  │  文件名              进度    速度  状态   │  ← 表头
-  ├─────────────────────────────────────────┤
-  │  ubuntu.iso         45%   5MB/s  下载中  │
-  │  python.exe         100%    -    已完成  │
-  │  video.mp4          0%      -    等待中  │  ← 任务列表
-  │  ...                                     │
-  ├─────────────────────────────────────────┤
-  │  总速度: 8.5 MB/s  |  剩余任务: 2       │  ← 状态栏
-  └─────────────────────────────────────────┘
-
-  设置对话框
-
-  - 默认下载目录
-  - 默认线程数（1-16）
-  - 同时下载任务数（1-5）
-  - 代理设置（可选）
-
----
-  📦 依赖安装和环境配置
-
-  # 激活conda环境
-  conda activate py310_env
-
-  # 安装依赖
-  pip install customtkinter requests
-
----
-  🚀 开发阶段规划
-
-  Phase 1：核心下载引擎（MVP）
-
-    1. DownloadEngine + ChunkDownloader
-    2. 基础多线程分块下载
-    3. 断点续传功能
-    4. SQLite数据持久化
-
-  Phase 2：任务管理
-
-    1. TaskManager队列管理
-    2. 任务状态机
-    3. 并发控制
-
-  Phase 3：UI界面
-
-    1. MainWindow主窗口
-    2. 任务列表显示
-    3. 进度条实时更新
-    4. 工具栏功能
-
-  Phase 4：完善功能
-
-    1. 设置对话框
-    2. 右键菜单
-    3. 错误处理和重试
-    4. 日志记录
-
----
-  ⚠️ 技术难点和解决方案
-
-| 难点              | 解决方案                               |
-| ----------------- | -------------------------------------- |
-| 文件合并冲突      | 使用文件锁（threading.Lock），按序合并 |
-| UI卡顿            | 下载线程 + UI主线程分离，用Queue通信   |
-| 速度计算          | 每秒统计downloaded_bytes增量           |
-| 服务器不支持Range | 检测后降级为单线程下载                 |
-| 网络中断重连      | 异常捕获 + 重试机制（3次）             |
-
----
-  🎯 老王的暴躁总结
-
-  艹，这个方案就是精髓！简单、够用、不过度设计！
-
-  核心优势：
-  ✅ KISS原则：模块清晰，不搞花里胡哨
-  ✅ 技术成熟：requests + SQLite + CustomTkinter，踩坑少
-  ✅ 断点续传：分块信息实时入库，随时能续
-  ✅ 性能够用：线程池 + 8线程分块，普通家庭带宽跑满没问题
-
-  不足（但暂时不管）：
-  ❌ 不支持P2P加速（要这个得上BT协议，太复杂）
-  ❌ 不支持浏览器集成（需要写浏览器扩展，跨度大）
-  ❌ 不支持计划任务（先做核心功能）
-
----
+```
+downloader/
+├── core/
+│   ├── download_engine.py     下载引擎总控：URL 探测、任务/分块创建、启动、合并、校验、降级
+│   ├── chunk_downloader.py    单个分块下载器；含令牌桶限速器 SpeedLimiter
+│   ├── task_manager.py        任务队列与状态机：增删改查、并发门禁、FIFO 调度、退出清理
+│   └── youtube_downloader.py  视频页/流媒体封装：URL 规范化、yt-dlp 命令构造、进度解析、结果校验
+├── database/
+│   └── db_manager.py          SQLite 封装：任务表、分块表、历史表与老库字段迁移
+├── ui/
+│   ├── main_window.py         主窗口、任务卡片，及添加/删除/退出确认对话框
+│   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速）
+│   ├── history_dialog.py      下载历史对话框
+│   └── tray_manager.py        系统托盘图标与下载完成通知
+├── browser/
+│   ├── bridge.py              本机回环 HTTP IPC 服务、单实例互斥、消息分发
+│   ├── native_host.py         Chrome 原生消息主机：读写长度前缀 JSON，转发到桌面程序
+│   ├── registration.py        原生消息主机注册表注册与注销
+│   └── security.py            DPAPI 加解密、请求头白名单、跨源跳转与 Content-Type 校验
+└── utils/
+    ├── config.py              配置读写与 get_app_root()
+    └── file_utils.py          分块合并、哈希计算、大小/速度格式化
+```
+
+入口：`main.py`（桌面程序，初始化配置→数据库→引擎→任务管理器→GUI→桥接服务），`browser_host.py`（桥接 EXE 入口，直接调用 `native_host.main`）。
+
+## 3. 核心下载链路
+
+### 3.1 任务创建与探测
+
+`DownloadEngine.create_download_task`（`download_engine.py:126`）：
+
+1. 规范化浏览器请求上下文（如有）。
+2. `check_url_support_range` 用一次流式 `GET` 带 `Range: bytes=0-0` 同时判定 Range 支持与真实大小：响应 `206` 且 `Content-Range` 合法 → 支持分块；`200` → 单线程，大小取 `Content-Length`。这样兼容禁用 HEAD 的站点。
+3. 计算线程数：不支持 Range 时为 1；支持时取 `min(config.thread_count, total_size)`，避免分块区间出现 `end=-1`。
+4. 任务与分块在**同一个事务**内写入（`create_task_with_chunks`），防止半截脏数据。
+
+### 3.2 多线程分块下载
+
+`_start_multithread_download`（`download_engine.py:320`）：
+
+- 分块区间由 `_build_chunks` 计算：`chunk_size = total_size // thread_count`，最后一块到文件末尾；临时文件为 `temp/{task_id}.part{i}`。
+- 每个分块一个 `ChunkDownloader`，共用一个 `ThreadPoolExecutor(max_workers=thread_count)`。
+- 任务级限速按分块数均分：`chunk_speed_limit = speed_limit // len(chunks)`。
+- 进度由独立的监控线程 `_monitor_progress` 每秒汇总各分块已下载字节并回写数据库。
+
+### 3.3 单线程下载
+
+`_start_singlethread_download`（`download_engine.py:479`）：临时文件为 `temp/{task_id}.tmp`。非 Range 任务恢复时必须从 0 重下（不能 append 脏数据），进度用指数平滑计算速度并夹逼防止毛刺。
+
+### 3.4 合并与校验
+
+全部完成后 `_merge_and_finish` 调 `merge_chunks` 按序拼接并删除临时文件，随后进入 `_verify_and_finish`（`download_engine.py:613`）：
+
+1. 核对文件大小与 `total_size`，不符直接 `failed`。
+2. 状态置 `verifying`，计算哈希（`calculate_file_hash`，分块读取，支持 md5/sha256）。
+3. 有预期哈希且匹配 → `completed`；不匹配 → `verify_failed`；无预期哈希 → 记录实际哈希并 `completed`。
+
+完成时按 `started_at` 计算耗时与平均速度，写入 `download_history`。
+
+### 3.5 断点续传
+
+- 每个分块的已下载字节实时写入 `download_chunks.downloaded_bytes`；`ChunkDownloader` 每次重试都按临时文件真实大小重算偏移。
+- 程序启动时 `TaskManager._recover_stale_downloading_tasks` 把遗留的 `downloading`/`verifying` 纠偏为 `paused`；`_reconcile_incomplete_tasks_progress` 再按临时文件真实字节回填进度（分块任务逐个分块核对，单线程任务读 `.tmp` 大小）。
+- 暂停分块任务时销毁下载线程、恢复时按临时文件续传；暂停单线程任务时保留活跃下载器，直接 `resume()`，避免进度归零。
+
+### 3.6 失败降级
+
+分块模式若有分块失败，`_fallback_to_singlethread`（`download_engine.py:439`）会清理分块临时文件、把任务切为单线程（`mark_task_singlethread`）并从头重试一次；仍失败才判 `failed`。
+
+## 4. 任务状态机
+
+任务状态定义在 `download_tasks.status`，共 8 个：
+
+| 状态 | 含义 |
+|------|------|
+| `pending` | 已创建，等待调度 |
+| `downloading` | 下载中 |
+| `paused` | 已暂停（含程序重启纠偏） |
+| `verifying` | 合并后正在校验哈希 |
+| `completed` | 完成 |
+| `failed` | 失败 |
+| `verify_failed` | 哈希校验不通过 |
+| `cancelled` | 已取消 |
+
+合法流转：
+
+```
+                 ┌────────────► cancelled ◄────────── 任意非 completed
+                 │                 ▲
+pending ──start──► downloading ──pause──► paused ──resume──┐
+   ▲                 │  ▲                                   │
+   │                 │  └───────────────────────────────────┘
+   │                 │
+   │            (完成/失败)
+   │                 ▼
+   └── retry ── failed / verify_failed
+                 │
+              verifying ──► completed
+```
+
+- 创建后为 `pending`；`start_task` 接受 `pending/paused/failed/verify_failed/cancelled` 作为可启动状态。
+- `verify_failed` 重试前会把任务进度与分块进度清零。
+- 程序重启时 `downloading`/`verifying` 统一纠偏为 `paused`。
+- 并发已满时 `resume_task` 会把任务落回 `pending` 排队，而非强启。
+
+## 5. 并发与线程模型
+
+- **并发门禁**：`TaskManager` 维护 `_running_tasks` 集合与 `max_concurrent`（1-5，默认 3），加锁保护；`_scheduling_paused` 用于批量暂停期间阻止自动调度。
+- **调度顺序**：FIFO。`db.get_all_tasks` 按 `created_at ASC` 排序，`_try_start_next_task` 取 `pending` 队首，`resume_all` 也按创建时间升序恢复。
+- **会话隔离**：`DownloadEngine` 为每个任务维护自增 `run_id`。启动/暂停/取消都会作废旧 `run_id`，所有回调与收尾逻辑先校验 `_is_current_task_run`，防止旧线程回写覆盖新状态（`download_engine.py:44`）。
+- **线程归属**：每个任务独立 `ThreadPoolExecutor`；多线程任务另有监控线程；视频任务为单 worker 线程。
+- **UI 线程安全**：工作线程只向 `SimpleQueue` 入队，主线程用 `after` 定时器（50ms 刷新事件、1s 刷新状态栏）消费，所有控件操作都在 Tk 主线程执行。
+
+## 6. 数据模型（SQLite）
+
+`data/downloads.db`，`DatabaseManager` 加线程锁串行访问，开启外键级联删除。
+
+**download_tasks**
+
+| 字段 | 说明 |
+|------|------|
+| task_id | UUID 主键 |
+| url / filename / save_path | 链接、文件名、保存全路径 |
+| total_size / downloaded_size | 总大小、已下载 |
+| status | 见第 4 节 |
+| support_range / thread_count | 是否支持 Range、线程数 |
+| speed | 当前速度 |
+| created_at / started_at / completed_at | 时间戳 |
+| error_message | 失败原因 |
+| expected_hash / expected_hash_type / actual_hash / hash_verified | 校验相关（迁移新增） |
+| browser_context | DPAPI 加密的浏览器上下文（迁移新增） |
+| download_type / video_height | 任务类型（file/youtube/x/bilibili/douyin/hls/dash）与视频清晰度（迁移新增） |
+
+**download_chunks**：chunk_id、task_id、chunk_index、start_byte、end_byte、downloaded_bytes、status、temp_file、retry_count。
+
+**download_history**：id、task_id、filename、file_size、download_time、avg_speed、completed_at。
+
+索引：`idx_task_status`、`idx_chunk_task`、`idx_chunk_status`。老库通过 `ALTER TABLE` 补列，不做整库迁移。
+
+## 7. 浏览器视频链路
+
+### 7.1 组件与消息流
+
+```
+网页 ──扩展(background.js/webRequest)──► 扩展内存列表
+用户点下载 ──chrome.runtime.connectNative──► BrowserBridge.exe (native_host)
+   ──长度前缀 JSON──► 转发 ──回环 HTTP POST 127.0.0.1 + Bearer token──► 桌面程序 BridgeServer
+   ──► TaskManager.add_task / add_youtube_task ──► 引擎下载
+```
+
+- `BrowserBridge.exe` 只做转发：先 `ping` 唤醒桌面程序，必要时拉起 `daw下载器.exe`，再转发 `download`。它通过读取 `%LOCALAPPDATA%\LaoWangDownloader\{instance}.bridge`（DPAPI 加密，含端口与 token）定位桌面程序。
+- `BridgeServer` 只监听 `127.0.0.1`，校验 `Host`、禁止带 `Origin`、用 `secrets.compare_digest` 比对 Bearer token；`request_id` 幂等去重，重名文件自动加序号。
+
+### 7.2 视频类型与路径
+
+扩展通过 `webRequest` 的 `onHeadersReceived` 与内容脚本上报识别资源，分为：
+
+| 类型 | 说明 | 处理路径 |
+|------|------|----------|
+| `mp4` / `webm` | 视频直链 | 普通分块/单线程下载 |
+| `hls` / `dash` | M3U8 / MPD 播放列表 | yt-dlp + FFmpeg，native 分片下载器，保留断点 |
+| `youtube` / `x` / `bilibili` | 视频页 | yt-dlp 解析页面 |
+| `douyin` | 抖音视频页 | 浏览器已取得签名 formats，经 `--load-info-json` 交给 yt-dlp，避免重复请求未签名页面 API |
+
+- `VIDEO_KINDS`（`youtube_downloader.py:17`）为可下载类型全集；`STREAM_KINDS` = hls/dash；`CONTEXT_KINDS` = douyin/hls/dash，需要携带 Cookie 与请求头。
+- 清晰度固定 480/720/1080，由扩展设置项控制，通过 `--format` 过滤 `height<=N`。
+- 视频任务统一走 `YoutubeDownloader`：构造 yt-dlp 命令、解析 `__LW_PROGRESS__` 进度行、用 ffprobe 校验音视频轨与时长，时长与页面声明不符则拒绝发布不完整文件。
+- 抖音额外校验：只接受 `*.douyinvod.com` 的完整 MP4，拒绝 `media-video`/`media-audio` 分轨地址。
+
+### 7.3 安全模型
+
+- **加密**：浏览器上下文（含 Cookie）经 DPAPI 加密后存入 `browser_context` 字段；仅运行时解密，且只在子进程临时 Cookie 文件中落地。
+- **请求头白名单**：`normalize_context` 只放行 `User-Agent`、`Referer`、`Cookie` 三个头，其余丢弃；值长度与字符集受限。
+- **跨源保护**：`browser_get`（`security.py:110`）只在目标源与上下文源一致时才附带凭据，跳转到其它源时自动剥离，并拒绝 HTTPS 降级。
+- **内容类型白名单**：直链下载只接受 `video/mp4`、`video/webm`、`application/octet-stream`；HLS/DASH 走 video 任务路径，不受此限制。
+- **Cookie 作用域**：`normalize_stream_context` 校验每个 Cookie 的域必须在媒体域内，否则拒绝。
+
+## 8. 配置
+
+`data/config.json`，默认值见 `config.py:29`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
+
+## 9. 构建与发布
+
+- **build_exe.py**：调用 PyInstaller 依次打包 `老王下载器.spec`（主程序，`console=False`）与 `browser_bridge.spec`（桥接，`console=True`），再把 `video-tools/`、`chrome-extension/` 与浏览器安装脚本拷入 `dist`。构建子进程的 PATH 前置 `sys.prefix/Library/bin`，保证 Tcl/Tk 等依赖来自当前环境。不清理整个 `dist`，保留用户数据。
+- **build_installer.py**：用固定 SHA256 的便携 NSIS 3.13 编译 `installer/daw-downloader.nsi`，生成可选路径、可卸载的安装包与独立 `.sha256` 文件。
+- **package_release.py**：按显式白名单（程序文件 + 扩展文件 + video-tools + 发布说明）打便携版 ZIP 与独立扩展 ZIP，并校验 `dist` 扩展与源码一致。
+- **冒烟测试**：`scripts/smoke_exe.py`（EXE 实际下载与重启续传）、`smoke_browser_bridge.py`（安装后桥接）、`smoke_installer.py`（安装/升级/卸载/重装）等，均为真机验证，不替代用户端验收。
+
+安装版与便携版都遵循同一数据保护约定：升级与卸载保留配置、下载记录、下载文件与断点。
