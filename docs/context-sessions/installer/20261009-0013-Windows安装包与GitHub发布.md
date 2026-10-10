@@ -101,3 +101,15 @@
 本轮暂无剩余实施任务。后续修改安装器时从本档和 `docs/INSTALLER.md` 接续，先核对当前源码、发布附件及用户数据，再按本次具体需求构建和验收。
 
 下一次发布的起点：核对 `dist/data` 与当前双 EXE 哈希 → 跑 `python -B -m unittest discover -s tests` → 需要重建时 `scripts/build_exe.py` → `scripts/build_installer.py <新版本>` 与 `scripts/package_release.py <新版本>` → 更新 `docs/releases/<新版本>.md` 与相关链接 → 提交推送并另开标签，保留原 Release。
+
+## v0.4.0 发布（2026-10-10）
+
+- 更新内容：任务卡片信息（已下载/总大小、剩余时间）、多行批量添加与去重、添加对话框「开始下载/稍后下载」、任务列表搜索与「隐藏已完成」、下载完成后动作（打开文件/文件夹/全部完成后关机）、主窗口启动居中。详见 `docs/releases/v0.4.0.md` 与 `docs/context-sessions/20261010-2025-IDM界面借鉴四项改进.md`。
+- 发布标识：`v0.4.0`，annotated 标签指向 `2274440789437685aa9f61fc7b5002d92d27d81a`（源码提交 `2274440`）；`v0.3.1`（`45701e4`）与 `v0.3.0` 标签、Release 及附件均未改动。
+- 安装包：`dist/daw-downloader-v0.4.0-windows-x64-setup.exe`，155,717,565 字节（148.50 MiB），FileVersion `0.4.0.0`，SHA256 `28227c9fe60f96fef763605e5ab6c864bf8576ec6544e613d194c1d1d02e36b2`。
+- 便携包：`daw-downloader-v0.4.0-windows-x64.zip`，213,809,906 字节，SHA256 `31fecabad47cf537371495e55ee7d2d7a1807715d44d901bdb899b0806e5f8e3`；扩展包 `daw-browser-extension-v0.5.0.zip`，17,768 字节，SHA256 `b0bdbb7bf475905711b8a77370fa381102c5d7e062cbe96aae025f18f168682a`；本地产物在 `output/releases/v0.4.0/`（不提交 Git）。
+- 构建：`build_exe.py` 重建双 EXE → `build_installer.py v0.4.0`（仅封装已验证 dist，未 `--rebuild`）→ `package_release.py v0.4.0`。构建前确认无运行中的下载器进程，`dist/data` 与 `dist/temp` 保留。
+- 验收：`smoke_exe.py`、`smoke_browser_bridge.py`、`smoke_installer.py`（6 组）、打包版窗口居中物理坐标测量、Python 全量 130 项与扩展 JS 14 项全部通过，细节见本次进度档第 6 节。
+- 发布方式：GitHub REST API（本机无 `gh` CLI，使用 Windows 凭据管理器中仓库所有者账号的已存凭据，令牌仅在内存中使用、用完即删）。Release `v0.4.0` 已创建并上传 5 个附件：安装包、安装包 `.sha256`、便携 ZIP、扩展 ZIP、`SHA256SUMS.txt`。
+- 发布后核对：GitHub API 返回的 5 个附件大小与本地一致、`digest`（sha256）与本地逐项一致；远端 `.sha256` 与本地逐字节一致；`latest` 指向 `v0.4.0`；`v0.3.1`、`v0.3.0` 发布日期与附件数量未变。
+- 发布页：`https://github.com/dwdw530/downLoad/releases/tag/v0.4.0`。README 与 `docs/INSTALLER.md` 的下载链接已更新到 `v0.4.0`（提交 `2274440`）。
