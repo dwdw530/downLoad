@@ -14,9 +14,9 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.5.0 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.3.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.3.1-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.3.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验。
+发布统一走 GitHub Releases（当前 `v0.3.1`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验。
 
 ---
 
@@ -106,10 +106,10 @@ python main.py
 python -B scripts/build_exe.py
 
 # 重建 EXE 并打 Windows 安装包（缺少 NSIS 时自动下载固定版本）
-python -B scripts/build_installer.py v0.3.0 --rebuild
+python -B scripts/build_installer.py v0.3.1 --rebuild
 
 # 打便携版 ZIP 与独立扩展 ZIP
-python -B scripts/package_release.py v0.3.0
+python -B scripts/package_release.py v0.3.1
 ```
 
 `build_exe.py` 通过两个 spec 分别打包主程序与桥接，再把 `video-tools/`、`chrome-extension/` 和浏览器安装脚本拷进 `dist`；构建时把当前环境的 `Library/bin` 置于 PATH 最前，避免混入 base 环境的 Tcl/Tk。发布文件清单在 `scripts/package_release.py` 中显式白名单，排除用户运行数据。详细步骤见 `docs/INSTALLER.md`。

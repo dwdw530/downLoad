@@ -2,11 +2,11 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.3.0/daw-downloader-v0.3.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.3.0/daw-downloader-v0.3.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.3.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.3.1/daw-downloader-v0.3.1-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.3.1/daw-downloader-v0.3.1-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.3.1)
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.3.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.3.1-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -23,7 +23,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.3.0 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.3.1 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -31,10 +31,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.3.0
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.3.1
 ```
 
-输出为 `dist/daw-downloader-v0.3.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.3.1-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -69,10 +69,18 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py
 
 首轮鼠标操作验收被 Windows 锁屏的 `LockScreenBackstopFrame` 拦截，没有记为通过。后续通过本机桥接完成了安装后程序的真实下载和退出验证；安装向导使用原生控件消息完成操作。锁屏下截图为空白或不完整，未作为视觉验收证据。
 
+## 2026-10-10 v0.3.1 构建
+
+- 安装包：`dist/daw-downloader-v0.3.1-windows-x64-setup.exe`，155,645,269 字节（148.44 MiB），文件版本 `0.3.1.0`。
+- SHA256：`a1a137a5409c38f34f0247396db2a3d477028c72d1e1c1e8e281a3d75a857bfa`。
+- 载荷为本次重新打包并实测的 `dist` 双 EXE（新增文件日志、分块进度节流、WAL 与视频失败诊断）；安装脚本、向导与卸载逻辑未改动。
+- 用 `7z` 核对安装包内容：25 项发布文件与发布清单一致，未包含 `data`、`temp`、`logs` 等运行数据。
+- 本次未重复执行完整安装向导验收；载荷中的双 EXE 已在独立目录实测启动与日志写入、WAL 生效、正常退出，并通过 111 项 Python 回归。
+
 ## 发布到 GitHub
 
 安装包与相邻的 `.exe.sha256` 文件作为 GitHub Release 附件上传。构建脚本、安装脚本和说明文档提交到源码仓库；编译工具、测试产物和用户数据不提交。
 
-发布前按上述方法完成构建和验收，再进入 [GitHub Releases](https://github.com/dwdw530/downLoad/releases) 创建或编辑对应版本，上传这两个文件并保存。可在 PowerShell 中运行 `Get-FileHash -Algorithm SHA256 -LiteralPath .\dist\daw-downloader-v0.3.0-windows-x64-setup.exe` 核对本地校验值，并核对远端附件的大小和校验值。
+发布前按上述方法完成构建和验收，再进入 [GitHub Releases](https://github.com/dwdw530/downLoad/releases) 创建或编辑对应版本，上传这两个文件并保存。可在 PowerShell 中运行 `Get-FileHash -Algorithm SHA256 -LiteralPath .\dist\daw-downloader-v0.3.1-windows-x64-setup.exe` 核对本地校验值，并核对远端附件的大小和校验值。
 
 2026-10-09 已在既有 `v0.3.0` 下补充安装包及其独立校验文件，GitHub 返回的大小和 SHA256 与本地一致。既有便携版 ZIP、扩展 ZIP 和 `SHA256SUMS.txt` 保持原样，后者仍校验原有两个 ZIP。安装器构建脚本及完整操作说明从仓库 `main` 分支获取，原 `v0.3.0` 标签保持不变。
