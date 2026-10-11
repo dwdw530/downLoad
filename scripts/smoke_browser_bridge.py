@@ -54,9 +54,11 @@ def main():
             start, end = 0, len(video) - 1
             if self.headers.get('Range'):
                 start, end = map(int, self.headers['Range'][6:].split('-'))
-            self.send_response(206)
+            self.send_response(206 if self.headers.get('Range') else 200)
             self.send_header('Content-Type', 'video/webm')
-            self.send_header('Content-Range', f'bytes {start}-{end}/{len(video)}')
+            self.send_header('ETag', '"bridge-smoke-video-v1"')
+            if self.headers.get('Range'):
+                self.send_header('Content-Range', f'bytes {start}-{end}/{len(video)}')
             self.send_header('Content-Length', str(end - start + 1))
             self.end_headers()
             self.wfile.write(video[start:end + 1])

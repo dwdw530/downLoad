@@ -6,6 +6,7 @@
 import logging
 import threading
 import os
+from contextlib import contextmanager
 from typing import List, Dict, Optional, Callable
 from downloader.core.download_engine import DownloadEngine
 from downloader.database.db_manager import DatabaseManager
@@ -32,6 +33,8 @@ class TaskManager:
         self._lock = threading.Lock()
         self._running_tasks = set()  # 正在下载的任务ID集合
         self._scheduling_paused = False
+        self._adding_tasks = 0
+        self._activity_generation = 0
 
         # 回调函数
         self.task_added_callback: Optional[Callable] = None
@@ -123,6 +126,23 @@ class TaskManager:
         """设置任务状态变更回调"""
         self.task_status_changed_callback = callback
 
+    @contextmanager
+    def _adding_task(self):
+        """后台探测也属于未完成工作，关机确认不能只看已落库的任务。"""
+        with self._lock:
+            self._adding_tasks += 1
+            self._activity_generation += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._adding_tasks -= 1
+
+    def get_activity_state(self):
+        """返回任务操作代数及是否仍有探测/启动/运行工作。"""
+        with self._lock:
+            return self._activity_generation, bool(self._adding_tasks or self._running_tasks)
+
     def add_task(self, url: str, filename: Optional[str] = None,
                  save_path: Optional[str] = None,
                  expected_hash: Optional[str] = None,
@@ -140,31 +160,27 @@ class TaskManager:
         Returns:
             任务ID，失败返回None
         """
-        # 创建任务
-        kwargs = {'request_context': request_context} if request_context is not None else {}
-        task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type,
-                                                  start_later=start_later, **kwargs)
-        if not task_id:
-            return None
-
-        # 调用任务添加回调
-        if self.task_added_callback:
-            self.task_added_callback(task_id)
-
-        # 稍后下载不进队列调度，不然刚建完就被自动拉起来了
-        if not start_later:
-            self._try_start_next_task()
-
-        return task_id
-
-    def add_youtube_task(self, url, filename, save_path, height=720, kind='youtube', request_context=None):
-        task_id = self.engine.create_youtube_task(url, filename, save_path, height, kind,
-                                               request_context=request_context)
-        if task_id:
+        with self._adding_task():
+            kwargs = {'request_context': request_context} if request_context is not None else {}
+            task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type,
+                                                      start_later=start_later, **kwargs)
+            if not task_id:
+                return None
             if self.task_added_callback:
                 self.task_added_callback(task_id)
-            self._try_start_next_task()
-        return task_id
+            if not start_later:
+                self._try_start_next_task()
+            return task_id
+
+    def add_youtube_task(self, url, filename, save_path, height=720, kind='youtube', request_context=None):
+        with self._adding_task():
+            task_id = self.engine.create_youtube_task(url, filename, save_path, height, kind,
+                                                   request_context=request_context)
+            if task_id:
+                if self.task_added_callback:
+                    self.task_added_callback(task_id)
+                self._try_start_next_task()
+            return task_id
 
     def start_task(self, task_id: str) -> bool:
         """
@@ -194,11 +210,17 @@ class TaskManager:
         with self._lock:
             if self._scheduling_paused or task_id in self._running_tasks:
                 return False
+            self._activity_generation += 1
             if len(self._running_tasks) >= self.max_concurrent:
-                logger.info("已达到最大并发数，任务将等待: %s", task_id)
-                return False
+                queued = self.db.update_task_status(task_id, 'pending', '等待可用下载槽位')
+            else:
+                queued = None
+                self._running_tasks.add(task_id)
 
-            self._running_tasks.add(task_id)
+        if queued is not None:
+            if queued and self.task_status_changed_callback:
+                self.task_status_changed_callback(task_id, 'pending', '等待可用下载槽位')
+            return bool(queued)
 
         # 启动下载
         # 艹，pending 也统一按“可续传启动”处理：新任务没临时文件会从0开始，已下载任务可继续
@@ -235,6 +257,7 @@ class TaskManager:
         with self._lock:
             if self._scheduling_paused or task_id in self._running_tasks:
                 return False
+            self._activity_generation += 1
             # 艹，恢复任务也得走并发门禁，不能偷偷绕过最大并发
             if task_id not in self._running_tasks and len(self._running_tasks) >= self.max_concurrent:
                 logger.info("已达到最大并发数，任务转入等待队列: %s", task_id)
@@ -359,8 +382,7 @@ class TaskManager:
         paused_tasks = self.db.get_all_tasks(status='paused')
         count = 0
 
-        # 艹，多任务恢复要严格按FIFO来，避免新任务抢占老任务导致“看起来没恢复”
-        paused_tasks = sorted(paused_tasks, key=lambda task: task.get('created_at') or '')
+        # 数据库已按 list_order 返回，不能再按创建时间覆盖用户的手动顺序。
 
         for task in paused_tasks:
             if self.resume_task(task['task_id']):

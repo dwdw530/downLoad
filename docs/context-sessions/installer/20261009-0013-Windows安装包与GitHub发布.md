@@ -3,12 +3,14 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-10-10 22:10 +08:00（v0.4.0 构建、安装验收与 GitHub 发布）
-- 状态：已完成（v0.3.0 安装包与 v0.3.1 新版本均已交付；v0.4.0 的构建、安装验收、提交推送、标签与 GitHub Release 附件均由代理完成）
+- 更新时间：2026-10-11 +08:00（v0.6.1 下载安全与磁盘优化，构建及验收完成，发布进行中）
+- 状态：进行中（v0.6.1 安装包与便携包已构建验收；待源码提交、双分支推送、标签与新 Release 上传）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
 ## 上下文摘要
+
+**最新 v0.6.1**：用户明确授权源码、测试、文档及编译产物完整提交发布。9 项安全/交互缺陷与磁盘优化已完成；308 项 Python 全量、14 项扩展、正式 EXE/桥接、安装包六组验收通过。当前本地准备完成，尚待 GitHub 发布；历史 v0.6.0 和更早附件不替换。完整修复过程见通用下载器进度档顶部。
 
 沿用原 `dist` 已验证的主程序、BrowserBridge、浏览器扩展与视频组件，使用 NSIS 制作离线安装包。中文向导可选安装路径，提供开始菜单、可选桌面快捷方式及 Windows 系统卸载入口；默认当前用户安装，升级和卸载保留配置、记录、下载文件和断点。
 
@@ -113,3 +115,32 @@
 - 发布方式：GitHub REST API（本机无 `gh` CLI，使用 Windows 凭据管理器中仓库所有者账号的已存凭据，令牌仅在内存中使用、用完即删）。Release `v0.4.0` 已创建并上传 5 个附件：安装包、安装包 `.sha256`、便携 ZIP、扩展 ZIP、`SHA256SUMS.txt`。
 - 发布后核对：GitHub API 返回的 5 个附件大小与本地一致、`digest`（sha256）与本地逐项一致；远端 `.sha256` 与本地逐字节一致；`latest` 指向 `v0.4.0`；`v0.3.1`、`v0.3.0` 发布日期与附件数量未变。
 - 发布页：`https://github.com/dwdw530/downLoad/releases/tag/v0.4.0`。README 与 `docs/INSTALLER.md` 的下载链接已更新到 `v0.4.0`（提交 `2274440`）。
+
+## v0.5.0 发布（2026-10-11）
+
+- 更新内容：双击任务卡片查看实时速度曲线详情窗、剪贴板监视（含设置项与忽略站点）；顺带修复设置对话框快速保存关闭时的 `bad window path name`。详见 `docs/releases/v0.5.0.md` 与 IDM 档第 7 节。
+- 发布标识：`v0.5.0`，annotated 标签指向 `e8f9ddb`；发布记录提交 `1a719f8`；`v0.4.0` 及更早版本的标签、Release 与附件均未改动。
+- 安装包：`dist/daw-downloader-v0.5.0-windows-x64-setup.exe`，155,670,061 字节（148.46 MiB），FileVersion `0.5.0.0`，SHA256 `d457875472a84e91304b41600ee4f86b8ca14e442ba93d718c4074c193a80b43`。
+- 便携包：`daw-downloader-v0.5.0-windows-x64.zip`，213,825,580 字节；扩展包 `daw-browser-extension-v0.5.0.zip`，17,768 字节（与 v0.4.0 相同）。两者 SHA256 见该版本 Release 的 `SHA256SUMS.txt`（本地产物目录已清理）。
+- 验收：`smoke_exe.py`、`smoke_browser_bridge.py`、`smoke_installer.py`（6 组）全过；Python 全量 232 项通过。
+- 发布方式与核对：GitHub REST API + curl（Bearer token），5 个附件上传后逐项核对远端大小与 `digest`；`latest` 指向 `v0.5.0`。本次曾只推 `master` 而漏掉默认分支 `main`，已用 `git push origin master:main` 补齐；**之后每次推送两个分支都要更新**。
+
+## v0.6.1 构建与发布准备（2026-10-11）
+
+- 安装包：`dist/daw-downloader-v0.6.1-windows-x64-setup.exe`，155,717,801 字节，SHA256 `23a902762c255bf3bbf2a00ad386f7591732adef451c7e5b14e8e7062eb2954f`。
+- 主程序：21,670,267 字节 / `abc5198164b697832695f38ba2a3ac4ececb11818cb8106b33997fe9c5d14d1f`；桥接：9,982,279 字节 / `4be555a447c2dce629914f29679e1612a9fea9e94dc9f43a92ce548f466696d2`。
+- 便携 ZIP：213,848,008 字节 / `bdacd3f5415371d7a82d3e72d8fc421c9728892e741c91ca33f121887a7783d5`；扩展 ZIP：17,768 字节 / `b0bdbb7bf475905711b8a77370fa381102c5d7e062cbe96aae025f18f168682a`，仍为 0.5.0。
+- 实际安装验收报告 `output/installer-smoke/run-jo4xr9_v/result.json` 六组 PASS，结束后浏览器注册恢复、原 dist 用户数据哈希不变；便携 ZIP 白名单与 CRC 验证通过。
+- GitHub 发布前检查：远端 main/master 均为 `18d7ea7`、latest 为 v0.6.0，无 v0.6.1 标签/Release；通过仓库所有者凭据确认 push 权限。令牌只在内存与 curl 标准输入中使用，不写文件或仓库。
+- 待办：提交源码与日志、推送 main/master、新建 annotated v0.6.1 标签和 Release、上传五附件并核对远端 digest；随后在此补充实际提交及发布结果。
+
+## v0.6.0 发布（2026-10-11）
+
+- 更新内容：左侧分类树（状态/文件类型/站点）、任务右键菜单与手动排序（落库 `list_order`，影响 pending 出队顺序）、主题切换（深色/浅色/跟随系统）；分类树改原生 `tkinter.Label` 并修复切主题后侧栏配色不同步。详见 `docs/releases/v0.6.0.md` 与 IDM 档第 8 节。
+- 发布标识：`v0.6.0`，annotated 标签（tag 对象 `1352a70`）指向发布提交 `ec0628b`；发布记录提交 `18d7ea7`；`master` 与 `main` 均已推送；`v0.5.0` 及更早版本未改动。
+- 安装包：`dist/daw-downloader-v0.6.0-windows-x64-setup.exe`，155,713,090 字节（148.50 MiB），FileVersion `0.6.0.0`，SHA256 `6c5d2dbe23562288986e16453e6f44b781194cb1f3856bc62e55c5602219caae`。
+- 便携包：`daw-downloader-v0.6.0-windows-x64.zip`，213,834,880 字节，SHA256 `c681162b378b293bc856bac614fd7f132fece1f253687d160d85f71c4cbe9f16`；扩展包 `daw-browser-extension-v0.5.0.zip`，17,768 字节，SHA256 `b0bdbb7bf475905711b8a77370fa381102c5d7e062cbe96aae025f18f168682a`（未改动）。
+- 载荷：`daw下载器.exe` SHA256 `69a1f59e6fc91cff0718a524f622dc183c5f623e378c055dd7ce6cac40236a6a`，`BrowserBridge.exe` SHA256 `097104083381a4427dd4a0b249904848f3db481c12b934480c2da5328f38468e`。
+- 验收：`smoke_exe.py` 3 组、`smoke_installer.py` 6 组全过（测试后原浏览器注册还原、`dist/data` 未变）；Python 全量 268 项（1 项既有偶发超时，单独重跑通过）。
+- 发布方式：改用 `git credential fill` 取凭据管理器中 `github.com`（账号 `dwdw530`）的令牌，curl 直连 API 创建 Release（id `409503116`）并上传 5 个附件；**踩坑**：`/tmp` 在 Windows Python 与 MSYS curl 之间解析不一致（首次 422），临时文件改放项目 `output/`，发布后已删除且未入库。
+- 发布后核对：5 个附件大小与 GitHub `digest` 与本地逐项一致；`latest` 指向 `v0.6.0`；`v0.5.0` 至 `0.1` 的发布时间与附件数未变。发布页：`https://github.com/dwdw530/downLoad/releases/tag/v0.6.0`。README、`docs/INSTALLER.md`、`BUILD_EXE.md`、`PROJECT_SUMMARY.md` 的版本引用与下载链接已同步到 `v0.6.0`。

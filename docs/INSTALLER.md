@@ -2,11 +2,11 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.6.0/daw-downloader-v0.6.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.6.0/daw-downloader-v0.6.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.6.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.6.1)
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.6.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.6.1-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -23,7 +23,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.4.0 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.6.1 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -31,10 +31,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.4.0
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.6.1
 ```
 
-输出为 `dist/daw-downloader-v0.4.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.6.1-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -76,6 +76,14 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py
 - 载荷为本次重新打包并实测的 `dist` 双 EXE（新增文件日志、分块进度节流、WAL 与视频失败诊断）；安装脚本、向导与卸载逻辑未改动。
 - 用 `7z` 核对安装包内容：25 项发布文件与发布清单一致，未包含 `data`、`temp`、`logs` 等运行数据。
 - 本次未重复执行完整安装向导验收；载荷中的双 EXE 已在独立目录实测启动与日志写入、WAL 生效、正常退出，并通过 111 项 Python 回归。
+
+## 2026-10-11 v0.6.1 构建
+
+- 更新内容：9 项下载安全与交互修复、同卷无复制保存、目标目录直接合并；完整说明见 [v0.6.1 更新日志](releases/v0.6.1.md)。
+- 安装包：`dist/daw-downloader-v0.6.1-windows-x64-setup.exe`，155,717,801 字节，SHA256 `23a902762c255bf3bbf2a00ad386f7591732adef451c7e5b14e8e7062eb2954f`。
+- 主程序：21,670,267 字节 / `abc5198164b697832695f38ba2a3ac4ececb11818cb8106b33997fe9c5d14d1f`；BrowserBridge：9,982,279 字节 / `4be555a447c2dce629914f29679e1612a9fea9e94dc9f43a92ce548f466696d2`。
+- `py310_env` 全量 308 项、扩展 14 项通过；正式双 EXE 冒烟通过，安装包 6 组验收通过，报告：`output/installer-smoke/run-jo4xr9_v/result.json`。
+- 原 `dist/data` / `dist/temp` 与构建前基线哈希一致，安装验收结束后原浏览器注册已恢复。升级保留旧任务，但没有资源版本记录的旧断点会安全重下，不保证直接续接。
 
 ## 2026-10-11 v0.6.0 构建
 

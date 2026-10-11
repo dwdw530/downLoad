@@ -1,4 +1,5 @@
 """Real Tk widgets/event loops; dialogs and data belong only to these tests."""
+import gc
 import hashlib
 from pathlib import Path
 import threading
@@ -24,6 +25,12 @@ from test_features import FeatureFixture, PAYLOAD
 class GuiFeatures(FeatureFixture):
     def setUp(self):
         super().setUp()
+        # 反复创建/销毁 Tk 根窗口会留下循环引用。自动 GC 若落在 HTTP 工作线程，
+        # Font.__del__ 会等待 Tk 主线程，而同步 wait_task 不泵事件，形成假网络超时。
+        # 本测试在主线程显式回收，运行期间仅关闭循环 GC（引用计数仍正常工作）。
+        self.gc_was_enabled = gc.isenabled()
+        gc.collect()
+        gc.disable()
         self.patches = [
             patch('downloader.ui.main_window.TrayManager.start'),
             patch('downloader.ui.main_window.TrayManager.notify_download_complete'),
@@ -48,6 +55,10 @@ class GuiFeatures(FeatureFixture):
             for item in reversed(self.patches):
                 item.stop()
             super().tearDown()
+            self.app = None
+            gc.collect()
+            if self.gc_was_enabled:
+                gc.enable()
         self.assertEqual(self.callback_errors, [])
 
     def pump(self, seconds=0.1):
@@ -403,7 +414,7 @@ class GuiFeatures(FeatureFixture):
             dialog._on_confirm(False)
         self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
         task = self.db.get_all_tasks()[0]
-        self.assertIn(task['status'], ('pending', 'downloading', 'completed'))
+        self.assertIn(task['status'], ('pending', 'downloading', 'verifying', 'completed'))
         self.assertNotEqual(task['status'], 'paused')
 
     def test_batch_add_creates_tasks_and_reports_failures(self):
@@ -411,15 +422,17 @@ class GuiFeatures(FeatureFixture):
             dialog.url_text.insert(
                 '1.0', f"{self.base_url}/range\n{self.base_url}/tiny\n{self.base_url}/not-found")
             dialog._on_confirm()
-        self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and len(self.db.get_all_tasks()) < 2:
-            self.pump(0.2)
-        self.pump(0.5)
+        # 本用例验证批量创建/汇总；真实下载由核心回归覆盖，避免探测与下载争用本地服务。
+        with patch.object(self.manager, '_try_start_next_task'):
+            self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
+            deadline = time.monotonic() + 10
+            summaries = []
+            while time.monotonic() < deadline and not summaries:
+                self.pump(0.2)
+                summaries = [call.args for call in self.mocks[2].call_args_list
+                             if call.args and call.args[0] == '添加结果']
+        self.assertEqual(len(summaries), 1, '后台批量添加未返回结果汇总')
         self.assertEqual({task['filename'] for task in self.db.get_all_tasks()}, {'range', 'tiny'})
-        summaries = [call.args for call in self.mocks[2].call_args_list
-                     if call.args and call.args[0] == '添加结果']
-        self.assertEqual(len(summaries), 1)
         self.assertIn('成功添加 2 个任务', summaries[0][1])
         self.assertIn('失败 1 个', summaries[0][1])
 
@@ -672,11 +685,12 @@ class TaskDetailWindowTests(GuiFeatures):
 
     def test_progress_feeds_history_and_detail_window(self):
         task_id = self._add_card()
-        self.app._on_task_status_changed(task_id, 'downloading', '')
-        self.app._on_task_progress(task_id, 100, 1000, 2048)
-        self.app._on_task_progress(task_id, 200, 1000, 4096)
-        self.pump(0.3)
-        self.assertEqual(len(self.app._speed_history[task_id]), 2)
+        with patch('downloader.ui.main_window.time.monotonic', return_value=100):
+            self.app._update_task_status(task_id, 'downloading')
+            self.app._update_task_progress(task_id, 100, 1000, 2048)
+        with patch('downloader.ui.main_window.time.monotonic', return_value=101):
+            self.app._update_task_progress(task_id, 200, 1000, 4096)
+        self.assertEqual(list(self.app._speed_history[task_id]), [(100, 2048), (101, 4096)])
         # 详情窗未打开时不推送，打开后首屏取最新值，下一条进度事件再同步
         self.assertNotIn(task_id, self.app._detail_windows)
         self.app._on_open_detail(task_id)

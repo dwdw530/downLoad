@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import threading
 from downloader.utils.config import get_app_root
+from downloader.utils.file_utils import available_download_path
 
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,9 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE download_tasks ADD COLUMN download_type TEXT DEFAULT 'file'")
             if 'video_height' not in columns:
                 cursor.execute('ALTER TABLE download_tasks ADD COLUMN video_height INTEGER DEFAULT 720')
+            for column in ('resource_etag', 'resource_last_modified'):
+                if column not in columns:
+                    cursor.execute(f'ALTER TABLE download_tasks ADD COLUMN {column} TEXT')
             if 'list_order' not in columns:
                 # 手动排序用的列表顺序：老库按原顺序（created_at 升序）回填，保证升级后列表不变
                 cursor.execute('ALTER TABLE download_tasks ADD COLUMN list_order REAL DEFAULT 0')
@@ -170,7 +174,9 @@ class DatabaseManager:
                                 chunks: Optional[List[Tuple[int, int, int, str]]] = None,
                                 expected_hash: Optional[str] = None, hash_type: str = "md5",
                                 browser_context: Optional[str] = None, download_type: str = 'file',
-                                video_height: int = 720, status: str = 'pending') -> bool:
+                                video_height: int = 720, status: str = 'pending',
+                                resource_etag=None, resource_last_modified=None,
+                                reserve_path: bool = False) -> bool:
         """
         原子创建任务与分块（可选带预期哈希）
         老王说：任务和分块必须一锅端，要么全成要么全回滚，别搞半截子烂账。
@@ -183,12 +189,18 @@ class DatabaseManager:
                 conn = self._get_connection()
                 with conn:
                     cursor = conn.cursor()
+                    if reserve_path:
+                        cursor.execute('BEGIN IMMEDIATE')
+                        occupied = [row[0] for row in cursor.execute('SELECT save_path FROM download_tasks')]
+                        save_path = available_download_path(save_path, occupied)
+                        filename = os.path.basename(save_path)
                     cursor.execute('''
                         INSERT INTO download_tasks
-                        (task_id, url, filename, save_path, total_size, support_range, thread_count, status, list_order)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count, status, list_order,
+                         resource_etag, resource_last_modified)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0,
-                          thread_count, status, self._next_list_order(cursor)))
+                          thread_count, status, self._next_list_order(cursor), resource_etag, resource_last_modified))
 
                     if download_type in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
                         cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
@@ -223,6 +235,44 @@ class DatabaseManager:
             finally:
                 if conn:
                     conn.close()
+
+    def reserve_task_path(self, task_id: str):
+        """启动前重查外部新增文件和旧任务重名；重试也不覆盖上次的输出。"""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    task = conn.execute('SELECT save_path FROM download_tasks WHERE task_id = ?', (task_id,)).fetchone()
+                    if task is None:
+                        raise ValueError('任务不存在')
+                    occupied = [row[0] for row in conn.execute(
+                        'SELECT save_path FROM download_tasks WHERE task_id != ?', (task_id,))]
+                    path = available_download_path(task[0], occupied)
+                    conn.execute('UPDATE download_tasks SET filename = ?, save_path = ? WHERE task_id = ?',
+                                 (os.path.basename(path), path, task_id))
+            finally:
+                conn.close()
+
+    def update_task_resource(self, task_id, size, support_range, count, metadata, chunks=None):
+        """保存续传验证信息；资源变化时原子替换旧分块和进度。"""
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn:
+                    conn.execute('''UPDATE download_tasks SET total_size = ?, support_range = ?, thread_count = ?,
+                                    resource_etag = ?, resource_last_modified = ? WHERE task_id = ?''',
+                                 (size, int(support_range), count, metadata.get('etag'),
+                                  metadata.get('last_modified'), task_id))
+                    if chunks is not None:
+                        conn.execute('DELETE FROM download_chunks WHERE task_id = ?', (task_id,))
+                        conn.executemany('''INSERT INTO download_chunks
+                            (task_id, chunk_index, start_byte, end_byte, temp_file) VALUES (?, ?, ?, ?, ?)''',
+                                         [(task_id, *chunk) for chunk in chunks])
+                        conn.execute('UPDATE download_tasks SET downloaded_size = 0, speed = 0 WHERE task_id = ?',
+                                     (task_id,))
+            finally:
+                conn.close()
 
     def get_task(self, task_id: str) -> Optional[Dict]:
         """获取任务详情"""

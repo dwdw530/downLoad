@@ -14,9 +14,11 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.5.0 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.6.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.6.1-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.6.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；历史版本 `v0.5.0`、`v0.4.0`、`v0.3.1`、`v0.3.0` 的发布记录与附件保持原样。
+发布统一走 GitHub Releases（当前 `v0.6.1`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；历史版本 `v0.6.0`、`v0.5.0`、`v0.4.0`、`v0.3.1`、`v0.3.0` 的发布记录与附件保持原样。
+
+v0.6.1 修复保存路径越界、同名覆盖、续传版本校验、关机条件、暂停校验、手动排序、站点恢复、重试排队与速度曲线时间轴；同卷保存优先改名，分块直接合并到目标目录以降低额外写入。308 项 Python 全量、14 项扩展以及正式 EXE/安装包冒烟通过，详见 [更新日志](docs/releases/v0.6.1.md)。
 
 ---
 
@@ -25,8 +27,8 @@
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | 多线程分块下载 | 已实现 | 1-16 线程，按文件大小自动收敛线程数 |
-| 断点续传 | 已实现 | 分块进度实时入库，暂停/重启可续 |
-| 任务队列管理 | 已实现 | 并发上限 1-5，FIFO 调度 |
+| 断点续传 | 已实现 | 确认资源版本未变才复用断点；变化或无版本信息时安全重下 |
+| 任务队列管理 | 已实现 | 并发上限 1-5，按手动 list_order 顺序调度 |
 | 实时进度显示 | 已实现 | 进度条、速度、状态实时刷新 |
 | 批量操作 | 已实现 | 暂停全部 / 继续全部 |
 | 批量添加 | 已实现 | 多行粘贴链接、同批去重、后台逐条添加并汇总 |
@@ -115,10 +117,10 @@ python main.py
 python -B scripts/build_exe.py
 
 # 重建 EXE 并打 Windows 安装包（缺少 NSIS 时自动下载固定版本）
-python -B scripts/build_installer.py v0.6.0 --rebuild
+python -B scripts/build_installer.py v0.6.1 --rebuild
 
 # 打便携版 ZIP 与独立扩展 ZIP
-python -B scripts/package_release.py v0.6.0
+python -B scripts/package_release.py v0.6.1
 ```
 
 `build_exe.py` 通过两个 spec 分别打包主程序与桥接，再把 `video-tools/`、`chrome-extension/` 和浏览器安装脚本拷进 `dist`；构建时把当前环境的 `Library/bin` 置于 PATH 最前，避免混入 base 环境的 Tcl/Tk。发布文件清单在 `scripts/package_release.py` 中显式白名单，排除用户运行数据。详细步骤见 `docs/INSTALLER.md`。

@@ -40,7 +40,7 @@ class TaskDetailWindow(ctk.CTkToplevel):
     """
     任务详情窗：进度统计 + 实时速度曲线（非模态，不抢主窗口操作）
 
-    速度历史由 MainWindow 持有（每秒一个采样点），这里只读同一份 deque，
+    速度历史由 MainWindow 持有（每秒合并一个带单调时间戳的采样点），这里只读同一份 deque，
     避免两处各记一份导致曲线和卡片对不上。
     """
 
@@ -122,7 +122,7 @@ class TaskDetailWindow(ctk.CTkToplevel):
         self.percent_label.configure(text=f"{progress * 100:.1f}%")
 
     def _redraw(self):
-        """重绘速度曲线（采样点约1秒1个，全量重画开销可忽略）"""
+        """按真实采样时间绘制曲线，不把进度回调次数当成秒数。"""
         if self._closed or not self.winfo_exists():
             return
         canvas = self.canvas
@@ -146,7 +146,8 @@ class TaskDetailWindow(ctk.CTkToplevel):
         if plot_w <= 10 or plot_h <= 10:
             return
 
-        peak = max(samples)
+        values = [value for _, value in samples]
+        peak = max(values)
         # 纵轴上限：峰值×1.1，下限 1KB/s，避免全零时除零
         top = max(peak * 1.1, 1024.0)
 
@@ -159,10 +160,10 @@ class TaskDetailWindow(ctk.CTkToplevel):
                 fill=TEXT_COLOR, font=("Arial", 10), anchor="e")
 
         n = len(samples)
-        step = plot_w / max(n - 1, 1)
+        duration = max(0, samples[-1][0] - samples[0][0])
         points = []
-        for i, value in enumerate(samples):
-            x = pad_l + step * i
+        for stamp, value in samples:
+            x = pad_l + plot_w * (stamp - samples[0][0]) / max(duration, 1)
             y = pad_t + plot_h * (1 - min(value / top, 1.0))
             points.extend((x, y))
 
@@ -177,14 +178,16 @@ class TaskDetailWindow(ctk.CTkToplevel):
                 fill=LINE_COLOR, outline="", stipple="gray25")
             canvas.create_line(*points, fill=LINE_COLOR, width=2)
 
-        avg = sum(samples) / n
+        avg = (sum((right[0] - left[0]) * (left[1] + right[1]) / 2
+                   for left, right in zip(samples, samples[1:])) / duration
+               if duration else values[-1])
         canvas.create_text(
             width - pad_r, pad_t + 2,
-            text=f"当前 {format_speed(samples[-1])}   峰值 {format_speed(peak)}   平均 {format_speed(avg)}",
+            text=f"当前 {format_speed(values[-1])}   峰值 {format_speed(peak)}   平均 {format_speed(avg)}",
             fill=HIGHLIGHT_COLOR, font=("Arial", 10), anchor="ne")
         canvas.create_text(
             width - pad_r, height - pad_b + 6,
-            text=f"最近 {n} 秒", fill=TEXT_COLOR, font=("Arial", 10), anchor="se")
+            text=f"最近 {duration:.0f} 秒", fill=TEXT_COLOR, font=("Arial", 10), anchor="se")
 
     def _on_close(self):
         """关闭窗口"""

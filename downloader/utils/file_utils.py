@@ -3,9 +3,12 @@
 文件工具模块
 老王说:  文件操作要稳，一个不小心就炸了！
 """
+import errno
 import logging
+import re
 import os
 import hashlib
+import tempfile
 import threading
 from typing import List, Callable, Optional
 from urllib.parse import urlparse, unquote
@@ -150,7 +153,84 @@ def get_filename_from_url(url: str) -> str:
     filename = unquote(os.path.basename(parsed.path))
     if not filename or filename == '/':
         filename = 'download'
+    return validate_filename(filename)
+
+
+def validate_filename(filename: str) -> str:
+    """拒绝解码后的路径、Windows 设备名与 ADS，文件名只能是单个路径段。"""
+    if (not filename or filename in ('.', '..') or filename != filename.rstrip(' .')
+            or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in filename)
+            or re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])',
+                            filename.split('.')[0].rstrip(' '), re.IGNORECASE)):
+        raise ValueError('文件名无效：不能包含路径、保留字符或 Windows 设备名')
     return filename
+
+
+def available_download_path(path: str, occupied=()) -> str:
+    """在选定目录中分配未占用名称；调用方负责串行化任务落库。"""
+    directory = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    filename = validate_filename(os.path.basename(path))
+    base, suffix = os.path.splitext(filename)
+    occupied = {os.path.normcase(os.path.realpath(item)) for item in occupied}
+    for index in range(10000):
+        name = filename if index == 0 else f'{base} ({index}){suffix}'
+        target = os.path.join(directory, name)
+        if os.path.normcase(os.path.realpath(target)) not in occupied and not os.path.lexists(target):
+            return target
+    raise ValueError('同名文件过多，无法分配保存路径')
+
+
+def publish_download(source: str, destination: str, is_current=lambda: True) -> bool:
+    """Windows 下同卷改名、跨卷才复制；最终改名不覆盖已有目标。
+
+    跨卷先写目标目录的独立临时文件，写完后才发布正式名称。
+    暂停/取消时保留源文件；这里只清理本次创建的临时文件。
+    """
+    def rename_if_current(src, dst):
+        if not is_current():
+            raise InterruptedError('下载会话已停止')
+        # Windows 的 rename 在目标已存在时失败，不使用会覆盖的 replace/move。
+        os.rename(src, dst)
+        if not is_current():
+            # 停止恰好发生在改名期间，退回原临时路径供下次续传。
+            os.rename(dst, src)
+            raise InterruptedError('下载会话已停止')
+
+    if not is_current():
+        raise InterruptedError('下载会话已停止')
+    directory = os.path.dirname(os.path.abspath(destination))
+    ensure_dir(directory)
+    try:
+        rename_if_current(source, destination)
+        return True
+    except OSError as error:
+        # 仅跨卷错误允许复制；权限不足、同名冲突等直接交给调用方处理。
+        if error.errno != errno.EXDEV and getattr(error, 'winerror', None) != 17:
+            raise
+
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='wb', prefix='.daw-publish-', suffix='.tmp',
+                                         dir=directory, delete=False) as outfile:
+            staged = outfile.name
+            with open(source, 'rb') as infile:
+                while True:
+                    if not is_current():
+                        raise InterruptedError('下载会话已停止')
+                    data = infile.read(1024 * 1024)
+                    if not data:
+                        break
+                    outfile.write(data)
+        rename_if_current(staged, destination)
+        try:
+            os.remove(source)
+        except OSError as error:
+            # 目标已经完整发布，源文件清理失败不应把成功任务重新标成失败。
+            logger.warning('已保存文件，但源临时文件清理失败: %s', error)
+        return True
+    finally:
+        if staged and os.path.exists(staged):
+            os.remove(staged)
 
 
 def ensure_dir(directory: str):
@@ -159,7 +239,8 @@ def ensure_dir(directory: str):
         os.makedirs(directory, exist_ok=True)
 
 
-def merge_chunks(chunk_files: List[str], output_file: str, delete_chunks: bool = True) -> bool:
+def merge_chunks(chunk_files: List[str], output_file: str, delete_chunks: bool = True,
+                 is_current=lambda: True) -> bool:
     """
     合并分块文件
     Args:
@@ -183,12 +264,16 @@ def merge_chunks(chunk_files: List[str], output_file: str, delete_chunks: bool =
                     return False
                 with open(chunk_file, 'rb') as infile:
                     while True:
+                        if not is_current():
+                            return False
                         data = infile.read(1024 * 1024)  # 每次读1MB
                         if not data:
                             break
                         outfile.write(data)
 
         # 删除临时文件
+        if not is_current():
+            return False
         if delete_chunks:
             for chunk_file in chunk_files:
                 try:

@@ -58,6 +58,7 @@ class DownloadHandler(BaseHTTPRequestHandler):
             body = body[:-7]
         elif self.path == '/oversized':
             body += b'extra bytes'
+        self.send_header('ETag', '"regression-payload-v1"')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         if self.path == '/truncated-once' and start == 0:
@@ -107,6 +108,7 @@ class DownloadRegressions(unittest.TestCase):
             task_id, self.base_url + ('/range' if multithread else '/no-range'),
             task_id + '.bin', str(save_path or self.root / 'out' / (task_id + '.bin')),
             len(PAYLOAD), multithread, count, chunks,
+            resource_etag='"regression-payload-v1"',
         ))
         self.db.update_task_status(task_id, status)
         return task_id
@@ -207,8 +209,13 @@ class DownloadRegressions(unittest.TestCase):
 
     def test_single_download_can_move_across_volumes(self):
         task_id = self.make_task(multithread=False)
-        with patch('os.rename', side_effect=OSError(errno.EXDEV, 'cross-device link')), \
-                patch('os.replace', side_effect=OSError(errno.EXDEV, 'cross-device link')):
+        original_rename = os.rename
+        def cross_volume_rename(source, destination):
+            if Path(source).parent != Path(destination).parent:
+                raise OSError(errno.EXDEV, 'cross-device link')
+            return original_rename(source, destination)
+        with patch('os.rename', side_effect=cross_volume_rename), \
+                patch('os.replace', side_effect=AssertionError('must not overwrite destination')):
             self.assert_download(task_id)
 
     def test_broken_range_server_falls_back_to_complete_single_download(self):

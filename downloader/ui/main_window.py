@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import threading
+import time
 import tkinter
 from collections import deque
 from queue import Empty, SimpleQueue
@@ -45,6 +46,9 @@ class MainWindow(ctk.CTk):
         self.task_widgets = {}  # {task_id: widget}
         self._ui_events = SimpleQueue()
         self._shutdown_dialog_open = False  # 关机确认只能同时开一个，避免多任务同时完成时叠窗
+        self._shutdown_pending = False
+        self._shutdown_activity = None
+        self._loading_tasks = False
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
         self._speed_history = {}  # {task_id: deque(maxlen=180)} 速度曲线采样，仅内存不落盘
         self._detail_windows = {}  # {task_id: TaskDetailWindow} 打开中的详情窗
@@ -407,7 +411,7 @@ class MainWindow(ctk.CTk):
             self._host_buttons[host] = self._create_category_button(
                 self.host_section_frame, f"host:{host}", host)
 
-        if self._active_category.startswith('host:') and self._active_category not in self.category_buttons:
+        if not self._loading_tasks and self._active_category.startswith('host:') and self._active_category not in self.category_buttons:
             # 选中的站点已经没任务了，回退到「全部」，别让列表一直空着
             self._on_category_select('all')
 
@@ -512,6 +516,8 @@ class MainWindow(ctk.CTk):
             messagebox.showinfo("添加结果", text)
         else:
             messagebox.showerror("添加结果", text)
+        if self._shutdown_pending and self.task_manager.engine.config.after_download['shutdown']:
+            self._schedule_shutdown_if_idle()
 
     def _on_pause_all(self):
         """暂停全部任务"""
@@ -595,6 +601,8 @@ class MainWindow(ctk.CTk):
 
     def _load_existing_tasks(self):
         """加载现有任务"""
+        # 加载期间不能用半份列表判断保存的站点是否存在。
+        self._loading_tasks = True
         tasks = self.task_manager.get_all_tasks()
         for task in tasks:
             task_for_ui = dict(task)
@@ -615,9 +623,11 @@ class MainWindow(ctk.CTk):
                 float(task_for_ui.get('speed') or 0),
             )
 
-        # 没有任务时上面的回调一个都不会跑，这里补一次，把空态和“显示 N / M”初始化
-        self._apply_task_filter()
+        self._loading_tasks = False
         self._refresh_sidebar()
+        if self._active_category.startswith('host:') and self._active_category not in self.category_buttons:
+            self._on_category_select('all')
+        self._apply_task_filter()
 
     def _add_task_widget(self, task: Dict):
         """添加任务UI组件"""
@@ -710,6 +720,7 @@ class MainWindow(ctk.CTk):
             'location_btn': location_btn,
             # 过滤用的缓存，避免每次输入都查库
             'filename': task.get('filename') or '',
+            'filename_label': filename_label,
             'url': task.get('url') or '',
             'status': task.get('status') or 'pending',
             # 分类树用：文件类型与站点；visible 由 _apply_task_filter 维护
@@ -872,10 +883,14 @@ class MainWindow(ctk.CTk):
     def _on_start_task(self, task_id: str):
         """开始/继续任务"""
         task = self.task_manager.get_task(task_id)
+        if not task:
+            return
         if task['status'] == 'paused':
-            self.task_manager.resume_task(task_id)
+            accepted = self.task_manager.resume_task(task_id)
         else:
-            self.task_manager.start_task(task_id)
+            accepted = self.task_manager.start_task(task_id)
+        if not accepted:
+            messagebox.showerror('无法启动', '任务未能启动，请检查任务状态或日志后重试。')
 
     def _on_pause_task(self, task_id: str):
         """暂停任务"""
@@ -911,7 +926,8 @@ class MainWindow(ctk.CTk):
                         logger.info("文件已删除: %s", task['save_path'])
 
                     temporary_files = [chunk['temp_file'] for chunk in self.task_manager.db.get_chunks(task_id)]
-                    temporary_files.append(os.path.join(self.task_manager.engine.config.temp_dir, f'{task_id}.tmp'))
+                    temporary_files.extend(os.path.join(self.task_manager.engine.config.temp_dir, f'{task_id}{suffix}')
+                                           for suffix in ('.tmp', '.merged'))
                     for temporary_file in temporary_files:
                         if temporary_file and os.path.exists(temporary_file):
                             os.remove(temporary_file)
@@ -1074,14 +1090,15 @@ class MainWindow(ctk.CTk):
             self._on_open_location(task_id)
 
         if actions['shutdown']:
+            self._shutdown_pending = True
             self._schedule_shutdown_if_idle()
 
     def _has_active_tasks(self) -> bool:
         """是否还有在跑的任务（下载中/等待/校验中）"""
-        return any(
+        return (self._batch_add_pending > 0 or self.task_manager.get_activity_state()[1] or any(
             task.get('status') in ('downloading', 'pending', 'verifying')
             for task in self.task_manager.get_all_tasks()
-        )
+        ))
 
     def _schedule_shutdown_if_idle(self):
         """队列里还有任务就先不关机，等最后一个完成时再弹确认"""
@@ -1089,14 +1106,27 @@ class MainWindow(ctk.CTk):
             return
 
         self._shutdown_dialog_open = True
+        self._shutdown_pending = False
+        self._shutdown_activity = self.task_manager.get_activity_state()[0]
         try:
-            dialog = ShutdownConfirmDialog(self, on_shutdown=self._perform_shutdown)
+            dialog = ShutdownConfirmDialog(self, on_shutdown=self._perform_shutdown,
+                                           can_shutdown=self._shutdown_still_valid)
             self.wait_window(dialog)
         finally:
             self._shutdown_dialog_open = False
+            self._shutdown_activity = None
+
+    def _shutdown_still_valid(self):
+        """新增、重试任务或关闭设置都使旧倒计时失效，即使新任务已经很快完成。"""
+        return (self.task_manager.engine.config.after_download['shutdown']
+                and self._shutdown_activity == self.task_manager.get_activity_state()[0]
+                and not self._has_active_tasks())
 
     def _perform_shutdown(self):
         """等倒计时确认走完才真关机，取消就是什么都不做"""
+        if not self._shutdown_still_valid():
+            logger.info('下载任务已变化，取消本次关机')
+            return
         logger.info("全部下载完成，执行关机命令")
         try:
             subprocess.Popen(
@@ -1146,6 +1176,12 @@ class MainWindow(ctk.CTk):
             return
 
         widgets = self.task_widgets[task_id]
+        # 重试时可能重新分配了文件名，卡片与搜索缓存必须同步。
+        task = self.task_manager.get_task(task_id)
+        if task and task.get('filename') != widgets.get('filename'):
+            widgets['filename'] = task['filename']
+            widgets['category'] = guess_file_category(task['filename'])
+            widgets['filename_label'].configure(text=task['filename'])
         widgets['status'] = status
         widgets['status_label'].configure(text=self._get_status_text(status))
         if status != 'downloading':
@@ -1177,7 +1213,14 @@ class MainWindow(ctk.CTk):
             if history is None:
                 history = deque(maxlen=180)
                 self._speed_history[task_id] = history
-            history.append(float(speed or 0))
+            second = int(time.monotonic())
+            sample = (second, max(0.0, float(speed or 0)))
+            if history and history[-1][0] == second:
+                history[-1] = sample
+            else:
+                history.append(sample)
+            while history and history[0][0] < second - 180:
+                history.popleft()
 
         # 更新进度条
         progress = downloaded_size / total_size if total_size > 0 else 0
@@ -1498,10 +1541,11 @@ class ShutdownConfirmDialog(ctk.CTkToplevel):
 
     DEFAULT_COUNTDOWN = 60
 
-    def __init__(self, parent, on_shutdown=None, countdown: int = DEFAULT_COUNTDOWN):
+    def __init__(self, parent, on_shutdown=None, countdown: int = DEFAULT_COUNTDOWN, can_shutdown=None):
         super().__init__(parent)
 
         self._on_shutdown = on_shutdown
+        self._can_shutdown = can_shutdown or (lambda: True)
         self._remaining = max(0, int(countdown))
         self._tick_id = None
 
@@ -1540,6 +1584,9 @@ class ShutdownConfirmDialog(ctk.CTkToplevel):
     def _tick(self):
         if not self.winfo_exists():
             return
+        if not self._can_shutdown():
+            self.destroy()
+            return
         if self._remaining <= 0:
             self._shutdown_now()
             return
@@ -1558,8 +1605,9 @@ class ShutdownConfirmDialog(ctk.CTkToplevel):
         super().destroy()
 
     def _shutdown_now(self):
+        allowed = self._can_shutdown()
         self.destroy()
-        if self._on_shutdown:
+        if allowed and self._on_shutdown:
             self._on_shutdown()
 
 

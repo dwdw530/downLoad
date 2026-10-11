@@ -5,7 +5,6 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -13,6 +12,7 @@ import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 from downloader.utils.config import get_app_root
+from downloader.utils.file_utils import publish_download
 from downloader.browser.security import http_url, normalize_stream_context, unprotect
 
 logger = logging.getLogger(__name__)
@@ -345,7 +345,7 @@ class YoutubeDownloader:
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
                 raise ValueError('保存位置已有同名文件，未覆盖原文件')
-            shutil.move(str(output), str(destination))
+            publish_download(str(output), str(destination), self.active)
             if self.active():
                 self.completed(destination.stat().st_size)
         except Exception as error:

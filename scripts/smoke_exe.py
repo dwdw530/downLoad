@@ -43,6 +43,7 @@ class SmokeHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(200)
         body = PAYLOAD[start:end + 1]
+        self.send_header('ETag', '"smoke-payload-v1"')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         try:
@@ -162,7 +163,7 @@ def click(hwnd):
     # Tk resolves pointer targets from the real cursor, so posted mouse messages
     # alone do not invoke its widgets. Interact only with this test process.
     root = user32.GetAncestor(hwnd, 2)
-    user32.ShowWindow(root, 4)
+    user32.ShowWindow(root, 9)  # SW_RESTORE also restores a minimized test window.
     user32.SetWindowPos(root, wintypes.HWND(-1), 0, 0, 0, 0, 0x0013)
     user32.SetForegroundWindow(root)
     time.sleep(0.1)
@@ -309,6 +310,9 @@ def main():
 
 
 def click_toolbar(hwnd, index, expected_buttons=5, design_width=900, bottom=False):
+    # Restore our own test window before measuring controls; minimized coordinates are -32000.
+    user32.ShowWindow(hwnd, 9)
+    time.sleep(0.2)
     # Tk-drawn button labels are not exposed as native window text.
     rect = wintypes.RECT()
     user32.GetClientRect(hwnd, ctypes.byref(rect))

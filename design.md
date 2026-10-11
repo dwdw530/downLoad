@@ -49,10 +49,10 @@ downloader/
 
 `DownloadEngine.create_download_task`（`download_engine.py:126`）：
 
-1. 规范化浏览器请求上下文（如有）。
-2. `check_url_support_range` 用一次流式 `GET` 带 `Range: bytes=0-0` 同时判定 Range 支持与真实大小：响应 `206` 且 `Content-Range` 合法 → 支持分块；`200` → 单线程，大小取 `Content-Length`。这样兼容禁用 HEAD 的站点。
-3. 计算线程数：不支持 Range 时为 1；支持时取 `min(config.thread_count, total_size)`，避免分块区间出现 `end=-1`。
-4. 任务与分块在**同一个事务**内写入（`create_task_with_chunks`），防止半截脏数据。
+1. 规范化浏览器请求上下文（如有）；URL 文件名解码后校验路径分隔符、Windows 保留名和非法字符。
+2. `check_url_support_range` 用流式 `GET` 带 `Range: bytes=0-0` 探测真实大小和范围支持，同时获取强 `ETag` / `Last-Modified`。大小未知的普通文件仍不支持添加。
+3. 按大小限制线程数；实际启动再次校验资源版本，无可靠验证信息时使用单线程完整请求。
+4. 任务、版本标识与分块在**同一个事务**内写入；`BEGIN IMMEDIATE` 下检查已有任务/文件，统一分配不重名的目标路径。启动前重查外部新建文件，必要时重命名并同步任务卡片。
 
 ### 3.2 多线程分块下载
 
@@ -69,11 +69,14 @@ downloader/
 
 ### 3.4 合并与校验
 
-全部完成后 `_merge_and_finish` 调 `merge_chunks` 按序拼接并删除临时文件，随后进入 `_verify_and_finish`（`download_engine.py:613`）：
+全部分块完成后，`_merge_and_finish` 在**目标目录**排他创建随机 `.daw-merge-*.tmp`，按序合并但暂不删除分块，再进入 `_verify_and_finish`：
 
-1. 核对文件大小与 `total_size`，不符直接 `failed`。
-2. 状态置 `verifying`，计算哈希（`calculate_file_hash`，分块读取，支持 md5/sha256）。
-3. 有预期哈希且匹配 → `completed`；不匹配 → `verify_failed`；无预期哈希 → 记录实际哈希并 `completed`。
+1. 核对文件大小，状态置 `verifying` 并计算 MD5/SHA256；普通文件的合并、校验和收尾全程传递 `run_id`。
+2. `publish_download` 优先调用 Windows `os.rename`：目标存在就失败，同卷不复制数据；只有 EXDEV / ERROR_NOT_SAME_DEVICE 才复制到目标目录的 `.daw-publish-*.tmp`，再非覆盖式改名。权限错误或重名冲突不降级成覆盖写入。
+3. 有预期哈希且匹配 → `completed`；不匹配 → `verify_failed`（保留结果供检查）；无预期哈希 → 记录哈希并完成。只有 `completed` 触发完成后动作。
+4. 正常暂停/取消/失败时删除本次合并或复制副本，保留可恢复的源文件/分块；完成后清理分块。停止恰好发生在改名期间时回退到原临时名称。
+
+同卷普通单线程数据占用约 1 倍，多线程约 2 倍；不再出现「分块 + temp 内合并文件 + 目标复制品」的 3 份成品数据。跨卷时源和目标副本仍需共存；异常退出或外部文件占用可留下临时文件，不做全目录清理。
 
 完成时按 `started_at` 计算耗时与平均速度，写入 `download_history`。
 
@@ -81,7 +84,8 @@ downloader/
 
 - 每个分块的已下载字节实时写入 `download_chunks.downloaded_bytes`；`ChunkDownloader` 每次重试都按临时文件真实大小重算偏移。
 - 程序启动时 `TaskManager._recover_stale_downloading_tasks` 把遗留的 `downloading`/`verifying` 纠偏为 `paused`；`_reconcile_incomplete_tasks_progress` 再按临时文件真实字节回填进度（分块任务逐个分块核对，单线程任务读 `.tmp` 大小）。
-- 暂停分块任务时销毁下载线程、恢复时按临时文件续传；暂停单线程任务时保留活跃下载器，直接 `resume()`，避免进度归零。
+- 重建续传前核对强 ETag 或 Last-Modified 与总大小；有变化或没有旧版本标识则原子重置分块和进度。条件请求使用 If-Range / If-Match / If-Unmodified-Since，响应核对范围、资源总大小及返回的版本标识。
+- 暂停分块任务时等待下载、合并和校验工作退出，再按完整分块恢复；非 Range 且仍在同一 HTTP 传输中的任务保留活跃下载器，可直接 `resume()`。无验证信息的资源只做单线程完整请求，不跨请求拼接断点。
 
 ### 3.6 失败降级
 
@@ -135,9 +139,9 @@ pending ──start──► downloading ──pause──► paused ──resum
 ## 5. 并发与线程模型
 
 - **并发门禁**：`TaskManager` 维护 `_running_tasks` 集合与 `max_concurrent`（1-5，默认 3），加锁保护；`_scheduling_paused` 用于批量暂停期间阻止自动调度。
-- **调度顺序**：FIFO。`db.get_all_tasks` 按 `created_at ASC` 排序，`_try_start_next_task` 取 `pending` 队首，`resume_all` 也按创建时间升序恢复。
+- **调度顺序**：`db.get_all_tasks` 按 `list_order ASC, created_at ASC` 排序；出队和 `resume_all` 都遵守手动顺序。手动重试遇到并发满也进入 pending，而非静默拒绝。
 - **会话隔离**：`DownloadEngine` 为每个任务维护自增 `run_id`。启动/暂停/取消都会作废旧 `run_id`，所有回调与收尾逻辑先校验 `_is_current_task_run`，防止旧线程回写覆盖新状态（`download_engine.py:44`）。
-- **线程归属**：每个任务独立 `ThreadPoolExecutor`；多线程任务另有监控线程；视频任务为单 worker 线程。
+- **线程归属**：每个任务独立 `ThreadPoolExecutor`；多线程任务的合并/校验协调工作也提交到同一线程池，监控线程仅汇总进度；视频任务为单 worker 线程。
 - **UI 线程安全**：工作线程只向 `SimpleQueue` 入队，主线程用 `after` 定时器（50ms 刷新事件、1s 刷新状态栏）消费，所有控件操作都在 Tk 主线程执行。
 
 ## 6. 数据模型（SQLite）
@@ -157,6 +161,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 | created_at / started_at / completed_at | 时间戳 |
 | error_message | 失败原因 |
 | expected_hash / expected_hash_type / actual_hash / hash_verified | 校验相关（迁移新增） |
+| resource_etag / resource_last_modified | 普通文件续传验证信息；老库自动增加可空列，无旧版本记录时安全重下 |
 | browser_context | DPAPI 加密的浏览器上下文（迁移新增） |
 | download_type / video_height | 任务类型（file/youtube/x/bilibili/douyin/hls/dash）与视频清晰度（迁移新增） |
 | list_order | 列表顺序（手动上移/置顶改写；`get_all_tasks` 按 `list_order ASC, created_at ASC` 排序，等待中任务按此顺序出队；迁移时按 rowid 回填） |
@@ -220,7 +225,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 - 主窗口主体改为左右分栏：左侧 `CTkFrame` 容器内嵌分类树（宽 170），右侧保留搜索行与任务列表。分组：状态（全部/下载中/等待中/已完成/失败）、类型（`file_utils.FILE_CATEGORY_LABELS`：视频/音频/文档/压缩包/程序/其他，按扩展名 `guess_file_category` 判定）、站点（按 `url_utils.host_from_url` 聚合，保留非 www 子域，动态重建）。
 - 分类项用**原生 `tkinter.Label`**（`bind("<Button-1>")` + `<Enter>/<Leave>` 换底色），不用 `CTkButton`/`CTkLabel`：侧栏项数以十计且每个主窗口都会重建，CTk 控件的 canvas/字体/hover 动画在反复创建上千次后会显著拖慢 Tk 事件循环（实测 GUI 测试从 120s 劣化到 530s，并连带本地 HTTP 探测超时）。原生控件不吃 CTk 的 `(light, dark)` 元组，颜色由模块级 `SIDEBAR_PALETTE` 提供，主题切换后 `_retheme_sidebar()` 重新上色。
 - 选中键编码为 `all` / `status:xxx` / `type:xxx` / `host:xxx`，`_task_matches_category()` 解析；「失败」组含 `failed`/`verify_failed`/`cancelled`。
-- `_refresh_sidebar()` 在任务增删、状态变更后更新各分类的 `(数量)`；站点分组重建后若选中的站点已无任务，自动回退到「全部」。选中项写入 `ui_active_category` 并持久化。
+- `_refresh_sidebar()` 在任务增删、状态变更后更新各分类计数；启动加载阶段不按半份列表判断站点消失，全部加载后才回退到「全部」。选中项写入 `ui_active_category` 并持久化。
 
 ### 8.1.2 任务右键菜单与手动排序（v0.6.0）
 
@@ -244,7 +249,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 ### 8.3 速度曲线详情窗（v0.5.0）
 
 - 双击任务卡片（递归绑定 `<Double-Button-1>`，跳过 `CTkButton`/`CTkCheckBox` 子树）打开 `TaskDetailWindow`（`downloader/ui/task_detail_window.py`），非模态；已开则 lift，删除任务时自动关闭。
-- 速度历史由 `MainWindow._speed_history`（`{task_id: deque(maxlen=180)}`）持有，在 `_update_task_progress` 里且仅当缓存状态为 `downloading` 时追加（约 1 秒 1 点，约 3 分钟窗口）；**仅内存不落盘，重启清空**。曲线画在 `tk.Canvas`：纵轴峰值×1.1（下限 1KB/s），3 条网格线标注速度，折线 + stipple 填充 + 当前/峰值/平均值；`<Configure>` 触发重绘解决首次布局宽度为 1 的问题。
+- 速度历史由 `MainWindow._speed_history`（`{task_id: deque(maxlen=180)}`）持有；仅 downloading 时记录 `(单调时钟秒, 速度)`，同一秒合并采样并清除 180 秒以外的数据。**仅内存不落盘，重启清空**。曲线按真实时间间隔绘制，平均值按时间加权，不再把回调次数当秒数；`<Configure>` 触发重绘解决首次布局宽度为 1 的问题。
 - 状态与进度通过 `_push_detail_status` / `_push_detail_update` 同步；进度文案与卡片共用 `file_utils.format_progress_texts`，状态映射共用 `task_detail_window.get_status_text`。
 
 ### 8.4 剪贴板监视（v0.5.0）
@@ -253,7 +258,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 - 命中后弹 `ClipboardLinkDialog`（`downloader/ui/clipboard_dialog.py`）：非模态、不抢焦点、`-topmost`，同时只开一个（新链接原地 `update_url`）。按钮：「添加任务」销毁浮窗后打开预填的 `AddTaskDialog` 走统一确认流程；「忽略此站点」把 `host_from_url` 结果（保留非 www 子域）写入 `clipboard_ignore_hosts` 并 `save()`；「关闭」仅关窗。
 - 轮询异常全吞（非文本内容返回 TclError、窗口销毁停表）；设置界面「剪贴板监视」节读写开关与忽略站点多行文本（setter 归一化：小写、去 www.、去重）。轮询与曲线均为纯内存/CPU 操作，无磁盘 I/O。
 
-完成后动作的触发链路：引擎状态回调把 `completed` 事件投递到 UI 事件队列（`MainWindow._handle_download_completed`），只有 `completed`（校验通过）才触发，`verify_failed` 不触发。开启关机时先检查是否还有 `downloading/pending/verifying` 任务，还有则等最后一个完成再弹倒计时确认框（默认 60 秒，关窗即取消）；确认或倒计时结束才执行 `shutdown /s /t 0`。
+完成后动作由 completed 事件经 UI 队列触发，verify_failed 不触发。关机空闲检查包含 downloading/pending/verifying、运行槽位、后台探测及批量待添加工作。倒计时记录 TaskManager 的任务操作代数，每次 tick 及真正执行前再次检查；新增/重试任务或关闭设置会取消旧倒计时，关闭窗口也不关机。
 
 ## 9. 日志与排障
 

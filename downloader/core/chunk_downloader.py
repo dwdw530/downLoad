@@ -77,7 +77,8 @@ class ChunkDownloader:
                  user_agent: str = "PyDownloader/1.0",
                  speed_limit: int = 0,
                  proxies: dict = None,
-                 use_range: bool = True, request_context=None):
+                 use_range: bool = True, request_context=None,
+                 total_size=None, etag=None, last_modified=None):
         """
         初始化分块下载器
         Args:
@@ -106,6 +107,9 @@ class ChunkDownloader:
         self.proxies = proxies  # 代理配置
         self.use_range = use_range  # 是否使用Range头
         self.request_context = request_context
+        self.total_size = total_size
+        self.etag = etag
+        self.last_modified = last_modified
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -222,6 +226,12 @@ class ChunkDownloader:
         headers = {'User-Agent': self.user_agent, 'Accept-Encoding': 'identity'}
         if self.use_range:
             headers['Range'] = f'bytes={start}-{self.end_byte}'
+            if self.etag or self.last_modified:
+                headers['If-Range'] = self.etag or self.last_modified
+        elif self.etag:
+            headers['If-Match'] = self.etag
+        elif self.last_modified:
+            headers['If-Unmodified-Since'] = self.last_modified
 
         # 艹，发请求前也要尊重暂停，不然会出现“明明暂停了还在重试打服务器”
         if not self._wait_if_paused_or_cancelled():
@@ -241,13 +251,19 @@ class ChunkDownloader:
                 logger.warning("分块%s请求失败: HTTP %s", self.chunk_id, response.status_code)
                 return False
 
+            if self.etag and response.headers.get('ETag', self.etag) != self.etag:
+                raise ValueError('服务器文件版本已变化，请重新下载')
+            if (not self.etag and self.last_modified
+                    and response.headers.get('Last-Modified', self.last_modified) != self.last_modified):
+                raise ValueError('服务器文件修改时间已变化，请重新下载')
             if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
                 raise ValueError('服务器返回压缩内容，无法按字节范围保存')
             if self.use_range:
                 content_range = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)',
                                              response.headers.get('Content-Range', ''))
                 if (not content_range or int(content_range[1]) != start
-                        or int(content_range[2]) != self.end_byte):
+                        or int(content_range[2]) != self.end_byte
+                        or (self.total_size is not None and content_range[3] != str(self.total_size))):
                     raise ValueError('服务器返回的Content-Range与请求不一致')
 
             expected_size = self.end_byte - self.start_byte + 1

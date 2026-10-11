@@ -6,7 +6,7 @@
 import logging
 import os
 import re
-import shutil
+import tempfile
 import uuid
 import time
 import requests
@@ -16,7 +16,8 @@ from typing import Optional, Callable
 from downloader.core.chunk_downloader import ChunkDownloader
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.utils.file_utils import merge_chunks, get_filename_from_url, ensure_dir, calculate_file_hash
+from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
+                                        validate_filename, publish_download)
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
@@ -95,7 +96,7 @@ class DownloadEngine:
         """
         self.status_callback = callback
 
-    def check_url_support_range(self, url: str, request_context=None) -> tuple[bool, int]:
+    def check_url_support_range(self, url: str, request_context=None, metadata=None) -> tuple[bool, int]:
         """
         检查URL是否支持Range请求（分块下载）
         Args:
@@ -112,6 +113,10 @@ class DownloadEngine:
                               timeout=self.config.timeout, allow_redirects=True,
                               proxies=self.config.proxies) as response:
                 response.raise_for_status()
+                if metadata is not None:
+                    etag = response.headers.get('ETag', '')
+                    metadata['etag'] = etag if etag.startswith('"') and etag.endswith('"') else None
+                    metadata['last_modified'] = response.headers.get('Last-Modified') or None
                 if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
                     return False, 0
                 if response.status_code == 206:
@@ -148,19 +153,17 @@ class DownloadEngine:
         # 生成任务ID
         task_id = str(uuid.uuid4())
 
-        # 确定文件名
-        if not filename:
-            filename = get_filename_from_url(url)
+        # 解码后再次校验，不能把 URL 中编码的路径分隔符带入保存路径。
+        try:
+            filename = validate_filename(filename) if filename else get_filename_from_url(url)
+        except ValueError as error:
+            if self.status_callback:
+                self.status_callback(task_id, 'failed', str(error))
+            return None
+        save_path = os.path.join(save_path or self.config.download_dir, filename)
 
-        # 确定保存路径
-        if not save_path:
-            save_path = os.path.join(self.config.download_dir, filename)
-        else:
-            save_path = os.path.join(save_path, filename)
-
-        # 检查URL支持情况
-        support_range, total_size = (self.check_url_support_range(url, request_context)
-                                    if request_context else self.check_url_support_range(url))
+        metadata = {}
+        support_range, total_size = self.check_url_support_range(url, request_context, metadata=metadata)
 
         if total_size == 0:
             if self.status_callback:
@@ -192,6 +195,8 @@ class DownloadEngine:
             hash_type=hash_type,
             browser_context=protect(request_context) if request_context else None,
             status='paused' if start_later else 'pending',
+            resource_etag=metadata.get('etag'), resource_last_modified=metadata.get('last_modified'),
+            reserve_path=True,
         )
 
         if not success:
@@ -233,12 +238,13 @@ class DownloadEngine:
         require_tools()
         if height not in (480, 720, 1080):
             raise ValueError('不支持的清晰度')
+        validate_filename(filename)
         if os.path.basename(filename) != filename or not filename.lower().endswith('.mp4'):
             raise ValueError('无效的视频文件名')
         task_id = str(uuid.uuid4())
         if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
                 total_size=0, support_range=False, thread_count=1, download_type=kind, video_height=height,
-                browser_context=protect(context) if context else None):
+                browser_context=protect(context) if context else None, reserve_path=True):
             return task_id
         return None
 
@@ -297,20 +303,24 @@ class DownloadEngine:
         # 每次启动都生成新的会话ID，后续所有回调/收尾都必须绑定它
         run_id = self._next_task_run_id(task_id)
 
-        if task.get('download_type') in VIDEO_KINDS:
-            return self._start_youtube_download(task, run_id)
+        # 旧任务或探测期间外部新建的同名文件也不能被覆盖。
+        try:
+            self.db.reserve_task_path(task_id)
+            task = self.db.get_task(task_id)
+            if task.get('download_type') in VIDEO_KINDS:
+                return self._start_youtube_download(task, run_id)
 
-        task['_request_context'] = unprotect(task['browser_context']) if task.get('browser_context') else None
-
-        # 艹，下载启动前再做一次Range真探测，兜住历史任务和误判任务
-        if task['support_range'] and task['thread_count'] > 1:
-            context = task['_request_context']
-            is_valid_range, _ = (self.check_url_support_range(task['url'], context)
-                                 if context else self.check_url_support_range(task['url']))
-            if not is_valid_range:
-                self.db.mark_task_singlethread(task_id)
-                task = self.db.get_task(task_id) or task
-                task['_request_context'] = context
+            context = unprotect(task['browser_context']) if task.get('browser_context') else None
+            task, resume = self._prepare_file_task(task, resume, context, run_id)
+            task['_request_context'] = context
+        except Exception as error:
+            if self._is_current_task_run(task_id, run_id):
+                self.db.update_task_status(task_id, 'failed', str(error))
+                if self.status_callback:
+                    self.status_callback(task_id, 'failed', str(error))
+            return False
+        if not self._is_current_task_run(task_id, run_id):
+            return False
 
         # 更新任务状态为downloading
         self.cancelled_tasks.discard(task_id)
@@ -324,123 +334,104 @@ class DownloadEngine:
         else:
             return self._start_singlethread_download(task, resume, run_id)
 
+    def _prepare_file_task(self, task, resume, context, run_id):
+        """续传前核对资源身份；无验证器或资源变化时从零重下，不拼接不同版本。"""
+        metadata = {}
+        ranges, size = self.check_url_support_range(task['url'], context, metadata=metadata)
+        if not self._is_current_task_run(task['task_id'], run_id):
+            raise InterruptedError('资源探测期间任务已停止')
+        if size <= 0:
+            raise ValueError('无法重新确认下载资源，请稍后重试')
+        old_etag = task.get('resource_etag')
+        old_modified = task.get('resource_last_modified')
+        same_version = (old_etag == metadata.get('etag') if old_etag else
+                        bool(old_modified and old_modified == metadata.get('last_modified')))
+        # 无资源验证器时只发完整请求，不能把多次请求的内容拼在一起。
+        support_range = bool(ranges and (metadata.get('etag') or metadata.get('last_modified')))
+        count = max(1, min(task['thread_count'], size)) if support_range else 1
+        reset = (not resume or not same_version or size != task['total_size']
+                 or support_range != bool(task['support_range']) or count != task['thread_count'])
+        chunks = None
+        if reset:
+            files = [chunk['temp_file'] for chunk in self.db.get_chunks(task['task_id'])]
+            files += [os.path.join(self.config.temp_dir, task['task_id'] + suffix)
+                      for suffix in ('.tmp', '.merged')]
+            for path in files:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            chunks = self._build_chunks(task['task_id'], size, count) if count > 1 else []
+            logger.info('重新确认资源，重置断点: %s', task['task_id'])
+        self.db.update_task_resource(task['task_id'], size, support_range, count, metadata, chunks)
+        return self.db.get_task(task['task_id']), bool(resume and not reset)
+
     def _start_multithread_download(self, task: dict, resume: bool, run_id: int) -> bool:
-        """多线程分块下载"""
+        """多线程分块下载；合并和校验也归线程池管理，暂停必须等整条链路退出。"""
         task_id = task['task_id']
-
-        # 合并必须包含全部分块；下载器按临时文件大小跳过已完成的内容。
         chunks = self.db.get_chunks(task_id)
-
         if not chunks:
-            logger.error("没有分块信息: %s", task_id)
             self.db.update_task_status(task_id, 'failed', '没有分块信息')
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '没有分块信息')
             return False
 
-        # 创建分块下载器
         downloaders = []
-        # 设置中的限速针对整个任务，各分块共同分配额度。
         chunk_speed_limit = max(1, self.config.speed_limit // len(chunks)) if self.config.speed_limit else 0
         for chunk in chunks:
             downloader = ChunkDownloader(
-                chunk_id=chunk['chunk_id'],
-                task_id=task_id,
-                url=task['url'],
-                start_byte=chunk['start_byte'],
-                end_byte=chunk['end_byte'],
-                temp_file=chunk['temp_file'],
-                timeout=self.config.timeout,
-                retry_times=self.config.retry_times,
-                user_agent=self.config.user_agent,
-                speed_limit=chunk_speed_limit,
-                proxies=self.config.proxies,  # 代理支持
-                use_range=True,
-                request_context=task.get('_request_context')
+                chunk_id=chunk['chunk_id'], task_id=task_id, url=task['url'],
+                start_byte=chunk['start_byte'], end_byte=chunk['end_byte'], temp_file=chunk['temp_file'],
+                timeout=self.config.timeout, retry_times=self.config.retry_times,
+                user_agent=self.config.user_agent, speed_limit=chunk_speed_limit,
+                proxies=self.config.proxies, use_range=True, request_context=task.get('_request_context'),
+                total_size=task['total_size'], etag=task.get('resource_etag'),
+                last_modified=task.get('resource_last_modified'),
             )
-            # 设置进度回调
             downloader.set_progress_callback(self._on_chunk_progress)
             downloaders.append(downloader)
 
         self.active_downloaders[task_id] = downloaders
-
-        # 创建线程池
         thread_pool = ThreadPoolExecutor(max_workers=task['thread_count'])
         self.thread_pools[task_id] = thread_pool
-
-        # 提交下载任务
-        start_time = time.time()
         futures = {thread_pool.submit(d.download, resume): d for d in downloaders}
-
-        # 启动进度监控线程
         import threading
-        monitor_thread = threading.Thread(
-            target=self._monitor_progress,
-            args=(task_id, task['total_size'], start_time, run_id, downloaders),
-            daemon=True
-        )
-        monitor_thread.start()
+        threading.Thread(target=self._monitor_progress,
+                         args=(task_id, task['total_size'], time.time(), run_id, downloaders), daemon=True).start()
 
-        # 等待所有分块完成（在后台线程中）
         def wait_and_merge():
-            all_success = True
             try:
+                all_success = True
                 for future in as_completed(futures):
-                    # 艹，只处理当前会话；旧会话醒来后必须闭嘴，不准改新状态
-                    if not self._is_current_task_run(task_id, run_id):
+                    if not self._can_finish(task_id, run_id):
                         return
-                    if self.active_downloaders.get(task_id) is not downloaders:
-                        return
-
                     downloader = futures[future]
-                    if self._is_task_cancelled(task_id) or self._is_task_paused(task_id):
-                        # 艹，已经取消/暂停就别再碰状态了，后台线程老实收尾就行
-                        continue
-                    try:
-                        success = future.result()
-                        if self._is_task_cancelled(task_id) or self._is_task_paused(task_id):
-                            continue
-                        if success:
-                            self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes, 'completed')
-                        else:
-                            all_success = False
-                            self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes, 'failed')
-                    except Exception as e:
-                        logger.error("分块下载异常: %s", type(e).__name__)
-                        if not self._is_task_cancelled(task_id):
-                            all_success = False
+                    success = future.result()
+                    if not self._can_finish(task_id, run_id):
+                        return
+                    self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes,
+                                                  'completed' if success else 'failed')
+                    all_success = all_success and success
+                if not self._can_finish(task_id, run_id):
+                    return
+                if all_success:
+                    self._merge_and_finish(task_id, task['save_path'], chunks, run_id)
+                elif not self._fallback_to_singlethread(task, run_id) and self._can_finish(task_id, run_id):
+                    self.db.update_task_status(task_id, 'failed', '部分分块下载失败')
+                    if self.status_callback:
+                        self.status_callback(task_id, 'failed', '下载失败')
+            except Exception as error:
+                if self._can_finish(task_id, run_id):
+                    self.db.update_task_status(task_id, 'failed', str(error))
+                    if self.status_callback:
+                        self.status_callback(task_id, 'failed', str(error))
             finally:
-                # 关闭线程池
-                try:
-                    thread_pool.shutdown(wait=False)
-                except Exception:
-                    pass
-
-                # 艹，只能清理自己这次会话创建的对象，不能误删新会话资源
                 if self.thread_pools.get(task_id) is thread_pool:
                     del self.thread_pools[task_id]
                 if self.active_downloaders.get(task_id) is downloaders:
                     del self.active_downloaders[task_id]
+                thread_pool.shutdown(wait=False)
 
-            if not self._is_current_task_run(task_id, run_id):
-                return
-
-            if self._is_task_cancelled(task_id) or self._is_task_paused(task_id):
-                return
-
-            # 合并文件
-            if all_success:
-                self._merge_and_finish(task_id, task['save_path'], chunks)
-            else:
-                # 艹，分块模式翻车别急着判死刑，先自动降级单线程再拼一次
-                if self._fallback_to_singlethread(task, run_id):
-                    return
-                self.db.update_task_status(task_id, 'failed', '部分分块下载失败')
-                if self.status_callback:
-                    self.status_callback(task_id, 'failed', '下载失败')
-
-        # 在后台线程中等待
-        threading.Thread(target=wait_and_merge, daemon=True).start()
+        # 不能用不受管理的 daemon 合并线程，否则暂停返回后它仍在写输出。
+        thread_pool.submit(wait_and_merge)
         return True
 
     def _fallback_to_singlethread(self, task: dict, run_id: int) -> bool:
@@ -508,7 +499,9 @@ class DownloadEngine:
             proxies=self.config.proxies,  # 代理支持
             use_range=bool(task.get('support_range')),
             request_context=(task.get('_request_context') or
-                             (unprotect(task['browser_context']) if task.get('browser_context') else None))
+                             (unprotect(task['browser_context']) if task.get('browser_context') else None)),
+            total_size=task['total_size'], etag=task.get('resource_etag'),
+            last_modified=task.get('resource_last_modified'),
         )
 
         # 艹，单线程也得走实时进度链路，不然UI速度和进度全是死的
@@ -568,12 +561,7 @@ class DownloadEngine:
                     return
                 if not success:
                     raise RuntimeError('下载失败')
-                save_dir = os.path.dirname(task['save_path'])
-                if save_dir:
-                    ensure_dir(save_dir)
-                # 临时目录和下载目录可能分属不同磁盘。
-                shutil.move(temp_file, task['save_path'])
-                self._verify_and_finish(task_id, task['save_path'])
+                self._verify_and_finish(task_id, temp_file, run_id=run_id)
             except Exception as e:
                 if (self._is_current_task_run(task_id, run_id)
                         and not self._is_task_cancelled(task_id) and not self._is_task_paused(task_id)):
@@ -590,32 +578,44 @@ class DownloadEngine:
         thread_pool.submit(download_and_finish)
         return True
 
-    def _merge_and_finish(self, task_id: str, save_path: str, chunks: list):
-        """合并文件并完成任务"""
-        if self._is_task_cancelled(task_id):
-            # 艹，任务都取消了还合并个锤子，直接撤
+    def _merge_and_finish(self, task_id: str, save_path: str, chunks: list, run_id=None):
+        """直接合并到目标目录临时文件，校验后同卷改名；暂停/失败保留原分块。"""
+        run_id = self.task_run_ids.get(task_id, 0) if run_id is None else run_id
+        current = lambda: self._can_finish(task_id, run_id)
+        if not current():
             return
-
-        logger.info("开始合并文件，目标路径: %s", save_path)
-
-        # 获取所有分块文件
+        directory = os.path.dirname(os.path.abspath(save_path))
+        os.makedirs(directory, exist_ok=True)
         chunk_files = [chunk['temp_file'] for chunk in sorted(chunks, key=lambda x: x['chunk_index'])]
-        logger.info("分块文件数: %s", len(chunk_files))
+        # 随机且排他创建，不占用正式文件名，也不覆盖目录中已有的临时文件。
+        with tempfile.NamedTemporaryFile(prefix=f'.daw-merge-{task_id}-', suffix='.tmp',
+                                         dir=directory, delete=False) as output:
+            staged = output.name
+        try:
+            if merge_chunks(chunk_files, staged, delete_chunks=False, is_current=current):
+                self._verify_and_finish(task_id, staged, run_id=run_id)
+                if current() and self._get_task_status(task_id) in ('completed', 'verify_failed'):
+                    for path in chunk_files:
+                        try:
+                            os.remove(path)
+                        except OSError as error:
+                            logger.warning('已保存文件，但分块清理失败: %s', error)
+            elif current():
+                self.db.update_task_status(task_id, 'failed', '文件合并失败')
+                if self.status_callback:
+                    self.status_callback(task_id, 'failed', '合并失败')
+        finally:
+            # 未发布的合并副本可以重建，正常暂停/取消/失败后不占住额外空间。
+            if os.path.exists(staged):
+                try:
+                    os.remove(staged)
+                except OSError as error:
+                    logger.warning('清理合并临时文件失败: %s', error)
 
-        # 合并文件
-        if merge_chunks(chunk_files, save_path, delete_chunks=True):
-            logger.info("文件已保存到: %s", save_path)
-            logger.info("文件是否存在: %s", os.path.exists(save_path))
-
-            # 校验并完成任务
-            self._verify_and_finish(task_id, save_path)
-        else:
-            logger.error("文件合并失败")
-            if self._is_task_cancelled(task_id):
-                return
-            self.db.update_task_status(task_id, 'failed', '文件合并失败')
-            if self.status_callback:
-                self.status_callback(task_id, 'failed', '合并失败')
+    def _can_finish(self, task_id, run_id):
+        task = self.db.get_task(task_id)
+        return (self._is_current_task_run(task_id, run_id) and task is not None
+                and task['status'] not in ('paused', 'cancelled') and task_id not in self.cancelled_tasks)
 
     def _verify_and_finish(self, task_id: str, save_path: str, run_id=None):
         """
@@ -626,8 +626,8 @@ class DownloadEngine:
         if not task:
             return
 
-        if self._is_task_cancelled(task_id):
-            # 艹，取消后禁止进入校验/终态覆盖流程
+        run_id = self.task_run_ids.get(task_id, 0) if run_id is None else run_id
+        if not self._can_finish(task_id, run_id):
             return
 
         if os.path.getsize(save_path) != task['total_size']:
@@ -647,7 +647,14 @@ class DownloadEngine:
         # 计算文件哈希
         logger.info("开始计算%s哈希...", hash_type.upper())
         actual_hash = calculate_file_hash(save_path, hash_type)
-        if run_id is not None and not self._is_current_task_run(task_id, run_id):
+        if not self._can_finish(task_id, run_id):
+            return
+
+        # 普通文件在校验后才发布，排他创建防止探测后新出现的同名文件被覆盖。
+        if os.path.normcase(os.path.abspath(save_path)) != os.path.normcase(os.path.abspath(task['save_path'])):
+            publish_download(save_path, task['save_path'], lambda: self._can_finish(task_id, run_id))
+            save_path = task['save_path']
+        if not self._can_finish(task_id, run_id):
             return
 
         if actual_hash:
@@ -658,25 +665,27 @@ class DownloadEngine:
                     # 校验通过
                     logger.info("校验通过")
                     self.db.update_task_hash(task_id, actual_hash, 1)
-                    self._finish_task(task_id, save_path, 'completed', '下载完成，校验通过')
+                    self._finish_task(task_id, save_path, 'completed', '下载完成，校验通过', run_id)
                 else:
                     # 校验失败
                     logger.warning("校验失败: 期望 %s, 实际 %s", expected_hash, actual_hash)
                     self.db.update_task_hash(task_id, actual_hash, -1)
                     # 艹，verify_failed 也是终态，TaskManager会按终态释放并发槽位
                     self._finish_task(task_id, save_path, 'verify_failed',
-                                      f'校验失败：期望{expected_hash[:8]}...，实际{actual_hash[:8]}...')
+                                      f'校验失败：期望{expected_hash[:8]}...，实际{actual_hash[:8]}...', run_id)
             else:
                 # 没有预期哈希值，只记录实际哈希
                 self.db.update_task_hash(task_id, actual_hash, 0)
-                self._finish_task(task_id, save_path, 'completed', '下载完成')
+                self._finish_task(task_id, save_path, 'completed', '下载完成', run_id)
         else:
             self.db.update_task_hash(task_id, '', -1 if expected_hash else 0)
             self._finish_task(task_id, save_path, 'verify_failed' if expected_hash else 'failed',
-                              '文件哈希计算失败')
+                              '文件哈希计算失败', run_id)
 
-    def _finish_task(self, task_id: str, save_path: str, status: str, message: str):
+    def _finish_task(self, task_id: str, save_path: str, status: str, message: str, run_id=None):
         """完成任务的公共逻辑"""
+        if run_id is not None and not self._can_finish(task_id, run_id):
+            return
         if status != 'cancelled' and self._is_task_cancelled(task_id):
             # 艹，取消任务的状态是最高优先级，谁也别覆盖
             return
@@ -753,7 +762,7 @@ class DownloadEngine:
             return False
 
         # 艹，分块任务暂停后走重建更稳；非分块任务保留活跃下载器，避免进度被重置到0
-        if task.get('support_range') or task.get('download_type') in VIDEO_KINDS:
+        if task.get('support_range') or task.get('download_type') in VIDEO_KINDS or current_status == 'verifying':
             # 艹，暂停时要等线程池收敛，避免紧接着恢复时旧线程还在抢写临时文件
             self._stop_active_task_workers(task_id, wait=True)
         elif task_id in self.active_downloaders:
