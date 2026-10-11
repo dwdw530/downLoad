@@ -14,6 +14,44 @@ from urllib.parse import urlparse, unquote
 logger = logging.getLogger(__name__)
 
 
+# 左侧分类树的文件类型分组：分类键 -> 中文标签
+FILE_CATEGORY_LABELS = {
+    'video': '视频',
+    'audio': '音频',
+    'document': '文档',
+    'archive': '压缩包',
+    'program': '程序',
+    'other': '其他',
+}
+
+# 按扩展名归类；未知扩展名统一归 'other'
+FILE_CATEGORY_SUFFIXES = {
+    'video': {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpg', '.mpeg', '.rmvb', '.3gp'},
+    'audio': {'.mp3', '.flac', '.wav', '.aac', '.m4a', '.ogg', '.wma', '.ape'},
+    'document': {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.epub', '.mobi', '.csv', '.rtf'},
+    'archive': {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.iso', '.tgz'},
+    'program': {'.exe', '.msi', '.apk', '.dmg', '.deb', '.rpm', '.appx'},
+}
+
+
+def guess_file_category(filename: str) -> str:
+    """
+    按扩展名猜测文件分类（左侧分类树用）
+    Args:
+        filename: 文件名
+    Returns:
+        FILE_CATEGORY_LABELS 中的分类键，未知或没有扩展名返回 'other'
+    老王说：分类只认扩展名，猜不出来就当“其他”，别硬塞个类型骗人！
+    """
+    suffix = os.path.splitext(filename or '')[1].lower()
+    if not suffix:
+        return 'other'
+    for category, suffixes in FILE_CATEGORY_SUFFIXES.items():
+        if suffix in suffixes:
+            return category
+    return 'other'
+
+
 def format_size(size_bytes: int) -> str:
     """
     格式化文件大小

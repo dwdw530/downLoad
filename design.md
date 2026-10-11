@@ -159,6 +159,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 | expected_hash / expected_hash_type / actual_hash / hash_verified | 校验相关（迁移新增） |
 | browser_context | DPAPI 加密的浏览器上下文（迁移新增） |
 | download_type / video_height | 任务类型（file/youtube/x/bilibili/douyin/hls/dash）与视频清晰度（迁移新增） |
+| list_order | 列表顺序（手动上移/置顶改写；`get_all_tasks` 按 `list_order ASC, created_at ASC` 排序，等待中任务按此顺序出队；迁移时按 rowid 回填） |
 
 **download_chunks**：chunk_id、task_id、chunk_index、start_byte、end_byte、downloaded_bytes、status、temp_file、retry_count。
 
@@ -206,13 +207,31 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ## 8. 配置
 
-`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）、`clipboard_monitor_enabled`（剪贴板监视，默认 true）、`clipboard_ignore_hosts`（忽略站点域名列表）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速）。
+`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）、`ui_active_category`（左侧分类树选中项，默认 all）、`ui_appearance_mode`（主题 dark/light/system，默认 dark）、`clipboard_monitor_enabled`（剪贴板监视，默认 true）、`clipboard_ignore_hosts`（忽略站点域名列表）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速与主题）。
 
 ### 8.1 任务列表显示与过滤
 
 - 每张任务卡片两行信息：行一是进度条 + 百分比 + 「文件位置」；行二是 `已下载 X / Y`、`剩余 mm:ss`（`file_utils.format_remaining`）、速度、状态。只有 `downloading` 且速度大于 0 时才显示剩余时间，其余情况显示 `--`，总大小未知时显示 `X / 未知`。
-- 过滤由 `MainWindow._apply_task_filter()` 统一处理：搜索词按文件名/URL 子串（不区分大小写，不做 percent 解码）匹配，「隐藏已完成」按状态过滤；命中 `pack`、不命中 `pack_forget`，空结果显示「没有匹配的任务」。
-- 过滤依赖 `task_widgets` 中缓存的 `filename`/`url`/`status`，不额外查库；「隐藏已完成」写入 `ui_hide_completed`，搜索词不持久化。
+- 过滤由 `MainWindow._apply_task_filter()` 统一处理：分类（`_active_category`）、搜索词按文件名/URL 子串（不区分大小写，不做 percent 解码）与「隐藏已完成」三者叠加判定，结果记入 `task_widgets[*]['visible']`；有变化时 `_relayout_task_widgets()` 按 `task_widgets` 的 dict 顺序整体重排（dict 顺序即显示顺序），空结果显示「没有匹配的任务」。
+- 过滤依赖 `task_widgets` 中缓存的 `filename`/`url`/`status`/`category`/`host`，不额外查库；「隐藏已完成」写入 `ui_hide_completed`，搜索词不持久化。
+
+### 8.1.1 左侧分类树（v0.6.0）
+
+- 主窗口主体改为左右分栏：左侧 `CTkFrame` 容器内嵌分类树（宽 170），右侧保留搜索行与任务列表。分组：状态（全部/下载中/等待中/已完成/失败）、类型（`file_utils.FILE_CATEGORY_LABELS`：视频/音频/文档/压缩包/程序/其他，按扩展名 `guess_file_category` 判定）、站点（按 `url_utils.host_from_url` 聚合，保留非 www 子域，动态重建）。
+- 分类项用**原生 `tkinter.Label`**（`bind("<Button-1>")` + `<Enter>/<Leave>` 换底色），不用 `CTkButton`/`CTkLabel`：侧栏项数以十计且每个主窗口都会重建，CTk 控件的 canvas/字体/hover 动画在反复创建上千次后会显著拖慢 Tk 事件循环（实测 GUI 测试从 120s 劣化到 530s，并连带本地 HTTP 探测超时）。原生控件不吃 CTk 的 `(light, dark)` 元组，颜色由模块级 `SIDEBAR_PALETTE` 提供，主题切换后 `_retheme_sidebar()` 重新上色。
+- 选中键编码为 `all` / `status:xxx` / `type:xxx` / `host:xxx`，`_task_matches_category()` 解析；「失败」组含 `failed`/`verify_failed`/`cancelled`。
+- `_refresh_sidebar()` 在任务增删、状态变更后更新各分类的 `(数量)`；站点分组重建后若选中的站点已无任务，自动回退到「全部」。选中项写入 `ui_active_category` 并持久化。
+
+### 8.1.2 任务右键菜单与手动排序（v0.6.0）
+
+- `_bind_task_right_click()` 递归绑定 `<Button-3>`，遇到 `CTkFrame` 才继续下钻（CTk 的 `bind` 已转发到内部画布，再下钻会重复绑定）；`CTkButton`/`CTkCheckBox` 不绑定，避免与单击命令打架。
+- 菜单项：开始/暂停（依状态互斥）、打开文件（文件不存在时置灰）、打开所在文件夹、复制下载链接（同时写 `_clipboard_last_seen`，避免自己触发的剪贴板监视再弹窗）、上移/置顶（首条置灰）、删除任务。
+- 排序落库到 `download_tasks.list_order`：`TaskManager.move_task_up` / `move_task_to_top` 按当前顺序重排后整体写回（`DatabaseManager.update_task_orders`，1..N 单事务）；`_sync_task_order()` 读回顺序并按新顺序重排 Tk 卡片。`get_all_tasks(status='pending')` 同样按 `list_order` 排序，故手动排序会改变待下载任务的出队顺序。
+
+### 8.1.3 主题切换（v0.6.0）
+
+- `config.ui_appearance_mode` 取 `dark`/`light`/`system`（其他值回退 `dark`），启动时由 `MainWindow.__init__` 调 `ctk.set_appearance_mode()` 应用；设置对话框「主题」用 `CTkSegmentedButton`（深色/浅色/跟随系统），保存或恢复默认后经 `_apply_saved_settings` 立即重新应用。
+- 自定义颜色统一用 `(light, dark)` 元组（如分类选中态 `("gray70", "gray35")`），切换模式时由 CustomTkinter 自动重绘。
 
 ### 8.2 添加任务（批量与稍后）
 

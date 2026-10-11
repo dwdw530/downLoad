@@ -8,6 +8,8 @@ import traceback
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import customtkinter as ctk
+
 from downloader.ui.main_window import (MainWindow, AddTaskDialog, DeleteTaskDialog, CloseConfirmDialog,
                                       ShutdownConfirmDialog)
 from downloader.ui.history_dialog import HistoryDialog
@@ -459,6 +461,160 @@ class GuiFeatures(FeatureFixture):
         self.assertTrue(self.app.task_widgets[pending]['frame'].winfo_manager())
 
         self.assertTrue(ConfigManager(self.config.config_path).ui_hide_completed)
+
+    # ---------- 左侧分类树 ----------
+
+    def _inject_task(self, task_id, filename, url, status='pending'):
+        """直建库记录 + UI 卡片，不真跑下载（分类只看卡片缓存）"""
+        self.db.create_task_with_chunks(task_id, url, filename,
+                                        str(self.root / filename), status=status)
+        self.app._add_task_widget(self.db.get_task(task_id))
+        return task_id
+
+    def test_type_category_filters_tasks_by_extension(self):
+        video = self._inject_task('t-video', 'movie.mp4', 'http://cdn.example.com/movie.mp4')
+        document = self._inject_task('t-doc', 'paper.pdf', 'http://files.example.org/paper.pdf')
+        self.assertEqual(self.app.task_widgets[video]['category'], 'video')
+
+        self.app._on_category_select('type:video')
+        self.pump(0.1)
+        self.assertTrue(self.app.task_widgets[video]['frame'].winfo_manager())
+        self.assertFalse(self.app.task_widgets[document]['frame'].winfo_manager())
+        self.assertEqual(self.app.filter_hint_label.cget('text'), '显示 1 / 2')
+
+        self.app._on_category_select('type:other')
+        self.pump(0.1)
+        self.assertTrue(self.app.empty_label.winfo_manager())
+        self.assertEqual(self.app.empty_label.cget('text'), '没有匹配的任务')
+
+    def test_status_category_counts_and_persistence(self):
+        self._inject_task('t-run', 'a.bin', 'http://a.com/a.bin', status='downloading')
+        self._inject_task('t-done', 'b.bin', 'http://a.com/b.bin', status='completed')
+        self.assertIn('(2)', self.app.category_buttons['all'].cget('text'))
+        self.assertIn('(1)', self.app.category_buttons['status:downloading'].cget('text'))
+        self.assertIn('(1)', self.app.category_buttons['status:completed'].cget('text'))
+
+        self.app._on_category_select('status:completed')
+        self.pump(0.1)
+        self.assertTrue(self.app.task_widgets['t-done']['frame'].winfo_manager())
+        self.assertFalse(self.app.task_widgets['t-run']['frame'].winfo_manager())
+
+        # “隐藏已完成”与分类叠加时唯一命中项也被隐掉，应显示空态
+        self.app.hide_completed_var.set(True)
+        self.app._on_hide_completed_toggle()
+        self.assertTrue(self.app.empty_label.winfo_manager())
+
+        self.assertEqual(ConfigManager(self.config.config_path).ui_active_category, 'status:completed')
+
+    def test_host_category_tracks_url_host_and_falls_back(self):
+        self._inject_task('t-host', 'a.bin', 'https://dl.example.com/a.bin')
+        self.assertIn('host:dl.example.com', self.app.category_buttons)
+
+        self.app._on_category_select('host:dl.example.com')
+        self.pump(0.1)
+        self.assertEqual(self.app.filter_hint_label.cget('text'), '显示 1 / 1')
+
+        # 任务删除后站点分组消失，选中项回退到「全部」
+        self.app.task_widgets['t-host']['frame'].destroy()
+        del self.app.task_widgets['t-host']
+        self.db.delete_task('t-host')
+        self.app._apply_task_filter()
+        self.app._refresh_sidebar()
+        self.assertEqual(self.app._active_category, 'all')
+        self.assertNotIn('host:dl.example.com', self.app.category_buttons)
+
+    # ---------- 右键菜单与手动排序 ----------
+
+    def _menu_command_index(self, menu, label):
+        for index in range(menu.index('end') + 1):
+            if menu.type(index) == 'command' and menu.entrycget(index, 'label') == label:
+                return index
+        raise AssertionError(f'菜单项不存在: {label}')
+
+    def test_context_menu_lists_actions_and_sorts_tasks(self):
+        self._inject_task('t1', 'a.bin', 'http://a.com/a.bin')
+        self._inject_task('t2', 'b.bin', 'http://a.com/b.bin')
+        self.assertEqual(list(self.app.task_widgets), ['t1', 't2'])
+
+        menu = self.app._build_task_menu('t2')
+        try:
+            for label in ('▶ 开始下载', '📂 打开文件', '📁 打开所在文件夹', '🔗 复制下载链接',
+                          '⬆ 上移', '⏫ 置顶', '🗑 删除任务'):
+                self._menu_command_index(menu, label)
+            menu.invoke(self._menu_command_index(menu, '⬆ 上移'))
+        finally:
+            menu.destroy()
+        self.pump(0.2)
+
+        self.assertEqual(list(self.app.task_widgets), ['t2', 't1'])
+        self.assertEqual([task['task_id'] for task in self.db.get_all_tasks()], ['t2', 't1'])
+        self.assertEqual(self.app.task_widgets['t1']['frame'].winfo_manager(), 'pack')
+
+        # 已经在最前的任务不能再上移/置顶
+        first_menu = self.app._build_task_menu('t2')
+        try:
+            self.assertEqual(first_menu.entrycget(self._menu_command_index(first_menu, '⬆ 上移'), 'state'),
+                             'disabled')
+            self.assertEqual(first_menu.entrycget(self._menu_command_index(first_menu, '⏫ 置顶'), 'state'),
+                             'disabled')
+        finally:
+            first_menu.destroy()
+
+    def test_context_menu_copy_link_does_not_trigger_clipboard_popup(self):
+        self._inject_task('t1', 'a.bin', 'http://a.com/a.bin')
+        menu = self.app._build_task_menu('t1')
+        try:
+            menu.invoke(self._menu_command_index(menu, '🔗 复制下载链接'))
+        finally:
+            menu.destroy()
+        self.assertEqual(self.app.clipboard_get(), 'http://a.com/a.bin')
+        self.assertEqual(self.app._clipboard_last_seen, 'http://a.com/a.bin')
+
+    def test_context_menu_disables_start_on_completed_task(self):
+        self._inject_task('t1', 'a.bin', 'http://a.com/a.bin', status='completed')
+        menu = self.app._build_task_menu('t1')
+        try:
+            self.assertEqual(menu.entrycget(self._menu_command_index(menu, '▶ 开始下载'), 'state'),
+                             'disabled')
+        finally:
+            menu.destroy()
+
+    # ---------- 主题切换 ----------
+
+    def test_settings_dialog_switches_theme_and_persists(self):
+        try:
+            def fill(dialog):
+                dialog.appearance_segment.set('浅色')
+                dialog._on_save()
+            self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+            self.pump(0.3)
+            self.assertEqual(ConfigManager(self.config.config_path).ui_appearance_mode, 'light')
+            self.assertEqual(ctk.get_appearance_mode(), 'Light')
+        finally:
+            ctk.set_appearance_mode('dark')
+
+    def test_settings_dialog_accepts_follow_system_theme(self):
+        def fill(dialog):
+            dialog.appearance_segment.set('跟随系统')
+            dialog._on_save()
+        self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+        self.pump(0.3)
+        self.assertEqual(ConfigManager(self.config.config_path).ui_appearance_mode, 'system')
+
+    def test_settings_dialog_theme_survives_reset(self):
+        self.config.ui_appearance_mode = 'light'
+        self.assertTrue(self.config.save())
+        try:
+            dialog = SettingsDialog(self.app, self.config, on_save_callback=self.app._on_settings_saved)
+            self.pump(0.25)
+            self.assertEqual(dialog.appearance_segment.get(), '浅色')
+            dialog._on_reset()
+            self.pump(0.25)
+            self.assertEqual(ConfigManager(self.config.config_path).ui_appearance_mode, 'dark')
+            self.assertEqual(ctk.get_appearance_mode(), 'Dark')
+            dialog.destroy()
+        finally:
+            ctk.set_appearance_mode('dark')
 
 
 class TaskDetailWindowTests(GuiFeatures):

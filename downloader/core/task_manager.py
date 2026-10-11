@@ -290,6 +290,43 @@ class TaskManager:
         """获取等待中的任务"""
         return self.db.get_all_tasks(status='pending')
 
+    def move_task_up(self, task_id: str) -> bool:
+        """
+        把任务在列表中前移一位（影响尚未出队的 pending 顺序）
+        Returns:
+            True表示顺序已改变
+        """
+        return self._move_task(task_id, offset=-1)
+
+    def move_task_to_top(self, task_id: str) -> bool:
+        """把任务移到列表最前；已在最前时不改动"""
+        return self._move_task(task_id, offset=None)
+
+    def _move_task(self, task_id: str, offset: Optional[int]) -> bool:
+        """
+        按当前列表顺序重排，然后整体写回 list_order
+        Args:
+            offset: -1 表示前移一位；None 表示置顶
+        """
+        tasks = self.db.get_all_tasks()
+        ordered = [task['task_id'] for task in tasks]
+        if task_id not in ordered:
+            return False
+
+        index = ordered.index(task_id)
+        if offset is None:
+            if index == 0:
+                return False
+            ordered.pop(index)
+            ordered.insert(0, task_id)
+        else:
+            target = index + offset
+            if target < 0 or target >= len(ordered):
+                return False
+            ordered[index], ordered[target] = ordered[target], ordered[index]
+
+        return self.db.update_task_orders(ordered)
+
     def pause_all(self) -> int:
         """
         暂停下载中及等待中的任务，批量操作期间停止自动调度。

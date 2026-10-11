@@ -8,12 +8,14 @@ import logging
 import os
 import subprocess
 import threading
+import tkinter
 from collections import deque
 from queue import Empty, SimpleQueue
-from tkinter import messagebox, filedialog, PhotoImage
+from tkinter import messagebox, filedialog, PhotoImage, Menu
 from typing import Dict
 from downloader.core.task_manager import TaskManager
-from downloader.utils.file_utils import format_speed, format_progress_texts
+from downloader.utils.file_utils import (format_speed, format_progress_texts, guess_file_category,
+                                        FILE_CATEGORY_LABELS)
 from downloader.utils.url_utils import extract_clipboard_url, host_from_url, host_is_ignored
 from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
@@ -21,6 +23,16 @@ from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 
 
 logger = logging.getLogger(__name__)
+
+
+# 侧栏原生控件的配色（与 CustomTkinter 默认主题的 CTkFrame/CTkLabel 对齐）。
+# 分类项数以十计且每个主窗口都会重建，用原生 Label 才能避开 CTk 控件的 canvas/字体开销。
+SIDEBAR_PALETTE = {
+    'light': {'bg': '#dbdbdb', 'fg': '#1a1a1a', 'muted': '#4a4a4a',
+              'hover': '#c9c9c9', 'selected': '#b9b9b9'},
+    'dark': {'bg': '#2b2b2b', 'fg': '#dce4ee', 'muted': '#a0a0a0',
+             'hover': '#3a3a3a', 'selected': '#4f4f4f'},
+}
 
 
 class MainWindow(ctk.CTk):
@@ -61,9 +73,12 @@ class MainWindow(ctk.CTk):
         y = max(0, (screen_h - win_h) // 2)
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
-        # 设置主题
-        ctk.set_appearance_mode("dark")
+        # 设置主题（深色/浅色/跟随系统，来自配置）
+        ctk.set_appearance_mode(self.task_manager.engine.config.ui_appearance_mode)
         ctk.set_default_color_theme("blue")
+
+        # 左侧分类树当前选中项（all / status:xxx / type:xxx / host:xxx，持久化）
+        self._active_category = self.task_manager.engine.config.ui_active_category
 
         # 创建UI
         self._create_ui()
@@ -92,6 +107,24 @@ class MainWindow(ctk.CTk):
         except Exception:
             self._clipboard_last_seen = None
         self.after(1000, self._poll_clipboard)
+
+        # 侧栏用原生控件，不会跟着 CTk 自动重绘；这里兜底监听外观模式变化，
+        # 不管主题是哪条路径改的，最多 0.5 秒后侧栏颜色都会跟上。
+        self._last_appearance_mode = ctk.get_appearance_mode()
+        self.after(500, self._watch_appearance_mode)
+
+    def _watch_appearance_mode(self):
+        """外观模式变化兜底：确保侧栏原生控件始终跟随当前主题"""
+        try:
+            if not self.winfo_exists():
+                return
+            current = ctk.get_appearance_mode()
+            if current != self._last_appearance_mode:
+                self._last_appearance_mode = current
+                self._retheme_sidebar()
+            self.after(500, self._watch_appearance_mode)
+        except Exception:
+            return  # 窗口已销毁，停表
 
     def _init_tray(self):
         """初始化系统托盘"""
@@ -169,9 +202,26 @@ class MainWindow(ctk.CTk):
         history_btn = ctk.CTkButton(toolbar, text="📜 历史", command=self._on_history, width=100)
         history_btn.pack(side="right", padx=5)
 
+        # 主体：左侧分类树 + 右侧任务区
+        content = ctk.CTkFrame(self, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # 分类项数量有限（状态+类型+站点），用普通 Frame 即可；
+        # 侧栏不用 CTkScrollableFrame：它会在每次创建/销毁窗口时反复注册全局鼠标滚轮绑定，
+        # 大量测试窗口累积后会拖慢整个 Tk 事件循环（实测让 GUI 测试从 120s 劣化到 530s）。
+        self.sidebar_frame = ctk.CTkFrame(content, width=210)
+        self.sidebar_frame.pack(side="left", fill="y", padx=(0, 8))
+        self.sidebar_frame.pack_propagate(False)
+
+        right_frame = ctk.CTkFrame(content, fg_color="transparent")
+        right_frame.pack(side="left", fill="both", expand=True)
+
+        # 左侧分类：状态 / 类型 / 站点
+        self._build_sidebar()
+
         # 过滤行：搜索 + 隐藏已完成
-        filter_frame = ctk.CTkFrame(self, fg_color="transparent")
-        filter_frame.pack(fill="x", padx=10, pady=(0, 5))
+        filter_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        filter_frame.pack(fill="x", pady=(0, 5))
 
         self.search_entry = ctk.CTkEntry(filter_frame, width=240, placeholder_text="搜索文件名或链接")
         self.search_entry.pack(side="left")
@@ -191,8 +241,8 @@ class MainWindow(ctk.CTk):
         self.filter_hint_label.pack(side="right", padx=5)
 
         # 任务列表区域（使用Scrollable Frame）
-        self.task_list_frame = ctk.CTkScrollableFrame(self, label_text="下载任务列表")
-        self.task_list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.task_list_frame = ctk.CTkScrollableFrame(right_frame, label_text="下载任务列表")
+        self.task_list_frame.pack(fill="both", expand=True)
 
         # 空态提示：由 _apply_task_filter 统一控制显示
         self.empty_label = ctk.CTkLabel(self.task_list_frame, text="暂无任务", text_color="gray")
@@ -204,6 +254,162 @@ class MainWindow(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(self.status_bar, text="总速度: 0 KB/s | 剩余任务: 0")
         self.status_label.pack(side="left", padx=10)
+
+    # ==================== 左侧分类树 ====================
+
+    def _build_sidebar(self):
+        """分类树：状态 / 类型 / 站点（站点分组随任务动态重建）
+
+        分类项用原生 tkinter.Label：侧栏项多，而每个主窗口都会重建它们。
+        CTk 控件自带的 canvas / 字体 / hover 动画在反复创建上千次后会拖慢整个
+        Tk 事件循环（实测把 GUI 测试从 120s 劣化到 530s），原生 Label 没这个问题。
+        """
+        self.category_buttons = {}
+        self.category_labels = {}
+        self._host_buttons = {}
+        self._known_hosts = []
+        self._sidebar_heading_labels = []
+        self._sidebar_colors_cache = self._sidebar_palette()
+
+        self._create_sidebar_heading("分类")
+        self._create_sidebar_heading("状态")
+        for key, text in (("all", "全部"), ("status:downloading", "下载中"),
+                          ("status:pending", "等待中"), ("status:completed", "已完成"),
+                          ("status:failed", "失败")):
+            self._create_category_button(self.sidebar_frame, key, text)
+
+        self._create_sidebar_heading("类型")
+        for category, label in FILE_CATEGORY_LABELS.items():
+            self._create_category_button(self.sidebar_frame, f"type:{category}", label)
+
+        self._create_sidebar_heading("站点")
+        self.host_section_frame = tkinter.Frame(self.sidebar_frame, bd=0, highlightthickness=0,
+                                                bg=self._sidebar_colors_cache['bg'])
+        self.host_section_frame.pack(fill="x")
+
+    @staticmethod
+    def _sidebar_palette() -> dict:
+        """取当前主题对应的侧栏配色（原生控件不吃 CTk 的 (light, dark) 元组）"""
+        dark = ctk.get_appearance_mode() == 'Dark'
+        return dict(SIDEBAR_PALETTE['dark' if dark else 'light'])
+
+    def _create_sidebar_heading(self, text: str):
+        """侧栏分组标题（原生 Label，字号对齐右侧正文）"""
+        colors = self._sidebar_colors_cache
+        label = tkinter.Label(self.sidebar_frame, text=text, anchor="w", padx=8, pady=2,
+                              bg=colors['bg'], fg=colors['muted'], font=("Arial", 14, "bold"))
+        label.pack(fill="x", pady=(8, 1))
+        self._sidebar_heading_labels.append(label)
+        return label
+
+    def _create_category_button(self, parent, key: str, text: str):
+        """创建一个分类项（原生 Label，点击过滤，hover/选中换底色）"""
+        colors = self._sidebar_colors_cache
+        item = tkinter.Label(parent, text=text, anchor="w", padx=12, pady=4,
+                             bg=colors['bg'], fg=colors['fg'], cursor="hand2",
+                             font=("Arial", 14))
+        item.pack(fill="x")
+        item.bind("<Button-1>", lambda _event, k=key: self._on_category_select(k))
+        item.bind("<Enter>", lambda _event, widget=item: self._on_category_hover(widget, True))
+        item.bind("<Leave>", lambda _event, widget=item: self._on_category_hover(widget, False))
+        self.category_buttons[key] = item
+        self.category_labels[key] = text
+        self._set_category_selected(key, key == self._active_category)
+        return item
+
+    def _on_category_hover(self, widget, entering: bool):
+        """hover 只影响未选中项，免得选中态被鼠标扫过就丢了"""
+        key = next((key for key, item in self.category_buttons.items() if item is widget), None)
+        if key is None or key == self._active_category:
+            return
+        widget.configure(bg=self._sidebar_colors_cache['hover' if entering else 'bg'])
+
+    def _set_category_selected(self, key: str, selected: bool):
+        """分类项选中态：选中项用实底色，其余透明"""
+        item = self.category_buttons.get(key)
+        if item is None or not item.winfo_exists():
+            return
+        item.configure(bg=self._sidebar_colors_cache['selected' if selected else 'bg'])
+
+    def _retheme_sidebar(self):
+        """主题切换后刷新侧栏颜色（CTk 控件会自己重绘，原生控件不会）"""
+        self._sidebar_colors_cache = self._sidebar_palette()
+        self._last_appearance_mode = ctk.get_appearance_mode()
+        colors = self._sidebar_colors_cache
+        for label in self._sidebar_heading_labels:
+            if label.winfo_exists():
+                label.configure(bg=colors['bg'], fg=colors['muted'])
+        if getattr(self, 'host_section_frame', None) is not None and self.host_section_frame.winfo_exists():
+            self.host_section_frame.configure(bg=colors['bg'])
+        for key, item in self.category_buttons.items():
+            if item.winfo_exists():
+                item.configure(bg=colors['bg'], fg=colors['fg'])
+                self._set_category_selected(key, key == self._active_category)
+
+    def _on_category_select(self, key: str):
+        """切换分类：持久化选中项并即时过滤"""
+        if key == self._active_category:
+            return
+        self._active_category = key
+        config = self.task_manager.engine.config
+        config.ui_active_category = key
+        config.save()
+        for existing_key in list(self.category_buttons):
+            self._set_category_selected(existing_key, existing_key == key)
+        self._apply_task_filter()
+
+    def _refresh_sidebar(self):
+        """同步分类树的计数与站点分组（任务增删、状态变更后调用）"""
+        self._refresh_host_section()
+
+        counts = {'all': len(self.task_widgets)}
+        for widgets in self.task_widgets.values():
+            status = widgets.get('status')
+            status_key = None
+            if status == 'downloading':
+                status_key = 'status:downloading'
+            elif status == 'pending':
+                status_key = 'status:pending'
+            elif status == 'completed':
+                status_key = 'status:completed'
+            elif status in ('failed', 'verify_failed', 'cancelled'):
+                status_key = 'status:failed'
+            if status_key:
+                counts[status_key] = counts.get(status_key, 0) + 1
+
+            type_key = f"type:{widgets.get('category') or 'other'}"
+            counts[type_key] = counts.get(type_key, 0) + 1
+            if widgets.get('host'):
+                host_key = f"host:{widgets['host']}"
+                counts[host_key] = counts.get(host_key, 0) + 1
+
+        for key, button in self.category_buttons.items():
+            label = self.category_labels.get(key)
+            if label is None or not button.winfo_exists():
+                continue
+            button.configure(text=f"{label} ({counts.get(key, 0)})")
+
+    def _refresh_host_section(self):
+        """站点分组按当前任务动态重建；选中的站点没任务了则回退到「全部」"""
+        hosts = sorted({widgets['host'] for widgets in self.task_widgets.values() if widgets.get('host')})
+        if hosts == self._known_hosts:
+            return
+        self._known_hosts = hosts
+
+        for button in self._host_buttons.values():
+            button.destroy()
+        self._host_buttons = {}
+        for key in [key for key in self.category_buttons if key.startswith('host:')]:
+            del self.category_buttons[key]
+            self.category_labels.pop(key, None)
+
+        for host in hosts:
+            self._host_buttons[host] = self._create_category_button(
+                self.host_section_frame, f"host:{host}", host)
+
+        if self._active_category.startswith('host:') and self._active_category not in self.category_buttons:
+            # 选中的站点已经没任务了，回退到「全部」，别让列表一直空着
+            self._on_category_select('all')
 
     def _on_add_task(self):
         """添加任务对话框（支持多行批量）"""
@@ -372,6 +578,13 @@ class MainWindow(ctk.CTk):
 
         # 恢复默认设置可能把隐藏已完成改回关，勾选框得跟着配置走
         self.hide_completed_var.set(config.ui_hide_completed)
+        # 主题与分类选中项同理：恢复默认后界面要跟配置一致
+        ctk.set_appearance_mode(config.ui_appearance_mode)
+        self._retheme_sidebar()
+        if self._active_category != config.ui_active_category:
+            self._active_category = config.ui_active_category
+            for key in list(self.category_buttons):
+                self._set_category_selected(key, key == self._active_category)
         self._apply_task_filter()
 
     def _on_history(self):
@@ -404,6 +617,7 @@ class MainWindow(ctk.CTk):
 
         # 没有任务时上面的回调一个都不会跑，这里补一次，把空态和“显示 N / M”初始化
         self._apply_task_filter()
+        self._refresh_sidebar()
 
     def _add_task_widget(self, task: Dict):
         """添加任务UI组件"""
@@ -479,6 +693,8 @@ class MainWindow(ctk.CTk):
 
         # 双击卡片空白处打开详情窗（按钮区不绑，避免和单击命令打架）
         self._bind_task_double_click(task_frame, task_id)
+        # 右键菜单：开始/暂停、打开、复制链接、上移/置顶、删除
+        self._bind_task_right_click(task_frame, task_id)
 
         # 保存widget引用
         self.task_widgets[task_id] = {
@@ -496,9 +712,14 @@ class MainWindow(ctk.CTk):
             'filename': task.get('filename') or '',
             'url': task.get('url') or '',
             'status': task.get('status') or 'pending',
+            # 分类树用：文件类型与站点；visible 由 _apply_task_filter 维护
+            'category': guess_file_category(task.get('filename') or ''),
+            'host': host_from_url(task.get('url') or ''),
+            'visible': True,
         }
 
         self._apply_task_filter()
+        self._refresh_sidebar()
 
     def _bind_task_double_click(self, widget, task_id: str):
         """递归绑定双击打开详情窗；按钮/勾选框跳过，避免和单击命令打架"""
@@ -715,6 +936,7 @@ class MainWindow(ctk.CTk):
                 self.task_widgets[task_id]['frame'].destroy()
                 del self.task_widgets[task_id]
                 self._apply_task_filter()
+                self._refresh_sidebar()
 
     def _on_open_location(self, task_id: str):
         """打开文件位置（Windows资源管理器定位文件）"""
@@ -741,6 +963,94 @@ class MainWindow(ctk.CTk):
                 messagebox.showerror("错误", "保存目录不存在！")
         except Exception as e:
             messagebox.showerror("错误", f"打开文件位置失败: {e}")
+
+    # ==================== 任务右键菜单与手动排序 ====================
+
+    def _bind_task_right_click(self, widget, task_id: str):
+        """递归绑定右键菜单；CTk 控件的 bind 会转发到内部画布，所以不再深入其子控件"""
+        if isinstance(widget, (ctk.CTkButton, ctk.CTkCheckBox)):
+            return
+        widget.bind("<Button-3>", lambda event, tid=task_id: self._show_task_menu(event, tid), add="+")
+        if isinstance(widget, ctk.CTkFrame):
+            for child in widget.winfo_children():
+                self._bind_task_right_click(child, task_id)
+
+    def _copy_task_url(self, url: str):
+        """复制链接到剪贴板；先记为已见，免得自己触发的监视又弹一次提示"""
+        if not url:
+            return
+        self._clipboard_last_seen = url
+        self.clipboard_clear()
+        self.clipboard_append(url)
+
+    def _open_task_file(self, save_path: str):
+        """打开已下载的文件"""
+        try:
+            if save_path and os.path.exists(save_path):
+                os.startfile(save_path)
+        except Exception as e:
+            messagebox.showerror("错误", f"打开文件失败: {e}")
+
+    def _build_task_menu(self, task_id: str):
+        """构建任务右键菜单（按状态与文件是否存在启用菜单项）"""
+        menu = Menu(self, tearoff=0)
+        widgets = self.task_widgets.get(task_id)
+        if widgets is None:
+            return menu
+
+        status = widgets.get('status')
+        if status == 'downloading':
+            menu.add_command(label="⏸ 暂停", command=lambda: self._on_pause_task(task_id))
+        else:
+            startable = status in ('pending', 'paused', 'failed', 'verify_failed', 'cancelled')
+            menu.add_command(label="▶ 开始下载", command=lambda: self._on_start_task(task_id),
+                             state="normal" if startable else "disabled")
+
+        task = self.task_manager.get_task(task_id) or {}
+        save_path = task.get('save_path') or ''
+        menu.add_command(label="📂 打开文件", command=lambda: self._open_task_file(save_path),
+                         state="normal" if save_path and os.path.exists(save_path) else "disabled")
+        menu.add_command(label="📁 打开所在文件夹", command=lambda: self._on_open_location(task_id),
+                         state="normal" if save_path else "disabled")
+        menu.add_separator()
+        menu.add_command(label="🔗 复制下载链接", command=lambda: self._copy_task_url(widgets.get('url') or ''))
+        menu.add_separator()
+        index = list(self.task_widgets).index(task_id)
+        menu.add_command(label="⬆ 上移", command=lambda: self._on_move_task(task_id, 'up'),
+                         state="normal" if index > 0 else "disabled")
+        menu.add_command(label="⏫ 置顶", command=lambda: self._on_move_task(task_id, 'top'),
+                         state="normal" if index > 0 else "disabled")
+        menu.add_separator()
+        menu.add_command(label="🗑 删除任务", command=lambda: self._on_delete_task(task_id))
+        return menu
+
+    def _show_task_menu(self, event, task_id: str):
+        """在鼠标位置弹出任务菜单"""
+        menu = self._build_task_menu(task_id)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _on_move_task(self, task_id: str, direction: str):
+        """上移/置顶：先写库，再按新顺序重排卡片"""
+        if direction == 'top':
+            moved = self.task_manager.move_task_to_top(task_id)
+        else:
+            moved = self.task_manager.move_task_up(task_id)
+        if not moved:
+            return
+        self._sync_task_order()
+
+    def _sync_task_order(self):
+        """从数据库读回顺序并重排 Tk 卡片（task_widgets 的顺序即显示顺序）"""
+        ordered_ids = [task['task_id'] for task in self.task_manager.get_all_tasks()]
+        ordered = {tid: self.task_widgets[tid] for tid in ordered_ids if tid in self.task_widgets}
+        for tid, widgets in self.task_widgets.items():
+            ordered.setdefault(tid, widgets)
+        self.task_widgets = ordered
+        self._relayout_task_widgets()
+        self._apply_task_filter()
 
     def _handle_download_completed(self, task_id: str):
         """下载完成后动作：打开文件/所在文件夹、全部完成后关机（默认全关）"""
@@ -852,6 +1162,7 @@ class MainWindow(ctk.CTk):
         self._push_detail_status(task_id, status)
 
         self._apply_task_filter()
+        self._refresh_sidebar()
 
     def _update_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """更新任务进度UI"""
@@ -907,31 +1218,71 @@ class MainWindow(ctk.CTk):
         self._apply_task_filter()
 
     def _apply_task_filter(self):
-        """按搜索词与“隐藏已完成”统一控制任务行显示"""
+        """按分类、搜索词与“隐藏已完成”统一控制任务行显示"""
         keyword = self.search_entry.get().strip().lower()
         hide_completed = bool(self.hide_completed_var.get())
         visible = 0
+        changed = False
 
         for widgets in self.task_widgets.values():
-            matched = not keyword or keyword in widgets['filename'].lower() or keyword in widgets['url'].lower()
-            if hide_completed and widgets['status'] == 'completed':
-                matched = False
-
-            frame = widgets['frame']
+            matched = self._task_matches_filter(widgets, keyword, hide_completed)
             if matched:
-                if not frame.winfo_manager():
-                    frame.pack(fill="x", pady=5)
                 visible += 1
-            elif frame.winfo_manager():
-                frame.pack_forget()
+            if matched != widgets.get('visible', True):
+                changed = True
+            widgets['visible'] = matched
+
+        # 只在显隐变化时重排，避免每敲一个搜索字符都把整个列表拆了重装
+        if changed:
+            self._relayout_task_widgets()
 
         if visible == 0:
-            self.empty_label.configure(text="没有匹配的任务" if (keyword or hide_completed) else "暂无任务")
+            has_condition = bool(keyword) or hide_completed or (self._active_category or 'all') != 'all'
+            self.empty_label.configure(text="没有匹配的任务" if has_condition else "暂无任务")
             self.empty_label.pack(pady=20)
         elif self.empty_label.winfo_manager():
             self.empty_label.pack_forget()
 
         self.filter_hint_label.configure(text=f"显示 {visible} / {len(self.task_widgets)}")
+
+    def _task_matches_filter(self, widgets: Dict, keyword: str, hide_completed: bool) -> bool:
+        """单条任务的过滤判定：分类 + 搜索 + 隐藏已完成"""
+        if hide_completed and widgets.get('status') == 'completed':
+            return False
+        if keyword and keyword not in widgets.get('filename', '').lower() \
+                and keyword not in widgets.get('url', '').lower():
+            return False
+        return self._task_matches_category(widgets)
+
+    def _task_matches_category(self, widgets: Dict) -> bool:
+        """分类树命中判定：'all' / 'status:xxx' / 'type:xxx' / 'host:xxx'"""
+        key = self._active_category or 'all'
+        if key == 'all':
+            return True
+        kind, _, value = key.partition(':')
+        if kind == 'status':
+            if value == 'failed':
+                return widgets.get('status') in ('failed', 'verify_failed', 'cancelled')
+            return widgets.get('status') == value
+        if kind == 'type':
+            return (widgets.get('category') or 'other') == value
+        if kind == 'host':
+            return widgets.get('host') == value
+        return True
+
+    def _relayout_task_widgets(self):
+        """按 self.task_widgets 的顺序重排卡片（pack 顺序就是显示顺序）"""
+        if self.empty_label.winfo_manager():
+            self.empty_label.pack_forget()
+        for widgets in self.task_widgets.values():
+            frame = widgets['frame']
+            if frame.winfo_manager():
+                frame.pack_forget()
+        for widgets in self.task_widgets.values():
+            if widgets.get('visible', True):
+                widgets['frame'].pack(fill="x", pady=5)
+        if not any(widgets.get('visible', True) for widgets in self.task_widgets.values()):
+            self.empty_label.pack(pady=20)
 
     @staticmethod
     def _get_status_text(status: str) -> str:

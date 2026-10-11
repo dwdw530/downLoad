@@ -71,7 +71,8 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     started_at TIMESTAMP,
                     completed_at TIMESTAMP,
-                    error_message TEXT
+                    error_message TEXT,
+                    list_order REAL DEFAULT 0
                 )
             ''')
 
@@ -127,6 +128,10 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE download_tasks ADD COLUMN download_type TEXT DEFAULT 'file'")
             if 'video_height' not in columns:
                 cursor.execute('ALTER TABLE download_tasks ADD COLUMN video_height INTEGER DEFAULT 720')
+            if 'list_order' not in columns:
+                # 手动排序用的列表顺序：老库按原顺序（created_at 升序）回填，保证升级后列表不变
+                cursor.execute('ALTER TABLE download_tasks ADD COLUMN list_order REAL DEFAULT 0')
+                cursor.execute('UPDATE download_tasks SET list_order = rowid WHERE list_order IS NULL OR list_order = 0')
 
             conn.commit()
             conn.close()
@@ -148,9 +153,10 @@ class DatabaseManager:
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT INTO download_tasks
-                        (task_id, url, filename, save_path, total_size, support_range, thread_count)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0, thread_count))
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count, list_order)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0,
+                          thread_count, self._next_list_order(cursor)))
                 return True
             except Exception as e:
                 logger.error("创建任务失败: %s", e)
@@ -179,10 +185,10 @@ class DatabaseManager:
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT INTO download_tasks
-                        (task_id, url, filename, save_path, total_size, support_range, thread_count, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (task_id, url, filename, save_path, total_size, support_range, thread_count, status, list_order)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0,
-                          thread_count, status))
+                          thread_count, status, self._next_list_order(cursor)))
 
                     if download_type in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
                         cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
@@ -230,7 +236,7 @@ class DatabaseManager:
 
     def get_all_tasks(self, status: Optional[str] = None) -> List[Dict]:
         """
-        获取所有任务
+        获取所有任务（按手动排序顺序，未调整时等于创建时间升序）
         Args:
             status: 可选，筛选特定状态的任务
         """
@@ -240,10 +246,11 @@ class DatabaseManager:
                 conn = self._get_connection()
                 cursor = conn.cursor()
                 if status:
-                    # 艹，队列必须FIFO，按创建时间升序取任务，不然越新的越先跑
-                    cursor.execute('SELECT * FROM download_tasks WHERE status = ? ORDER BY created_at ASC', (status,))
+                    # 艹，队列必须FIFO，按列表顺序取任务，不然越新的越先跑
+                    cursor.execute('SELECT * FROM download_tasks WHERE status = ? '
+                                   'ORDER BY list_order ASC, created_at ASC', (status,))
                 else:
-                    cursor.execute('SELECT * FROM download_tasks ORDER BY created_at ASC')
+                    cursor.execute('SELECT * FROM download_tasks ORDER BY list_order ASC, created_at ASC')
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
             finally:
@@ -400,6 +407,39 @@ class DatabaseManager:
             except Exception as e:
                 logger.error("删除任务失败: %s", e)
                 return False
+
+    @staticmethod
+    def _next_list_order(cursor) -> float:
+        """下一个列表顺序：追加到末尾，不动已有任务"""
+        row = cursor.execute('SELECT COALESCE(MAX(list_order), 0) + 1 AS next_order FROM download_tasks').fetchone()
+        return float(row['next_order']) if row else 1.0
+
+    def update_task_orders(self, ordered_task_ids: List[str]) -> bool:
+        """
+        按给定顺序批量重写 list_order（1..N，单事务提交）
+        Args:
+            ordered_task_ids: 目标顺序的任务ID列表
+        Returns:
+            True表示保存成功
+        """
+        if not ordered_task_ids:
+            return True
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                with conn:
+                    conn.cursor().executemany(
+                        'UPDATE download_tasks SET list_order = ? WHERE task_id = ?',
+                        [(index + 1, task_id) for index, task_id in enumerate(ordered_task_ids)],
+                    )
+                return True
+            except Exception as e:
+                logger.error("保存任务排序失败: %s", e)
+                return False
+            finally:
+                if conn:
+                    conn.close()
 
     # ==================== 分块表操作 ====================
 

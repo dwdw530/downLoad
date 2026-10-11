@@ -2,6 +2,7 @@
 import hashlib
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -15,7 +16,7 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.utils.file_utils import format_remaining
+from downloader.utils.file_utils import format_remaining, guess_file_category
 from test_download_regressions import DownloadHandler, PAYLOAD
 
 
@@ -261,6 +262,113 @@ class FormatRemainingTests(unittest.TestCase):
 
     def test_completed_download_has_no_remaining_time(self):
         self.assertEqual(format_remaining(0, 1024 * 1024), '--')
+
+
+class FileCategoryTests(unittest.TestCase):
+    """左侧分类树的文件类型判定"""
+
+    def test_known_extensions_map_to_their_category(self):
+        cases = {
+            'movie.MP4': 'video', 'clip.webm': 'video',
+            'song.mp3': 'audio', 'track.FLAC': 'audio',
+            'book.pdf': 'document', 'notes.txt': 'document',
+            'pack.tar.gz': 'archive', 'image.iso': 'archive',
+            'setup.exe': 'program', 'app.MSI': 'program',
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(guess_file_category(filename), expected)
+
+    def test_unknown_or_missing_extension_is_other(self):
+        for filename in ('README', '', None, 'data.unknown', 'archive.001'):
+            with self.subTest(filename=filename):
+                self.assertEqual(guess_file_category(filename), 'other')
+
+
+class AppearanceConfigTests(unittest.TestCase):
+    """主题模式配置：只接受 dark/light/system"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='downloader-appearance-')
+        self.config = ConfigManager(str(Path(self.temp.name) / 'config.json'))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_valid_modes_round_trip_and_persist(self):
+        for mode in ('light', 'system', 'dark'):
+            self.config.ui_appearance_mode = mode
+            self.assertEqual(self.config.ui_appearance_mode, mode)
+            self.assertTrue(self.config.save())
+            self.assertEqual(ConfigManager(self.config.config_path).ui_appearance_mode, mode)
+
+    def test_invalid_mode_falls_back_to_dark(self):
+        self.config.ui_appearance_mode = 'neon'
+        self.assertEqual(self.config.ui_appearance_mode, 'dark')
+
+
+class TaskOrderTests(FeatureFixture):
+    """手动排序：列表顺序落库并驱动 pending 出队顺序（不真跑下载）"""
+
+    def _create_tasks(self, count=3):
+        for index in range(count):
+            self.db.create_task_with_chunks(
+                f'task-{index}', f'http://example.com/{index}.bin',
+                f'{index}.bin', str(self.root / f'{index}.bin'))
+
+    def _ids(self):
+        return [task['task_id'] for task in self.db.get_all_tasks()]
+
+    def test_new_tasks_append_in_creation_order(self):
+        self._create_tasks(3)
+        self.assertEqual(self._ids(), ['task-0', 'task-1', 'task-2'])
+
+    def test_move_task_up_swaps_with_previous_only(self):
+        self._create_tasks(3)
+        self.assertTrue(self.manager.move_task_up('task-2'))
+        self.assertEqual(self._ids(), ['task-0', 'task-2', 'task-1'])
+        self.assertFalse(self.manager.move_task_up('task-0'))
+        self.assertFalse(self.manager.move_task_up('missing-task'))
+
+    def test_move_task_to_top_drives_pending_queue(self):
+        self._create_tasks(3)
+        self.assertTrue(self.manager.move_task_to_top('task-2'))
+        self.assertEqual(self._ids(), ['task-2', 'task-0', 'task-1'])
+        self.assertEqual(self.manager.get_pending_tasks()[0]['task_id'], 'task-2')
+        self.assertFalse(self.manager.move_task_to_top('task-2'))
+
+    def test_order_survives_database_reopen(self):
+        self._create_tasks(3)
+        self.manager.move_task_to_top('task-1')
+        reopened = DatabaseManager(str(self.root / 'downloads.db'))
+        self.assertEqual([task['task_id'] for task in reopened.get_all_tasks()],
+                         ['task-1', 'task-0', 'task-2'])
+
+    def test_legacy_database_backfills_order_without_reordering(self):
+        # 老库没有 list_order 列：升级后必须按原创建顺序回填，新任务仍旧追加在末尾
+        legacy_path = self.root / 'legacy.db'
+        connection = sqlite3.connect(legacy_path)
+        connection.execute('''
+            CREATE TABLE download_tasks (
+                task_id TEXT PRIMARY KEY, url TEXT NOT NULL, filename TEXT NOT NULL, save_path TEXT NOT NULL,
+                total_size INTEGER DEFAULT 0, downloaded_size INTEGER DEFAULT 0, status TEXT DEFAULT 'pending',
+                support_range INTEGER DEFAULT 1, thread_count INTEGER DEFAULT 8, speed REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, started_at TIMESTAMP,
+                completed_at TIMESTAMP, error_message TEXT
+            )
+        ''')
+        connection.execute("INSERT INTO download_tasks (task_id, url, filename, save_path) "
+                          "VALUES ('old-1', 'http://example.com/1.bin', '1.bin', 'p1')")
+        connection.execute("INSERT INTO download_tasks (task_id, url, filename, save_path) "
+                          "VALUES ('old-2', 'http://example.com/2.bin', '2.bin', 'p2')")
+        connection.commit()
+        connection.close()
+
+        legacy_db = DatabaseManager(str(legacy_path))
+        self.assertEqual([task['task_id'] for task in legacy_db.get_all_tasks()], ['old-1', 'old-2'])
+        legacy_db.create_task_with_chunks('new-1', 'http://example.com/3.bin', '3.bin', 'p3')
+        self.assertEqual([task['task_id'] for task in legacy_db.get_all_tasks()],
+                         ['old-1', 'old-2', 'new-1'])
 
 
 if __name__ == '__main__':

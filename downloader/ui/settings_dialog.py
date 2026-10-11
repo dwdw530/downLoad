@@ -9,6 +9,11 @@ from typing import Callable, Optional
 from downloader.utils.config import ConfigManager
 
 
+# 主题模式：配置值 <-> 界面标签（保证顺序：深色/浅色/跟随系统）
+APPEARANCE_LABELS = {"dark": "深色", "light": "浅色", "system": "跟随系统"}
+APPEARANCE_VALUE_BY_LABEL = {label: value for value, label in APPEARANCE_LABELS.items()}
+
+
 class SettingsDialog(ctk.CTkToplevel):
     """设置对话框"""
 
@@ -26,7 +31,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("520x680")  # 加高给代理、完成后动作和剪贴板监视腾位置
+        self.geometry("520x730")  # 加高给代理、完成后动作、剪贴板监视和主题腾位置
         self.resizable(False, False)
 
         # 模态对话框
@@ -172,6 +177,18 @@ class SettingsDialog(ctk.CTkToplevel):
         self.ignore_hosts_textbox = ctk.CTkTextbox(clipboard_frame, width=300, height=70)
         self.ignore_hosts_textbox.pack(anchor="w")
 
+        # ========== 外观主题 ==========
+        appearance_label = ctk.CTkLabel(main_frame, text="主题:", font=("Arial", 12))
+        appearance_label.grid(row=8, column=0, sticky="w", pady=10)
+
+        appearance_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        appearance_frame.grid(row=8, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+
+        self.appearance_segment = ctk.CTkSegmentedButton(
+            appearance_frame, values=list(APPEARANCE_LABELS.values()), width=300)
+        self.appearance_segment.pack(anchor="w")
+        self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
+
         # 按钮区域
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(fill="x", padx=20, pady=10)
@@ -214,6 +231,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
         self.ignore_hosts_textbox.delete("1.0", "end")
         self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
+        # 外观主题
+        self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
 
     def _browse_directory(self):
         """浏览目录"""
@@ -288,6 +307,9 @@ class SettingsDialog(ctk.CTkToplevel):
             # 剪贴板监视（忽略站点由 setter 归一化：小写、去www.、去重）
             self.config.clipboard_monitor_enabled = bool(self.clipboard_monitor_var.get())
             self.config.clipboard_ignore_hosts = self.ignore_hosts_textbox.get("1.0", "end").splitlines()
+            # 外观主题（控件上是中文标签，落库用配置值）
+            appearance_mode = APPEARANCE_VALUE_BY_LABEL.get(self.appearance_segment.get(), "dark")
+            self.config.ui_appearance_mode = appearance_mode
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
@@ -308,6 +330,7 @@ class SettingsDialog(ctk.CTkToplevel):
                         'https': https_proxy,
                     },
                     'after_download': after_config,
+                    'appearance_mode': appearance_mode,
                 }
                 self.on_save_callback(runtime_settings)
 
@@ -357,4 +380,6 @@ class SettingsDialog(ctk.CTkToplevel):
             self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
             self.ignore_hosts_textbox.delete("1.0", "end")
             self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
+            # 外观主题重置
+            self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

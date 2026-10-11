@@ -49,6 +49,8 @@ class ConfigManager:
         "close_behavior": "ask",  # 关闭行为：ask|minimize|exit
         "speed_limit": 0,  # 速度限制（字节/秒），0表示不限速
         "ui_hide_completed": False,  # 任务列表是否隐藏已完成任务（搜索词不持久化）
+        "ui_active_category": "all",  # 左侧分类树当前选中项：all / status:xxx / type:xxx / host:xxx
+        "ui_appearance_mode": "dark",  # 主题：dark 深色 / light 浅色 / system 跟随系统
         "clipboard_monitor_enabled": True,  # 剪贴板监视：复制链接时弹出添加提示
         "clipboard_ignore_hosts": [],  # 剪贴板监视忽略的站点域名列表
         "after_download": {  # 下载完成后的动作，默认全部关闭
@@ -198,6 +200,26 @@ class ConfigManager:
     @ui_hide_completed.setter
     def ui_hide_completed(self, value: bool):
         self._config["ui_hide_completed"] = bool(value)
+
+    @property
+    def ui_active_category(self) -> str:
+        """左侧分类树当前选中项（空值回退到「全部」）"""
+        return self._config.get("ui_active_category") or "all"
+
+    @ui_active_category.setter
+    def ui_active_category(self, value: str):
+        self._config["ui_active_category"] = value or "all"
+
+    @property
+    def ui_appearance_mode(self) -> str:
+        """主题模式：dark / light / system（无法识别的值回退到 dark）"""
+        mode = self._config.get("ui_appearance_mode") or "dark"
+        return mode if mode in ("dark", "light", "system") else "dark"
+
+    @ui_appearance_mode.setter
+    def ui_appearance_mode(self, value: str):
+        mode = value if value in ("dark", "light", "system") else "dark"
+        self._config["ui_appearance_mode"] = mode
 
     # ==================== 剪贴板监视 ====================
 

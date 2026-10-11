@@ -6,7 +6,7 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.5.0/daw-downloader-v0.5.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.6.0/daw-downloader-v0.6.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -19,8 +19,11 @@ Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoa
 ✅ **数据持久化** - SQLite存储，任务重启不丢失
 ✅ **批量添加** - 多行粘贴链接，一行一个，自动去重
 ✅ **任务筛选** - 按文件名/链接搜索，可隐藏已完成任务
+✅ **分类树** - 左侧按状态（下载中/等待/已完成/失败）、文件类型（视频/音频/文档/压缩包/程序/其他）和站点分组筛选，带数量统计
+✅ **右键菜单与手动排序** - 任务右键可开始/暂停、打开文件或文件夹、复制链接、上移/置顶、删除
 ✅ **速度曲线** - 双击任务卡片弹出详情窗，实时查看最近 3 分钟的速度走势
 ✅ **剪贴板监视** - 复制下载链接自动弹出提示（可开关、可忽略站点）
+✅ **主题切换** - 深色 / 浅色 / 跟随系统，在设置里切换并持久化
 ✅ **完成后动作** - 可设置下载完成后打开文件、打开所在文件夹或全部完成后关机（默认关闭）
 ✅ **简洁GUI** - 基于CustomTkinter，现代化界面
 
@@ -110,6 +113,9 @@ python main.py
 - 剩余时间只在下载中且速度大于 0 时显示，其它情况显示 `--`；总大小未知时显示 `X / 未知`
 - 列表上方可按 **文件名或链接** 搜索（不区分大小写，不支持通配符）
 - 勾选 **"隐藏已完成"** 后已完成任务不再显示，该选项会写入 `config.json` 的 `ui_hide_completed` 并在重启后保留；搜索词不保存
+- **左侧分类树**分三组：状态、文件类型（按扩展名判定）、站点（按链接主机名自动生成，含子域名）。括号里是当前数量，选中项会与搜索、「隐藏已完成」叠加生效，并写入 `config.json` 的 `ui_active_category`
+- **右键任务卡片**弹出菜单：开始/暂停、打开文件、打开所在文件夹、复制下载链接、上移、置顶、删除任务；不可用的项自动置灰
+- **上移/置顶**会改写任务列表顺序（落库的 `list_order`），重启后保留；等待中的任务按该顺序依次出队
 - **双击任务卡片**（文件名、进度条等空白区域）打开任务详情窗：状态、进度、已下载/总大小、剩余时间、当前/峰值/平均速度，以及最近约 3 分钟的实时速度曲线；曲线仅在程序运行期间记录，重启后清空
 
 ### 1.2 剪贴板监视
@@ -138,6 +144,7 @@ python main.py
 - 下载速度限制（每个任务的总速度，0表示不限速）
 - HTTP/HTTPS代理地址
 - 下载完成后动作：打开文件 / 打开所在文件夹 / 全部下载完成后关机（默认全部关闭，关机前弹 60 秒倒计时确认，关窗即取消）
+- 主题：**深色** / **浅色** / **跟随系统**（默认深色），保存后立即生效并写入配置
 
 ### 5. 关闭程序
 - 点击窗口右上角关闭会弹出 **退出确认**（居中显示、布局更紧凑）：可选择“最小化到任务栏（继续后台下载）”或“退出程序（停止所有下载）”
@@ -171,6 +178,7 @@ python main.py
 - 状态机：pending → downloading → verifying → completed / verify_failed；下载中可暂停为 paused 再继续，任意非完成状态可转为 cancelled 或 failed
 - 支持并发控制（默认同时下载3个任务）
 - 任务完成后自动启动队列中的下一个任务
+- 出队顺序按 `list_order`（未手动调整时等于创建时间升序），右键「上移/置顶」改写该字段
 
 ## 回归验证
 
@@ -216,6 +224,8 @@ python -B scripts/smoke_exe.py
     "close_behavior": "ask",
     "speed_limit": 0,
     "ui_hide_completed": false,
+    "ui_active_category": "all",
+    "ui_appearance_mode": "dark",
     "clipboard_monitor_enabled": true,
     "clipboard_ignore_hosts": [],
     "after_download": {
@@ -231,6 +241,8 @@ python -B scripts/smoke_exe.py
 `after_download` 控制下载完成后的动作，三项默认均为 `false`（不做任何动作）；只有校验通过（`completed`）才触发，校验失败（`verify_failed`）不触发。开启 `shutdown` 时，若队列里还有下载中/等待/校验中的任务，会等最后一个完成再弹出 60 秒倒计时确认框，点“取消”或直接关闭窗口都不会关机。
 
 `ui_hide_completed` 控制任务列表是否隐藏已完成任务，由主界面勾选框直接读写。
+
+`ui_active_category` 记录左侧分类树当前选中项（`all` / `status:xxx` / `type:xxx` / `host:xxx`），`ui_appearance_mode` 记录主题（`dark` / `light` / `system`），两者都由主界面或设置界面写入，重启后恢复。
 
 `clipboard_monitor_enabled` 控制剪贴板监视开关（默认开启）；`clipboard_ignore_hosts` 为忽略站点域名列表，由设置界面或弹窗的「忽略此站点」写入，保存前会自动归一化（小写、去 `www.`、去重）。
 
@@ -257,6 +269,7 @@ python -B scripts/smoke_exe.py
 - support_range: 是否支持断点续传
 - thread_count: 线程数
 - speed: 当前速度
+- list_order: 列表顺序（手动上移/置顶后改写；等待中的任务按该顺序出队）
 
 ### download_chunks（分块表）
 - chunk_id: 分块ID
@@ -307,7 +320,7 @@ pip install customtkinter
 - [ ] 自动分类（按文件类型分目录）
 - [ ] 计划任务（定时下载）
 
-> 代理、限速、下载历史、MD5/SHA256 校验、浏览器集成、系统托盘均已实现，详见上文「功能特性」与「设置」。
+> 代理、限速、下载历史、MD5/SHA256 校验、浏览器集成、系统托盘、分类树、右键菜单与排序、主题切换均已实现，详见上文「功能特性」与「设置」。
 
 ## 开源协议
 
