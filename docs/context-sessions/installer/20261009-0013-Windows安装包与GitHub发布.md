@@ -4,7 +4,7 @@
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
 - 更新时间：2026-10-11 +08:00（v0.6.1 下载安全与磁盘优化，构建及验收完成，发布进行中）
-- 状态：进行中（v0.6.1 安装包与便携包已构建验收；待源码提交、双分支推送、标签与新 Release 上传）
+- 状态：已完成（v0.6.1 已构建验收、提交推送、打标签并发布；五附件远端 digest 与本地一致）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
@@ -133,6 +133,14 @@
 - 实际安装验收报告 `output/installer-smoke/run-jo4xr9_v/result.json` 六组 PASS，结束后浏览器注册恢复、原 dist 用户数据哈希不变；便携 ZIP 白名单与 CRC 验证通过。
 - GitHub 发布前检查：远端 main/master 均为 `18d7ea7`、latest 为 v0.6.0，无 v0.6.1 标签/Release；通过仓库所有者凭据确认 push 权限。令牌只在内存与 curl 标准输入中使用，不写文件或仓库。
 - 待办：提交源码与日志、推送 main/master、新建 annotated v0.6.1 标签和 Release、上传五附件并核对远端 digest；随后在此补充实际提交及发布结果。
+
+### 发布结果（2026-10-11）
+
+- 发布提交 `ee28ca65495c96f8c476bfb9199757aaaade34c6`（`ee28ca6`）已推送 `master` 与 `master:main`，远端两分支同指向；annotated 标签 `v0.6.1`（tag 对象 `60d7b9ad8efa23916b3fb78a9ab1363f72ebb08d`）指向该提交。
+- Release id `409657977`，非 draft、非 prerelease，`latest` 已指向 v0.6.1；发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.6.1`，正文为 `docs/releases/v0.6.1.md`。
+- 远端附件与本地逐项一致：安装包 155,717,801 B / `23a90276…62954f`、安装包 `.sha256` 111 B / `fcaf7a45…f684db`、便携 ZIP 213,848,008 B / `bdacd3f5…a7783d5`、扩展 ZIP 17,768 B / `b0bdbb7b…f168682a`、`SHA256SUMS.txt` 205 B / `3057e60b…3af14ee`。
+- 发布前已核对远端 main/master 为 `18d7ea7`、latest 为 v0.6.0，且不存在 v0.6.1 标签或 Release；比对发布前 7 个历史 Release 的 id、标签、发布时间与附件清单，发布后未变。
+- 发布方式：`git credential fill` 取凭据管理器中仓库所有者账号令牌，经进程内变量与 curl 标准输入使用；未写入文件或仓库，临时发布脚本与响应体已删除。
 
 ## v0.6.0 发布（2026-10-11）
 
