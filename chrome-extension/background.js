@@ -56,6 +56,7 @@ chrome.webRequest.onHeadersReceived.addListener(details => {
 
 function clearFrame(details) {
   serial(details.tabId, async () => {
+    if (details.frameId === 0) await chrome.storage.session.remove(`api:${details.tabId}`);
     const items = details.frameId === 0 ? [] : (await getItems(details.tabId)).filter(i => i.frameId !== details.frameId);
     const frames = (await chrome.storage.session.get(`protected:${details.tabId}`))[`protected:${details.tabId}`] || [];
     await chrome.storage.session.set({[`protected:${details.tabId}`]: details.frameId === 0 ? [] : frames.filter(f => f !== details.frameId)});
@@ -66,7 +67,7 @@ function clearFrame(details) {
 }
 chrome.webNavigation.onCommitted.addListener(clearFrame);
 chrome.webNavigation.onHistoryStateUpdated.addListener(clearFrame);
-chrome.tabs.onRemoved.addListener(tabId => serial(tabId, () => chrome.storage.session.remove([keyFor(tabId), `protected:${tabId}`, `blob:${tabId}`])));
+chrome.tabs.onRemoved.addListener(tabId => serial(tabId, () => chrome.storage.session.remove([keyFor(tabId), `protected:${tabId}`, `blob:${tabId}`, `api:${tabId}`])));
 
 function native(message) {
   return new Promise(resolve => {
@@ -130,7 +131,7 @@ async function download(tabId, id, senderFrame) {
     let video;
     if (item.kind === "douyin") {
       const context = await chrome.tabs.sendMessage(tabId, {action: "douyinContext", videoUrl: item.url}, {frameId: item.frameId})
-        .catch(() => ({ok: false, error: "请刷新抖音视频详情页后重试"}));
+        .catch(() => ({ok: false, error: "请刷新抖音视频页后重试"}));
       if (!context.ok) return context;
       const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
       const current = douyinUrl(frame?.url);
@@ -156,6 +157,14 @@ async function download(tabId, id, senderFrame) {
     if (scopedContext) {
       const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
       const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
+      if (item.kind === "douyin") {
+        // Reading cookies/settings is asynchronous: a feed may switch after metadata was captured.
+        const selected = await chrome.tabs.sendMessage(tabId, {action: "douyinPost"}, {frameId: item.frameId}).catch(() => null);
+        if (selected?.postUrl !== item.url) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+        const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
+        if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
+        if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
+      }
       return native({action: "download", request_id: `${item.id}-${height}`, url: item.url,
         filename: item.name, kind: item.kind, height, headers, ...(video ? {video} : {}),
         cookies: ordinary.filter(cookie => cookie.name).map(({name, value, domain, path, secure, hostOnly}) => ({name, value, domain, path, secure, hostOnly}))});
@@ -218,14 +227,16 @@ async function handle(message, sender) {
     const onX = isXPage(page.url);
     const onDouyin = isDouyinPage(page.url);
     const biliUrl = bilibiliUrl(page.url);
+    const douyinPost = popup && onDouyin ? await chrome.tabs.sendMessage(tabId, {action: "douyinPost"}, {frameId: 0})
+      .catch(() => null) : null;
     const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl)
-      : onDouyin ? douyinUrl(popup ? page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
+      : onDouyin ? douyinUrl(popup ? douyinPost?.postUrl || page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
     const pageKind = onX ? "x" : onDouyin ? "douyin" : biliUrl ? "bilibili" : "youtube";
     if (pageUrl && await setting()) {
       await serial(tabId, async () => {
         const frameId = popup ? 0 : sender.frameId;
         const frames = (await chrome.storage.session.get(`protected:${tabId}`))[`protected:${tabId}`] || [];
-        const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
+        const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili", "douyin"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
         await saveItems(tabId, upsert(current, {id: crypto.randomUUID(), url: pageUrl,
           name: onX ? `X-${new URL(pageUrl).pathname.split("/status/")[1].replaceAll("/", "-")}`
             : onDouyin ? `抖音-${new URL(pageUrl).pathname.split("/")[2]}`
@@ -239,12 +250,12 @@ async function handle(message, sender) {
     const applies = frames => frames?.some(frame => popup || frame === sender.frameId);
     const emptyMessage = applies(states[`protected:${tabId}`]) ? "检测到受保护视频，本版不支持下载"
       : onX ? "未确认视频所属帖子，请打开该视频的帖子详情后重试"
-      : onDouyin ? "未确认当前视频，请打开该视频的详情页后重试"
+      : onDouyin ? "未确认当前视频，请先播放视频并完整刷新页面后重试"
       : applies(states[`blob:${tabId}`]) ? "检测到浏览器内视频源（blob），尚未获取可下载直链" : "当前页面尚未发现视频资源";
     const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
     return {ok: true, enabled: await setting(), emptyMessage, videoHeight,
       items: items.filter(i => (popup || i.frameId === sender.frameId) &&
-        (pageUrl ? i.kind === pageKind && i.url === pageUrl : onX || onDouyin ? popup && i.kind === pageKind : true)).map(publicItem)};
+        (pageUrl ? i.kind === pageKind && i.url === pageUrl : onDouyin ? false : onX ? popup && i.kind === pageKind : true)).map(publicItem)};
   }
   if (message.action === "download") return download(tabId, message.id, popup ? undefined : sender.frameId);
   return {ok: false};

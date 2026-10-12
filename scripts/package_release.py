@@ -9,7 +9,7 @@ import zipfile
 from build_exe import VIDEO_FILES
 
 
-EXTENSION_FILES = ('background.js', 'content.js', 'media.js', 'manifest.json', 'package.json',
+EXTENSION_FILES = ('background.js', 'content.js', 'douyin-page.js', 'media.js', 'manifest.json', 'package.json',
                    'popup.js', 'popup.html', 'popup.css', 'icons/download.svg', 'icons/LICENSE')
 PROGRAM_FILES = ('daw下载器.exe', 'BrowserBridge.exe', 'install_browser_bridge.cmd', 'uninstall_browser_bridge.cmd')
 
@@ -31,12 +31,12 @@ def write_archive(destination, files):
         assert archive.testzip() is None
 
 
-def collect_release_files(root, dist):
+def collect_release_files(root, dist, extension_only=False):
     """Share the explicit, verified payload between ZIP and Windows installers."""
     extension = [(dist / 'chrome-extension' / name, 'chrome-extension/' + name) for name in EXTENSION_FILES]
     program = [(dist / name, name) for name in PROGRAM_FILES]
     video_tools = [(dist / 'video-tools' / name, 'video-tools/' + name) for name in VIDEO_FILES]
-    files = program + extension + video_tools
+    files = extension if extension_only else program + extension + video_tools
     for source, _ in files:
         if not source.is_file() or not source.stat().st_size or not source.resolve().is_relative_to(dist.resolve()):
             raise ValueError(f'Missing or unexpected release component: {source}')
@@ -49,26 +49,34 @@ def collect_release_files(root, dist):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('version', help='GitHub release tag, for example v0.3.0')
+    parser.add_argument('--extension-only', action='store_true', help='Package only the browser extension, using an extension-vMAJOR.MINOR.PATCH tag')
     args = parser.parse_args()
-    if not re.fullmatch(r'v\d+\.\d+\.\d+', args.version):
-        parser.error('Expected a vMAJOR.MINOR.PATCH release tag')
+    pattern = r'extension-v\d+\.\d+\.\d+' if args.extension_only else r'v\d+\.\d+\.\d+'
+    if not re.fullmatch(pattern, args.version):
+        parser.error('Expected an extension-vMAJOR.MINOR.PATCH tag with --extension-only, otherwise vMAJOR.MINOR.PATCH')
     root = Path(__file__).resolve().parents[1]
     dist = root / 'dist'
     notes = root / 'docs' / 'releases' / (args.version + '.md')
-    files = collect_release_files(root, dist)
+    files = collect_release_files(root, dist, extension_only=args.extension_only)
     extension = [(source, name) for source, name in files if name.startswith('chrome-extension/')]
     if not notes.is_file():
         raise ValueError(f'Missing release notes: {notes}')
     extension_version = json.loads((dist / 'chrome-extension/manifest.json').read_text(encoding='utf-8'))['version']
+    if args.extension_only and args.version != f'extension-v{extension_version}':
+        raise ValueError('Extension release tag must match manifest.json')
     output = root / 'output' / 'releases' / args.version
     output.mkdir(parents=True, exist_ok=True)
-    desktop_zip = output / f'daw-downloader-{args.version}-windows-x64.zip'
     extension_zip = output / f'daw-browser-extension-v{extension_version}.zip'
-    write_archive(desktop_zip, files + [(notes, 'README.md')])
+    artifacts = []
+    if not args.extension_only:
+        desktop_zip = output / f'daw-downloader-{args.version}-windows-x64.zip'
+        write_archive(desktop_zip, files + [(notes, 'README.md')])
+        artifacts.append(desktop_zip)
     write_archive(extension_zip, extension)
-    hashes = {artifact.name: sha256(artifact) for artifact in (desktop_zip, extension_zip)}
+    artifacts.append(extension_zip)
+    hashes = {artifact.name: sha256(artifact) for artifact in artifacts}
     (output / 'SHA256SUMS.txt').write_text(''.join(f'{digest}  {name}\n' for name, digest in hashes.items()), encoding='ascii')
-    for artifact in (desktop_zip, extension_zip):
+    for artifact in artifacts:
         print(json.dumps({'asset': artifact.name, 'bytes': artifact.stat().st_size, 'sha256': hashes[artifact.name]}), flush=True)
     print('Artifacts:', output, flush=True)
 

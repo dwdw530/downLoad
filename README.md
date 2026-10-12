@@ -8,6 +8,8 @@
 
 Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
+浏览器插件已单独更新到 **0.5.2**，修复抖音推荐页识别与下载 403：[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/extension-v0.5.2/daw-browser-extension-v0.5.2.zip) · [更新日志与升级步骤](docs/releases/extension-v0.5.2.md)。桌面安装包仍为 v0.6.1。
+
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
 ## 功能特性
@@ -70,9 +72,9 @@ downLoad_project/
 
 ## Chrome 视频下载助手
 
-网页视频识别和播放器悬浮下载按钮支持 MP4、WebM 直链、HLS/DASH 播放列表，以及 YouTube、X、B 站和抖音普通视频。页面视频复用 yt-dlp + FFmpeg，可选最高 480p/720p/1080p。抖音使用当前网页取得的完整 MP4 信息，校验音视频轨和完整时长；不会把分离的音轨、视频轨当成完整视频。推荐页无法确认视频或取得详情信息时，需要打开该视频的详情页。
+网页视频识别和播放器悬浮下载按钮支持 MP4、WebM 直链、HLS/DASH 播放列表，以及 YouTube、X、B 站和抖音普通视频。页面视频复用 yt-dlp + FFmpeg，可选最高 480p/720p/1080p。抖音推荐页按当前播放器识别并取得完整 MP4 信息，保留详情页路径，校验音视频轨和完整时长；不会把分离的音轨、视频轨当成完整视频。无法确认当前播放器时，先播放视频或完整刷新页面后重试。
 
-2026-10-08：原 `dist` 已更新到包含抖音修复的正式包，扩展版本 0.5.0。用户提供的视频已通过真实扩展、正式 EXE 下载和整片解码验证；通用 HLS/DASH 的实网验证边界见测试记录。
+2026-10-13：原 `dist/chrome-extension/` 已更新为 0.5.2，抖音推荐页可直接识别当前播放器，并通过播放接口取得实际可用的下载地址。用户实测推荐页下载及播放成功，成品为 1080p HEVC + AAC、246.410 秒；详情页和 `modal_id` 路径保留。源码、正式扩展及其他站点回归通过，详见 [插件 0.5.2 更新日志](docs/releases/extension-v0.5.2.md)。本次无需重打包 EXE。
 
 安装需要完整发布目录，包括 `BrowserBridge.exe`、`chrome-extension/` 和 `video-tools/`，具体步骤、权限与限制见 [浏览器视频集成说明](docs/BROWSER_VIDEO.md)。本功能不自动接管 Chrome 的普通文件下载，也不读取 YouTube 账号 Cookie。更新后须完全退出并重启下载器，重新加载扩展及刷新视频页。
 

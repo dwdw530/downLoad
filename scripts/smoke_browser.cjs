@@ -354,6 +354,9 @@ async function main() {
     // Douyin uses separate MP4 tracks; only the selected video page is sent for extraction.
     const douyinUrl='https://www.douyin.com/video/7686532267488840975';
     let douyinApiMode='complete';
+    let douyinPageMode='detail';
+    let douyinDetailRequests=0;
+    let douyinPlayRequests=0;
     const douyinDetail=id=>({aweme_detail:{aweme_id:douyinApiMode==='mismatch'?'999':id,video:{duration:5000,bit_rate:[
       {format:'mp4',is_h265:0,play_addr:{width:640,height:360,url_list:['https://v26-web.douyinvod.com/movie/?signature=keep',
         'https://www.douyin.com/aweme/v1/play/?video_id=ignore','https://douyinvod.com.evil.test/ignore']}},
@@ -361,7 +364,14 @@ async function main() {
     ]}}});
     await context.route('https://www.douyin.com/**', async route => {
       const url=new URL(route.request().url());
+      if(url.pathname==='/aweme/v1/play/' && url.searchParams.get('video_id')==='feed-a') {
+        douyinPlayRequests++;
+        assert.equal(route.request().headers().range,'bytes=0-0');
+        assert(route.request().headers().cookie?.includes('api_session=fixture-only'));
+        return route.fulfill({status:302,headers:{Location:'https://v26-web.douyinvod.com/issued/feed-a/?signature=fresh'}});
+      }
       if(url.pathname==='/aweme/v1/web/aweme/detail/') {
+        douyinDetailRequests++;
         if(douyinApiMode==='protect') await worker.evaluate(async id=>{
           const key=`media:${id}`;
           const items=(await chrome.storage.session.get(key))[key] || [];
@@ -371,11 +381,30 @@ async function main() {
           body:JSON.stringify(douyinDetail(url.searchParams.get('aweme_id')))
         });
       }
+      if(douyinPageMode==='feed') return route.fulfill({contentType:'text/html; charset=utf-8',
+        body:'<!doctype html><title>Douyin feed fixture</title><section><video controls style="display:block;width:90%;aspect-ratio:16/9;margin:30px auto"></video></section><video id="preloaded" style="display:none"></video><script>window.originalPageFetch=fetch;window.originalPageXHR=XMLHttpRequest;</script>'});
       const id=/\/video\/(\d+)/.exec(url.pathname)?.[1] || '7686532267488840975';
       return route.fulfill({contentType:'text/html; charset=utf-8',
         body:`<!doctype html><title>Douyin fixture</title><section><video controls style="display:block;width:90%;aspect-ratio:16/9;margin:30px auto"></video><a href="${douyinUrl}">当前视频</a></section><script>fetch('/aweme/v1/web/aweme/detail/?aweme_id=${id}').then(r=>r.json())</script>`
       });
     });
+    // Playwright route handlers only see the first URL of a redirect chain. Intercept the
+    // redirected CDN request with CDP as well, so this fixture never contacts a real CDN.
+    const douyinFetch=await context.newCDPSession(page);
+    douyinFetch.on('Fetch.requestPaused',async event=>{
+      try {
+        const headers=Object.fromEntries(Object.entries(event.request.headers).map(([key,value])=>[key.toLowerCase(),value]));
+        assert.equal(headers.range,'bytes=0-0');
+        assert(!headers.cookie?.includes('api_session'));
+        await douyinFetch.send('Fetch.fulfillRequest',{requestId:event.requestId,responseCode:206,responseHeaders:[
+          {name:'Content-Type',value:'video/mp4'},{name:'Content-Range',value:'bytes 0-0/1000000'},
+          {name:'Access-Control-Allow-Origin',value:'*'}],body:'AA=='});
+      } catch(error) {
+        errors.push(error.message);
+        await douyinFetch.send('Fetch.failRequest',{requestId:event.requestId,errorReason:'Failed'}).catch(()=>{});
+      }
+    });
+    await douyinFetch.send('Fetch.enable',{patterns:[{urlPattern:'https://v26-web.douyinvod.com/issued/*',requestStage:'Request'}]});
     await worker.evaluate(()=>{
       globalThis.testCapabilities=['youtube','x','bilibili','douyin','hls','dash'];
       globalThis.nativeMessages=[];
@@ -454,7 +483,7 @@ async function main() {
     douyinApiMode='error';
     await douyinPopup.locator('#refresh').click();
     await douyinPopup.getByRole('button',{name:'下载',exact:true}).click();
-    await douyinPopup.getByText('抖音视频信息获取失败，请刷新视频详情页后重试',{exact:true}).waitFor();
+    await douyinPopup.getByText('抖音视频信息获取失败，请刷新视频页后重试',{exact:true}).waitFor();
     assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
     douyinApiMode='protect';
     await douyinPopup.locator('#refresh').click();
@@ -487,10 +516,139 @@ async function main() {
     await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
     await page.locator('section a').evaluate(link=>link.remove());
     await page.getByRole('button',{name:'下载视频',exact:true}).click();
-    await page.getByText('未确认当前视频，请打开该视频的详情页后重试',{exact:true}).waitFor();
+    await page.getByText('未确认当前视频，请先播放视频并完整刷新页面后重试',{exact:true}).waitFor();
     assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
+    // Matching duration/height alone must never identify a video, even with an observed detail request.
+    await worker.evaluate(()=>{globalThis.nativeMessages=[];});
+    await page.goto('https://www.douyin.com/?recommend=1');
+    await page.locator('section a').evaluate(link=>link.remove());
+    await page.locator('video').evaluate((video,bytes)=>{
+      video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
+      Object.defineProperty(video,'duration',{value:5});
+      Object.defineProperty(video,'videoHeight',{value:360});
+    },bytes);
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('未确认当前视频，请先播放视频并完整刷新页面后重试',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
+    // Actual feed shape: stable URL, blob players, no post links and no detail API at all.
+    douyinPageMode='feed';
+    douyinDetailRequests=0;
+    await context.addCookies([{name:'api_session',value:'fixture-only',url:'https://www.douyin.com/',httpOnly:true,secure:true,sameSite:'Lax'}]);
+    await page.goto('https://www.douyin.com/?recommend=1');
+    await page.locator('section video').evaluate((video,bytes)=>{
+      video.src=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:'video/webm'}));
+    },bytes);
+    await page.waitForFunction(()=>Number.isFinite(document.querySelector('section video').duration));
+    await page.evaluate(()=>{
+      const video=document.querySelector('section video');
+      const awemeInfo={awemeId:'7686532267488840975',video:{duration:video.duration*1000,width:640,height:360,bitRateList:[
+        {format:'mp4',isH265:0,width:640,height:360,playApi:'//www.douyin.com/aweme/v1/play/?video_id=feed-a',playAddr:[
+          {src:'https://v26-web-prime.douyinvod.com/feed-a/?signature=stale'},
+          {src:'https://v26-web.douyinvod.com/media-video-avc1/'},
+          {src:'https://v26-web.douyinvod.com/media-audio-und-mp4a/'},
+          {src:'https://v26-web.douyinvod.com/partial/?range=0-999'}]},
+        {format:'mp4',width:640,height:360,playAddr:[{src:'https://douyinvod.com.evil.test/full/'},
+          {src:'http://v26-web.douyinvod.com/full/'},{src:'https://u:p@v26-web.douyinvod.com/full/'},
+          {src:'https://v26-web.douyinvod.com:444/full/'}]},
+        {format:'mp4',width:640,height:360,playAddr:[{src:'https://v26-web.douyinvod.com/partial/?range=0-999'}]},
+        {format:'dash',width:640,height:360,playAddr:[{src:'https://v26-web.douyinvod.com/dash/'}]}
+      ]}};
+      window.player={video,config:{awemeInfo}};
+    });
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('抖音-7686532267488840975',{exact:true}).waitFor();
+    assert.equal(await page.locator('.notice').filter({hasText:'诊断'}).count(),0);
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages.length,1);
+    assert.equal(messages[0].url,douyinUrl);
+    assert.equal(messages[0].kind,'douyin');
+    assert.equal(messages[0].video.id,'7686532267488840975');
+    assert.deepEqual(messages[0].video.formats,[{url:'https://v26-web.douyinvod.com/issued/feed-a/?signature=fresh',width:640,height:360,vcodec:'h264'}]);
+    assert.equal(douyinPlayRequests,1,'Use the authenticated play endpoint, not the raw prime CDN candidate');
+    assert(Math.abs(messages[0].video.duration-await page.locator('section video').evaluate(video=>video.duration))<0.001);
+    await page.screenshot({path:path.join(output,process.argv.includes('--dist') || releaseIndex>=0 ? 'douyin-feed-dist.png' : 'douyin-feed-source.png')});
+    // Open the popup before switching. Its old row must not send the previously selected video.
+    const feedPopup=await context.newPage();
+    await feedPopup.goto(worker.url().replace('background.js','popup.html'));
+    await feedPopup.waitForFunction(()=>document.getElementById('connection').textContent !== '正在检查下载器…');
+    await feedPopup.evaluate(async id=>{tabId=id;await refresh();},douyinTab);
+    await feedPopup.getByText('抖音-7686532267488840975',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('抖音-7686532267488840975',{exact:true}).waitFor();
+    // New player generation, same DOM video, same blob, duration and resolution, but a different aweme.
+    await page.evaluate(()=>{
+      const video=document.querySelector('section video');
+      const awemeInfo={awemeId:'7686532267488840976',video:{duration:video.duration,width:640,height:360,bitRateList:[
+        {format:'mp4',isH265:1,width:640,height:360,playAddr:[{src:'https://v26-web.douyinvod.com/feed-b/?signature=other'}]}
+      ]}};
+      window.player={_core:{_media:video},_config:{_config:{pluginsConfig:{WatchLaterPlugin:{awemeInfo},DanmakuPlugin:{awemeInfo}}}}};
+    });
+    await feedPopup.getByRole('button',{name:'下载',exact:true}).click();
+    await feedPopup.getByText('抖音视频已切换，请刷新资源列表',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),1);
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByText('抖音-7686532267488840976',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),1);
+    await page.getByRole('button',{name:'下载',exact:true}).click();
+    await page.getByRole('button',{name:'已发送',exact:true}).waitFor();
+    messages=await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download'));
+    assert.equal(messages.length,2);
+    assert.equal(messages[1].url,'https://www.douyin.com/video/7686532267488840976');
+    assert.deepEqual(messages[1].video.formats,[{url:'https://v26-web.douyinvod.com/feed-b/?signature=other',width:640,height:360,vcodec:'h265'}]);
+    await feedPopup.locator('#refresh').click();
+    await feedPopup.getByText('抖音-7686532267488840976',{exact:true}).waitFor();
+    assert.equal(await feedPopup.getByText('抖音-7686532267488840975',{exact:true}).count(),0);
+    // A switch while browser credentials are being read must also stop the pending handoff.
+    await worker.evaluate(()=>{
+      globalThis.releaseFeedCookies=null;
+      chrome.cookies.getAll=async query=>{
+        await new Promise(resolve=>{globalThis.releaseFeedCookies=resolve;});
+        return globalThis.originalGetCookies(query);
+      };
+    });
+    await feedPopup.getByRole('button',{name:'下载',exact:true}).click();
+    for(let attempt=0;attempt<100;attempt++) {
+      if(await worker.evaluate(()=>typeof globalThis.releaseFeedCookies==='function')) break;
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    assert(await worker.evaluate(()=>typeof globalThis.releaseFeedCookies==='function'),'Download did not reach the held cookie request');
+    await page.evaluate(()=>{
+      const plugins=window.player._config._config.pluginsConfig;
+      const awemeInfo={...plugins.WatchLaterPlugin.awemeInfo,awemeId:'7686532267488840999'};
+      plugins.WatchLaterPlugin={awemeInfo};
+      plugins.DanmakuPlugin={awemeInfo};
+    });
+    await worker.evaluate(()=>{chrome.cookies.getAll=globalThis.originalGetCookies;globalThis.releaseFeedCookies();});
+    await feedPopup.getByText('抖音视频已切换，请刷新资源列表',{exact:true}).waitFor();
+    assert.equal(await worker.evaluate(()=>globalThis.nativeMessages.filter(m=>m.action==='download').length),2);
+    // Conflicting plugin metadata during a transition fails closed, even for equal-duration videos.
+    await page.evaluate(()=>{
+      const plugins=window.player._config._config.pluginsConfig;
+      plugins.DanmakuPlugin={awemeInfo:{...plugins.DanmakuPlugin.awemeInfo,awemeId:'7686532267488840977'}};
+    });
+    await page.getByRole('button',{name:'关闭资源列表',exact:true}).click();
+    await page.getByRole('button',{name:'下载视频',exact:true}).click();
+    await page.getByText('未确认当前视频，请先播放视频并完整刷新页面后重试',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'下载',exact:true}).count(),0);
+    // A player referring to a hidden preload is not the visible player's identity or a popup fallback.
+    await page.evaluate(()=>{
+      const plugins=window.player._config._config.pluginsConfig;
+      plugins.DanmakuPlugin=plugins.WatchLaterPlugin;
+      const preloaded=document.getElementById('preloaded');
+      Object.defineProperty(preloaded,'duration',{value:document.querySelector('section video').duration});
+      window.player._core._media=preloaded;
+    });
+    await feedPopup.locator('#refresh').click();
+    await feedPopup.getByText('未确认当前视频，请先播放视频并完整刷新页面后重试',{exact:true}).waitFor();
+    assert.equal(await feedPopup.getByRole('button',{name:'下载',exact:true}).count(),0);
+    assert.equal(douyinDetailRequests,0,'Feed identification must not replay or require a detail API');
+    assert(await page.evaluate(()=>window.fetch===window.originalPageFetch && window.XMLHttpRequest===window.originalPageXHR));
+    await feedPopup.close();
     assert.equal(errors.length,0,JSON.stringify(errors));
-    console.log('PASS: Douyin page selection, scoped cookie store, quality, old desktop, DRM, recycled and ambiguous feed players');
+    console.log('PASS: Douyin detail/modal fallback, authenticated play redirects, scoped cookies, DRM, old/new feed players without detail requests, exact player binding, stale popup/overlay rejection and split-track filtering');
     console.log('Screenshots:',output);
   } catch(error) {
     await context.pages()[0]?.screenshot({path:path.join(output,'video-failure.png')});

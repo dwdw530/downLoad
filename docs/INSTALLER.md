@@ -4,6 +4,8 @@
 
 [下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.6.1)
 
+浏览器插件另有 **0.5.2** 更新，修复抖音推荐页识别和下载 403：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/extension-v0.5.2/daw-browser-extension-v0.5.2.zip) · [插件更新日志](releases/extension-v0.5.2.md)。将 ZIP 内 `chrome-extension` 更新到现有目录后，在浏览器扩展管理页重新加载并完整刷新视频页面即可；本次不需重装桌面程序。
+
 ## 安装、升级和卸载
 
 1. 双击 `dist/daw-downloader-v0.6.1-windows-x64-setup.exe`。

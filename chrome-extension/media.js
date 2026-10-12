@@ -53,7 +53,8 @@ export function douyinUrl(value) {
   const url = new URL(value);
   const match = /^\/video\/([1-9][0-9]{0,24})\/?$/.exec(url.pathname);
   const ids = url.searchParams.getAll("modal_id");
-  const id = match?.[1] || (url.pathname === "/" && ids.length === 1 ? ids[0] : "");
+  // Feed, 精选 and profile overlays pin the played video with ?modal_id on any path, not only "/".
+  const id = match?.[1] || (ids.length === 1 ? ids[0] : "");
   return /^[1-9][0-9]{0,24}$/.test(id) ? `https://www.douyin.com/video/${id}` : null;
 }
 

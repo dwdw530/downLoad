@@ -1,5 +1,16 @@
 # 浏览器视频集成测试记录
 
+## 2026-10-13 抖音推荐流识别与下载修复（扩展 0.5.2）
+
+- **现象与根因**：推荐页 URL 不含视频 ID，播放器附近没有视频链接，也不发送现有实现依赖的 detail 请求；旧兜底按时长、分辨率匹配既不能覆盖真实推荐流，也无法排除等时长预加载视频。本轮实际运行旧版 Chromium 测试，在原“详情匹配推荐视频”正例处超时，确认此前仅有 Node 测试通过不足以证明推荐流可用。
+- **修复**：新增仅匹配抖音域名的 `douyin-page.js`，在页面 MAIN world 读取 `window.player`。支持 `config.awemeInfo`、`controls.playerConfig.awemeInfo` 及 `_config._config.pluginsConfig` 中的视频信息；要求播放器暴露的原生 `<video>` 唯一且与请求元素相同、处于可见区域，各处视频 ID 一致。按 `bitRateList/playAddr[].src` 或原始字段整理格式，保留详情页同源请求路径；移除时长猜测和临时诊断面板。
+- **403 根因与处理**：用户确认 0.5.1 可以识别并加入任务，但桌面日志显示 CDN 403。只读核对任务上下文后发现，原始 prime CDN 地址的 `expire` 尚余约 3 小时，不同清晰度/CDN 和直连均返回 403。0.5.2 优先使用同一 aweme 的 `playApi`，在隔离世界按当前页面授权访问同源播放接口，取得服务器实际下发的签名 URL；只探测首字节并取消响应体。最终地址仍可能是 prime CDN，不能把问题简化为域名被禁或链接已到期。
+- **切换与完整性**：悬浮列表、工具栏弹窗及授权读取后的最终发送都重新确认视频。拒绝旧条目、隐藏预加载播放器、冲突 ID、分轨和带 `range` 的地址；CDN、分辨率、编码及桌面 ffprobe 校验继续生效，仍使用 `kind=douyin`，没有降为普通 MP4 直链任务。
+- **自动验证**：`node --test tests/browser_extension.test.mjs` 14/14；`D:/anaconda3/envs/py310_env/python.exe -B -m unittest discover -s tests -p test_douyin_download.py -v` 8/8；`scripts/smoke_browser.cjs` 对源码、`--dist` 正式扩展和独立 ZIP 解压后的文件均通过。覆盖 MAIN/隔离世界通信、无详情请求的旧/新播放器、同源授权与播放接口跳转、首字节探测、相同 URL/blob/时长/分辨率下换视频、旧弹窗与悬浮按钮、Cookie 异步读取期间换视频、隐藏预加载、分轨过滤；YouTube、X、B 站和通用流媒体既有用例通过。Playwright 对重定向链只调用首个 URL 的 route，测试用 CDP 拦截后续 CDN 请求，避免夹具意外联网。自动浏览器测试仍使用页面夹具和模拟 Native Messaging。
+- **交付与打包**：原 `dist/chrome-extension/` 为 0.5.2，相关文件 SHA256 与源码一致；新增脚本同时进入 manifest 和发布白名单，独立 ZIP 的 11 个文件与源码逐字节一致。桌面程序和桥接未改、未重打包 EXE。插件 ZIP 为 `output/releases/extension-v0.5.2/daw-browser-extension-v0.5.2.zip`，21,072 字节，SHA256 `d4aaad6dcc31930d8e616a9e3371fa3a422e6c55db44f7557074528c80f890c7`。截图为 `output/playwright/douyin-feed-source.png`、`output/playwright/douyin-feed-dist.png`。
+- **真实推荐页验收通过**：独立浏览器访问真实推荐页会进入验证码页，因此由用户在已登录浏览器验证 0.5.2。用户确认“下载完成，视频播放正常”；只读数据库核对任务 `7675015778269736369` 为 completed，实际成品存在。ffprobe 确认为 **1920×1080 HEVC + AAC、246.410000 秒、31,823,532 字节**，与播放器提供的 246.410 秒一致。仅此范围通过，不代表直播、图集、DRM 或全部受限视频。
+- **字段依据**：查阅日期 2026-10-13，[公开抖音下载脚本](https://greasyfork.org/zh-CN/scripts/522326-%E6%8A%96%E9%9F%B3%E4%B8%8B%E8%BD%BD/code) 中的 `PlayerAdapter` 与格式提取逻辑提供新旧播放器字段线索；本项目只实现播放器绑定与受控元数据传递，没有引入该脚本或放宽完整性约束。
+
 ## GitHub v0.3.0 发布校验
 
 2026-10-08 22:21:20 +08:00 已公开发布 [v0.3.0](https://github.com/dwdw530/downLoad/releases/tag/v0.3.0) 并设为 Latest。标签源码提交为 `5c00c3d1252bff98610ebf199edc4df870c1ad93`，已推送到 `main`。

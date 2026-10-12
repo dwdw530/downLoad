@@ -119,15 +119,18 @@ test('Bilibili URLs preserve one part, remove tracking and reject unsupported or
   assert.equal(publicItem({kind:'bilibili'}).kindLabel, 'B站');
 });
 
-test('Douyin resolves one video without accepting feeds, live pages or unsafe hosts', () => {
+test('Douyin resolves one video from feeds and modals without accepting live pages or unsafe hosts', () => {
   const base = 'https://www.douyin.com/video/7686532267488840975';
   for (const input of [base, base + '/?recommend=1#comment', base.replace('www.', ''),
-    'https://www.douyin.com/?recommend=1&modal_id=7686532267488840975']) {
+    'https://www.douyin.com/?recommend=1&modal_id=7686532267488840975',
+    'https://www.douyin.com/jingxuan?modal_id=7686532267488840975',
+    'https://www.douyin.com/user/1234567?from_tab_name=main&modal_id=7686532267488840975']) {
     assert.equal(douyinUrl(input), base);
   }
   assert.equal(isDouyinPage('https://www.douyin.com/?recommend=1'), true);
   for (const input of ['https://www.douyin.com/?recommend=1', 'https://www.douyin.com/?modal_id=',
-    'https://www.douyin.com/?modal_id=123&modal_id=456', base.replace('7686532267488840975', '0'),
+    'https://www.douyin.com/?modal_id=123&modal_id=456', 'https://www.douyin.com/jingxuan?modal_id=0',
+    'https://www.douyin.com/jingxuan?modal_id=01&modal_id=7686532267488840975', base.replace('7686532267488840975', '0'),
     base.replace('7686532267488840975', '01'), base.replace('7686532267488840975', '1'.repeat(26)),
     base.replace('7686532267488840975', 'not-a-video'), base.replace('/video/', '/user/'),
     base.replace('.com', '.com.evil.test'), base.replace('www.', 'user:secret@www.'),
