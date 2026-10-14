@@ -126,4 +126,6 @@ EXE 复验产物：`C:/Users/lenovo/AppData/Local/Temp/downloader-exe-smoke-rxvc
 | `dist/BrowserBridge.exe` | 9,984,156 | `7e38beee9d0db4b2cc7dcee21ac36d3eff19a7cf3e72a444cbf55a9344e35e26` |
 | `dist/daw-downloader-v0.7.0-windows-x64-setup.exe` | 155,772,595 | `25d86688a6d27dad694e746d625106916a5c20831bda9b45f42b92f23ab613ff` |
 
+发布核对：[v0.7.0](https://github.com/dwdw530/downLoad/releases/tag/v0.7.0)，源码提交 `6925ecc`，Release ID `412655534`，2026-10-14 19:48:12 +08:00 发布。五个附件的远端大小与 SHA256 全部匹配，latest 指向本版；原有 9 个 Release 的发布时间、附件 ID、大小和 digest 未变。便携 ZIP 含 26 项、扩展 ZIP 含 12 项，CRC 与源文件逐项比对通过。
+
 设计依据：[browser-link-download.md](designs/browser-link-download.md)。专项进度继续维护在[原功能分析档](context-sessions/20251214-1555-老王下载器功能分析.md)。
