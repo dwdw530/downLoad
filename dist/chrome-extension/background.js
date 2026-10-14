@@ -1,4 +1,5 @@
 import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage} from "./media.js";
+import {registerLinkDownloadMenu} from "./link-download.js";
 
 const HOST = "com.laowang.downloader";
 const tabLocks = new Map();
@@ -92,6 +93,9 @@ function native(message) {
     } catch { finish({ok: false, error: "本地桥接不可用"}); }
   });
 }
+
+// Manual right-click link entry: independent from the video recognition switch.
+registerLinkDownloadMenu(native);
 
 async function download(tabId, id, senderFrame) {
   if (!(await setting())) return {ok: false, error: "视频识别已关闭"};

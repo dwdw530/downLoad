@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from downloader.browser.bridge import MAX_MESSAGE, call_desktop
+from downloader.browser.bridge import FEATURES, MAX_MESSAGE, call_desktop
 from downloader.utils.config import get_app_root
 
 
@@ -44,10 +44,10 @@ def write_message(stream, message):
 
 def forward(message):
     action = message.get('action')
-    if action not in ('ping', 'download'):
+    if action not in ('ping', 'download', 'download_file'):
         return {'ok': False, 'error': '不支持的操作'}
     try:
-        # Only an explicit video download may start the GUI.
+        # Only an explicit download may start the GUI.
         call_desktop({'action': 'ping'}, timeout=2)
     except (OSError, ValueError, ConnectionError):
         if action == 'ping':
@@ -57,7 +57,9 @@ def forward(message):
                 capabilities = list(VIDEO_KINDS)
             except ValueError:
                 capabilities = []
-            return {'ok': False, 'error': '下载器未启动', 'installed': True, 'capabilities': capabilities}
+            # File downloads must stay available even when FFmpeg/yt-dlp are missing.
+            return {'ok': False, 'error': '下载器未启动', 'installed': True,
+                    'capabilities': capabilities, 'features': list(FEATURES)}
         root = Path(get_app_root())
         command = ([str(root / 'daw下载器.exe')] if getattr(sys, 'frozen', False)
                    else [sys.executable, str(root / 'main.py')])

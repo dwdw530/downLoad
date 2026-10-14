@@ -42,6 +42,7 @@ def main():
     config.set('timeout', 3)
     config.save()
     video = (ROOT / 'output/playwright/sample.webm').read_bytes()
+    file_content = b'ordinary-file-smoke\x00\x01\x02' + video[:64]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -51,17 +52,19 @@ def main():
             if self.headers.get('Cookie') != 'session=test-secret':
                 self.send_error(403)
                 return
-            start, end = 0, len(video) - 1
+            is_file = self.path == '/file.bin?sig=a%2Bb+c&part=1&part=2'
+            content = file_content if is_file else video
+            start, end = 0, len(content) - 1
             if self.headers.get('Range'):
                 start, end = map(int, self.headers['Range'][6:].split('-'))
             self.send_response(206 if self.headers.get('Range') else 200)
-            self.send_header('Content-Type', 'video/webm')
-            self.send_header('ETag', '"bridge-smoke-video-v1"')
+            self.send_header('Content-Type', 'application/octet-stream' if is_file else 'video/webm')
+            self.send_header('ETag', '"bridge-smoke-file-v1"' if is_file else '"bridge-smoke-video-v1"')
             if self.headers.get('Range'):
-                self.send_header('Content-Range', f'bytes {start}-{end}/{len(video)}')
+                self.send_header('Content-Range', f'bytes {start}-{end}/{len(content)}')
             self.send_header('Content-Length', str(end - start + 1))
             self.end_headers()
-            self.wfile.write(video[start:end + 1])
+            self.wfile.write(content[start:end + 1])
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -80,6 +83,7 @@ def main():
     try:
         response = native({'action':'ping'})
         assert not response['ok'] and response['installed']
+        assert 'file_download_v1' in response.get('features', []), response
         message = {'action':'download', 'request_id':str(uuid.uuid4()), 'kind':'webm',
                    'url':f'http://127.0.0.1:{server.server_port}/sample.webm', 'filename':'sample.webm',
                    'headers':{'Cookie':'session=test-secret'}}
@@ -92,6 +96,18 @@ def main():
         assert 'test-secret' not in task['browser_context']
         assert native(message) == response
         assert len(db.get_all_tasks()) == 1
+        file_message = {'action': 'download_file', 'request_id': str(uuid.uuid4()),
+                        'url': f'http://127.0.0.1:{server.server_port}/file.bin?sig=a%2Bb+c&part=1&part=2',
+                        'filename': 'file.bin', 'headers': {'Cookie': 'session=test-secret'}}
+        file_response = native(file_message)
+        assert file_response['ok'], file_response
+        wait_for(lambda: db.get_task(file_response['task_id'])['status'] == 'completed')
+        file_task = db.get_task(file_response['task_id'])
+        assert Path(file_task['save_path']).read_bytes() == file_content
+        assert 'test-secret' not in file_task['browser_context']
+        assert native(file_message) == file_response
+        assert len(db.get_all_tasks()) == 2
+        print('PASS: packaged file_download_v1, authenticated signed file, exact bytes and deduplication')
         window = wait_for(lambda: next((w for w in app_windows(exe) if w['title']=='daw下载器 v1.0'),None))
         capture(window['hwnd'], workspace / 'video-completed.png')
         second = subprocess.run([str(exe)], capture_output=True, timeout=20,

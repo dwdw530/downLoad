@@ -6,9 +6,9 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.6.1/daw-downloader-v0.6.1-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.7.0/daw-downloader-v0.7.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
-浏览器插件已单独更新到 **0.5.2**，修复抖音推荐页识别与下载 403：[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/extension-v0.5.2/daw-browser-extension-v0.5.2.zip) · [更新日志与升级步骤](docs/releases/extension-v0.5.2.md)。桌面安装包仍为 v0.6.1。
+当前桌面版 **v0.7.0**、浏览器扩展 **0.6.0**，新增网页普通文件链接的手动右键下载：[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.0/daw-browser-extension-v0.6.0.zip) · [更新日志与升级步骤](docs/releases/v0.7.0.md)。请同时更新桌面程序和桥接，重新加载扩展并完整刷新网页。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -77,6 +77,8 @@ downLoad_project/
 2026-10-13：原 `dist/chrome-extension/` 已更新为 0.5.2，抖音推荐页可直接识别当前播放器，并通过播放接口取得实际可用的下载地址。用户实测推荐页下载及播放成功，成品为 1080p HEVC + AAC、246.410 秒；详情页和 `modal_id` 路径保留。源码、正式扩展及其他站点回归通过，详见 [插件 0.5.2 更新日志](docs/releases/extension-v0.5.2.md)。本次无需重打包 EXE。
 
 安装需要完整发布目录，包括 `BrowserBridge.exe`、`chrome-extension/` 和 `video-tools/`，具体步骤、权限与限制见 [浏览器视频集成说明](docs/BROWSER_VIDEO.md)。本功能不自动接管 Chrome 的普通文件下载，也不读取 YouTube 账号 Cookie。更新后须完全退出并重启下载器，重新加载扩展及刷新视频页。
+
+普通网页链接另有手动入口：对链接点击右键，选择“使用 daw 下载器下载此链接”，才会把该 HTTP/HTTPS 链接作为普通文件发送给下载器；普通点击、另存为和浏览器自带下载保持原样。该入口独立于“识别视频”开关，普通文件不进入视频列表。此能力随 **v0.7.0 + 扩展 0.6.0** 交付，需要同时更新双 EXE 与扩展；独立审查和验证范围见[链接下载测试报告](docs/BROWSER_LINK_TEST_REPORT.md)。
 
 重新加载扩展后，对已经打开的 X、YouTube、B 站、抖音标签页分别按 **F5 / Ctrl+F5 完整刷新**。只在网站内切换视频或进入帖子详情，不会重新加载旧页面中的扩展脚本，可能导致悬浮按钮消失、工具栏资源列表为空。X 仍支持首页浏览时下载，无需逐条进入详情页。
 
@@ -199,6 +201,8 @@ python -B -m unittest discover -s tests -v
 ```
 
 测试使用本地HTTP服务和独立临时数据库，无需访问外部下载站点。覆盖续传漏块、异常Range响应、短文件/超长文件、断流重试、跨磁盘保存、暂停/取消、队列调度、限速、代理、MD5/SHA256校验、重启恢复、历史记录、设置和真实Tk界面回调。
+
+2026-10-14 v0.7.0：**323 项 Python/GUI、33 项扩展测试通过**，9 组既有视频浏览器冒烟通过；真实 Chromium 原生右键、冷启动、Cookie/签名、iframe 和视频开关独立性已实测。正式包验证及边界见[链接下载测试报告](docs/BROWSER_LINK_TEST_REPORT.md)。
 
 2026-10-11 v0.6.1：**308 项 Python 全量测试一次性通过、14 项扩展测试通过**；新增 25 项安全/交互和 15 项磁盘写入用例（含真实跨分区保存）。正式 EXE、浏览器桥接和安装包 6 组冒烟通过。详见 [v0.6.1 更新日志](docs/releases/v0.6.1.md)。
 

@@ -2,7 +2,7 @@
 
 ## 当前范围
 
-本版是“网页视频识别 + 播放器悬浮下载按钮”，不是 Chrome 普通文件下载自动接管。
+本版提供网页视频识别、播放器悬浮下载按钮，以及普通文件链接的手动右键下载入口。
 
 - 支持 HTTP/HTTPS 的 MP4、WebM 直链视频：从 HTML video/source 与浏览器媒体响应发现资源。
 - 在播放器右上方显示“下载视频”；资源列表显示文件名、类型和可获取的大小。
@@ -19,6 +19,8 @@
 - 弹窗的“视频清晰度”统一用于 YouTube、X、B 站、抖音和 HLS/DASH，最高 480p/720p/1080p 是上限，实际以源格式为准，不执行降分辨率转码。
 - 通用 HLS/M3U8、DASH/MPD 播放列表已接入下载；未知媒体流、孤立分片仍禁用。通用流媒体的实网验收范围见测试记录。
 - 检测到浏览器加密媒体事件或 mediaKeys 时，将该 frame 标记为受保护，不提供下载。不会绕过 DRM 或网站访问控制。
+- 普通网页链接增加手动入口：对链接点击右键，选择“使用 daw 下载器下载此链接”后，才把该 HTTP/HTTPS 链接作为普通文件交给桌面下载器；普通点击、另存为和浏览器自带下载保持原样，不做全局自动接管。该入口独立于“识别视频”开关，普通文件不进入视频资源列表、不占用视频 badge，也不绕过已有的平台视频校验。
+- **版本要求**：手动右键入口随桌面版 v0.7.0、扩展 0.6.0 交付，需要同时更新主程序、BrowserBridge 和扩展。旧版桥接缺少文件下载能力时明确提示升级，完整验证见[链接下载测试报告](BROWSER_LINK_TEST_REPORT.md)。
 
 ## 安装（Windows + Chrome）
 
@@ -55,17 +57,18 @@ Edge 使用 `edge://extensions/` 重新加载同一扩展。2026-10-05 已在旧
 
 - `webRequest`、HTTP/HTTPS 站点权限：识别当前页面的媒体响应，不拦截或取消浏览器请求。
 - `webNavigation`：按页面与 frame 清理资源。
-- `cookies`：仅在用户点击下载时读取目标视频 URL 对应 Cookie；不读取所有站点的 Cookie。分区 Cookie 暂不转发。
+- `cookies`：仅在用户点击下载时读取目标视频或文件 URL 对应 Cookie；不读取所有站点的 Cookie。分区 Cookie 暂不转发。
 - 抖音仅使用当前标签页所在 Cookie store 的授权信息，过滤分区及空名称 Cookie；无法确认当前 store 时拒绝提交。抖音专用 MAIN 脚本只向隔离内容脚本提供绑定播放器的 ID、时长和格式地址，不调用下载器、不读取 Cookie、不修改网站的 fetch/XHR。详情请求仍按同源规则执行；读取授权信息后、发送任务前再次复核当前视频和保护状态。
 - 播放地址解析仅请求播放器提供的同源 `/aweme/v1/play/`，携带当前页面的同源授权；`Range: bytes=0-0` 请求在收到响应头后取消响应体。只接受最终 HTTPS 抖音 CDN 的完整 MP4 地址，跨域不转发站点 Cookie，视频整体仍由桌面端下载和校验。
 - YouTube/X/B 站页面路径不读取或导出浏览器账号 Cookie；需要登录、年龄验证、订阅或机器人验证的视频会失败并提示，不尝试绕过访问控制。
 - `storage`：本地保存开关，浏览器会话内保存有数量与时间上限的媒体候选。列表 URL 可能含临时签名，不发送到任何第三方服务。
+- `contextMenus`、`notifications`：注册唯一的链接右键菜单（固定 ID `daw-download-link-v1`）并反馈发送结果。只有用户选择菜单后才读取目标链接所在标签页与 frame 的授权信息；弹窗状态与通知只保留脱敏结果（成功/失败、脱敏文件名、请求 ID、时间），不写 URL、Cookie、Referer 或请求头，也不随关闭“识别视频”时的会话清理消失。
 - `nativeMessaging`：只连接注册的本机桥接。桥接清单只允许上述固定扩展 ID。
 - Cookie、Referer、User-Agent 以 Windows 当前用户 DPAPI 加密后写入任务数据库，支持重启续传；不能把这份凭据直接迁移给其他 Windows 用户。
 - 抖音的签名视频地址同样保存在加密请求上下文中。运行下载子进程时才生成受控字段的临时格式 JSON 和 Cookie 文件，完成、失败及取消后清理；不会把账号信息或签名地址写入错误提示。
 - 桌面端使用仅监听 `127.0.0.1` 的随机端口和随机令牌；端点信息也使用 DPAPI 加密，拒绝带网页 Origin 或错误令牌的调用。
 - 浏览器请求凭据仅发送给原始同源地址，跨域重定向不带 Cookie 和 Referer；HTTPS 降级被拒绝。
-- 仅接受 HTTP/HTTPS 媒体任务，不执行扩展传来的命令、不自动打开下载文件。
+- 仅接受 HTTP/HTTPS 视频或普通文件任务，不执行扩展传来的命令、不自动打开下载文件。
 
 ## 已知边界
 
@@ -78,6 +81,7 @@ Edge 使用 `edge://extensions/` 重新加载同一扩展。2026-10-05 已在旧
 - 抖音目前要求存在完整 MP4 条目和有效的音视频轨；不处理只有分轨资源、图集、持续直播、受保护视频或批量作品。签名地址可能过期，届时需刷新当前视频页重新提交。已通过的视频不代表所有抖音作品均可下载。
 - HTML video 位于封闭 Shadow DOM、浏览器原生 video 全屏或特殊播放器中时，悬浮按钮可能不可用；扩展工具栏仍可查看已经识别的资源。
 - 只读取用户有权访问的资源；不是所有网站都可下载，也不承诺突破服务器限速。
+- 手动右键发送仅支持 HTTP/HTTPS 的普通 GET 文件，复用现有受限的 Cookie/Referer/User-Agent 转发；不支持 POST、特殊 Authorization、分区 Cookie 及 `blob:`/`data:`/`javascript:`/`file:`/FTP 链接。明确拒绝 HTML/XHTML 登录页、未知或零字节大小、HLS/DASH 清单（含 `.m3u8`/`.mpd` 与对应 MIME）及抖音专用 CDN（含重定向目标），这些路径应改用既有视频入口。签名地址可能过期，发送超时属于结果未知，不自动重发，需以桌面任务列表为准。
 - 关闭 Chrome 不会终止已被桌面端接收的下载。桌面端已经接收但浏览器回执丢失时，应先查看桌面任务列表。
 
 ## 构建和验证
@@ -97,7 +101,7 @@ node --test tests/browser_extension.test.mjs
 
 真实 Chromium 扩展测试：`node scripts/smoke_browser.cjs <已安装的playwright包绝对路径>`。使用 Playwright 的 Chromium，在临时用户配置中加载真实扩展，本地生成可播放 WebM；截图和视频保存在 `output/playwright/`。
 
-单独打包插件：`python -B scripts/package_release.py extension-v0.5.2 --extension-only`。版本须与 manifest 一致，发布说明放在 `docs/releases/extension-v0.5.2.md`；产物为 `output/releases/extension-v0.5.2/` 下的插件 ZIP 和 `SHA256SUMS.txt`，不会重打包桌面程序。
+本次打包：`python -B scripts/package_release.py v0.7.0`，在 `output/releases/v0.7.0/` 生成完整便携版 ZIP、独立的 `daw-browser-extension-v0.6.0.zip` 和 `SHA256SUMS.txt`。脚本核对源码与 `dist` 扩展逐文件一致，ZIP 版本取自 manifest；本次新功能还需同步升级桌面程序与桥接。
 
 随后运行 `python -B scripts/smoke_browser_bridge.py`，在隔离目录测试打包后的 Native Messaging 协议、冷启动、登录视频字节校验、重复请求及单实例。此测试不写注册表。
 

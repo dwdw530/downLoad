@@ -86,7 +86,7 @@ def write_payload_include(destination, files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('version', nargs='?', default='v0.3.0', help='Release version, e.g. v0.3.0')
+    parser.add_argument('version', nargs='?', default='v0.7.0', help='Release version (default: v0.7.0)')
     parser.add_argument('--rebuild', action='store_true', help='Rebuild both EXEs in dist before packaging')
     parser.add_argument('--makensis', type=Path, help='Use an existing NSIS 3 Unicode compiler')
     args = parser.parse_args()

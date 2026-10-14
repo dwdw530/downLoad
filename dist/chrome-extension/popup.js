@@ -57,3 +57,28 @@ $("quality").addEventListener("change", async () => {
   const connection = await send({action: "ping"});
   $("connection").textContent = connection.ok ? "daw下载器已连接" : connection.error;
 })().catch(() => { $("status").textContent = "当前页面不可用"; $("status").className = "error"; });
+
+// Independent link-download feedback: local storage only, so clearing session storage for
+// the video switch never removes it, and it never reuses the video status element.
+const LINK_STATUS_KEY = "fileDownloadStatus";
+function renderLinkStatus(entry) {
+  const target = $("linkStatus");
+  if (!target) return;
+  if (!entry) {
+    target.textContent = "右键网页链接可发送到 daw 下载器";
+    target.className = "";
+    return;
+  }
+  const pending = entry.code === "sending";
+  const detail = pending ? "正在发送到 daw 下载器…"
+    : entry.ok ? `已加入下载队列${entry.filename ? `：${entry.filename}` : ""}` : entry.message || "发送失败";
+  const time = entry.time ? ` · ${new Date(entry.time).toLocaleTimeString()}` : "";
+  target.textContent = detail + time;
+  target.className = entry.ok || pending ? "" : "error";
+}
+chrome.storage.local.get({[LINK_STATUS_KEY]: null})
+  .then(result => renderLinkStatus(result[LINK_STATUS_KEY]))
+  .catch(() => renderLinkStatus(null));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[LINK_STATUS_KEY]) renderLinkStatus(changes[LINK_STATUS_KEY].newValue);
+});

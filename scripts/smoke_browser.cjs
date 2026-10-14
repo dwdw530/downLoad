@@ -8,7 +8,7 @@ const {chromium} = require(process.argv[2] || 'playwright');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const output = path.join(root, 'output', 'playwright');
+  const output = path.resolve(process.env.DAW_SMOKE_OUTPUT || path.join(root, 'output', 'playwright'));
   await fs.mkdir(output, {recursive:true});
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'video-extension-'));
   const releaseIndex = process.argv.indexOf('--release');

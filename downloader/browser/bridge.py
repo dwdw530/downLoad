@@ -12,11 +12,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from downloader.browser.security import http_url, normalize_context, protect, unprotect
+from downloader.browser.security import http_url, normalize_context, protect, reject_video_only_url, unprotect
 from downloader.utils.config import get_app_root
 from downloader.core.youtube_downloader import video_page_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
 MAX_MESSAGE = 256 * 1024
+# Protocol version 2 keeps the video capabilities untouched and advertises the file branch separately.
+FEATURES = ('file_download_v1',)
 
 
 def instance_key():
@@ -190,7 +192,9 @@ class BridgeServer:
                 capabilities = list(VIDEO_KINDS)
             except ValueError:
                 capabilities = []
-            return {'ok': True, 'version': 2, 'capabilities': capabilities}
+            return {'ok': True, 'version': 2, 'capabilities': capabilities, 'features': list(FEATURES)}
+        if action == 'download_file':
+            return self.download_file(message)
         if action != 'download':
             return {'ok': False, 'error': '不支持的操作'}
         request_id = message.get('request_id', '')
@@ -230,6 +234,44 @@ class BridgeServer:
                 return {'ok': False, 'error': '无法下载此视频：链接已失效、需登录或文件大小未知'}
             result = {'ok': True, 'task_id': task_id, 'filename': name}
             self.receipts[request_id] = result
+            if len(self.receipts) > 1024:
+                self.receipts.pop(next(iter(self.receipts)))
+            self.show_window()
+            return result
+
+    def download_file(self, message):
+        """Queue one browser right-click HTTP/HTTPS link as an ordinary file task."""
+        request_id = message.get('request_id', '')
+        if not isinstance(request_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{16,100}', request_id):
+            raise ValueError('Invalid request id')
+        key = ('file', request_id)
+        with self.lock:
+            if self.closed:
+                return {'ok': False, 'error': '下载器正在退出'}
+            # A replayed request returns the original receipt instead of adding a second task.
+            if key in self.receipts:
+                return self.receipts[key]
+            try:
+                url = http_url(message.get('url'))
+            except ValueError:
+                return {'ok': False, 'error': '链接无效：仅支持不带用户信息的 HTTP/HTTPS 直链'}
+            try:
+                reject_video_only_url(url)
+            except ValueError as error:
+                return {'ok': False, 'error': str(error)}
+            try:
+                context = normalize_context(url, {'headers': message.get('headers', {}), 'media': False})
+            except ValueError:
+                return {'ok': False, 'error': '浏览器请求信息无效或不安全，已取消本次下载'}
+            directory = os.path.abspath(self.manager.engine.config.download_dir)
+            # Naming and same-name protection stay in the existing engine/database; no video filename branch.
+            task_id = self.manager.add_task(url, save_path=directory, request_context=context)
+            if not task_id:
+                return {'ok': False, 'error': '无法下载此文件：链接已失效、需登录或文件大小未知'}
+            task = self.manager.db.get_task(task_id) or {}
+            result = {'ok': True, 'task_id': task_id, 'filename': task.get('filename') or ''}
+            # File receipts use a tuple namespace so the old video string keys keep working.
+            self.receipts[key] = result
             if len(self.receipts) > 1024:
                 self.receipts.pop(next(iter(self.receipts)))
             self.show_window()

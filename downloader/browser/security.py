@@ -4,7 +4,7 @@ import ctypes
 import json
 import os
 from contextlib import contextmanager
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
 
@@ -24,10 +24,31 @@ def origin(value):
     return parsed.scheme, parsed.hostname.lower(), parsed.port or (443 if parsed.scheme == 'https' else 80)
 
 
+DOUYIN_CDN = 'douyinvod.com'
+# Ordinary files must not smuggle in a login page or a stream manifest.
+FILE_REJECT_MIME = ('text/html', 'application/xhtml+xml', 'application/vnd.apple.mpegurl',
+                    'application/x-mpegurl', 'audio/mpegurl', 'audio/x-mpegurl', 'application/dash+xml')
+VIDEO_ONLY_MESSAGE = '请在视频资源列表中使用视频入口下载此地址'
+
+
+def reject_video_only_url(value):
+    """Plain file downloads must not bypass the established video entry points."""
+    parsed = urlsplit(value)
+    host = (parsed.hostname or '').lower().rstrip('.')
+    # Decode for classification only; keep the signed request URL unchanged.
+    if unquote(parsed.path).lower().endswith(('.m3u8', '.mpd')):
+        raise ValueError(VIDEO_ONLY_MESSAGE)
+    if host == DOUYIN_CDN or host.endswith('.' + DOUYIN_CDN):
+        raise ValueError(VIDEO_ONLY_MESSAGE)
+
+
 def normalize_context(url, context):
     if context is None:
         return None
     if not isinstance(context, dict) or not isinstance(context.get('headers', {}), dict):
+        raise ValueError('Invalid browser request context')
+    media = context.get('media', True)
+    if not isinstance(media, bool):
         raise ValueError('Invalid browser request context')
     headers = {}
     for key, value in context.get('headers', {}).items():
@@ -38,7 +59,7 @@ def normalize_context(url, context):
             raise ValueError('Invalid browser request header')
         value.encode('latin-1')
         headers[canonical] = value
-    return {'url': http_url(url), 'headers': headers, 'media': True}
+    return {'url': http_url(url), 'headers': headers, 'media': media}
 
 
 def normalize_stream_context(url, context):
@@ -111,7 +132,10 @@ def browser_get(url, context, **kwargs):
     """Do not forward browser credentials or referrers across origins."""
     base_headers = dict(kwargs.pop('headers', {}))
     kwargs.pop('allow_redirects', None)
+    media = context.get('media', True) is not False
     current = http_url(url)
+    if not media:
+        reject_video_only_url(current)
     for _ in range(6):
         headers = dict(base_headers)
         if origin(current) == origin(context['url']):
@@ -121,8 +145,11 @@ def browser_get(url, context, **kwargs):
             try:
                 response.raise_for_status()
                 mime = response.headers.get('Content-Type', '').split(';')[0].strip().lower()
-                if mime not in ('video/mp4', 'video/webm', 'application/octet-stream'):
-                    raise ValueError('Response is not a supported MP4/WebM video')
+                if media:
+                    if mime not in ('video/mp4', 'video/webm', 'application/octet-stream'):
+                        raise ValueError('Response is not a supported MP4/WebM video')
+                elif mime in FILE_REJECT_MIME:
+                    raise ValueError('Response is not a downloadable file')
                 yield response
             finally:
                 response.close()
@@ -134,5 +161,7 @@ def browser_get(url, context, **kwargs):
         target = http_url(urljoin(current, location))
         if urlsplit(current).scheme == 'https' and urlsplit(target).scheme != 'https':
             raise ValueError('HTTPS downgrade rejected')
+        if not media:
+            reject_video_only_url(target)
         current = target
     raise ValueError('Too many redirects')
