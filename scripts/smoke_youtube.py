@@ -16,11 +16,11 @@ from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
-from downloader.core.youtube_downloader import x_url, bilibili_url, douyin_url
+from downloader.core.youtube_downloader import x_url, bilibili_url, douyin_url, xhs_url
 
 
 def page_kind(url):
-    for kind, normalize in (('x', x_url), ('bilibili', bilibili_url), ('douyin', douyin_url)):
+    for kind, normalize in (('x', x_url), ('bilibili', bilibili_url), ('douyin', douyin_url), ('xhs', xhs_url)):
         try:
             normalize(url)
             return kind
@@ -118,11 +118,11 @@ def main():
     parser.add_argument('--exe', action='store_true', help='Validate the packaged release in an isolated directory')
     parser.add_argument('--release', type=Path, default=ROOT / 'dist')
     parser.add_argument('--height', type=int, choices=(480, 720, 1080), default=720)
-    parser.add_argument('--browser-context-stdin', action='store_true', help='Read scoped Douyin context from stdin, never command arguments')
+    parser.add_argument('--browser-context-stdin', action='store_true', help='Read scoped browser video context from stdin, never command arguments')
     args = parser.parse_args()
     browser_context = json.load(sys.stdin) if args.browser_context_stdin else None
-    if browser_context is not None and (not isinstance(browser_context, dict) or page_kind(args.url) != 'douyin'):
-        raise ValueError('Browser context is only accepted for the Douyin validation path')
+    if browser_context is not None and (not isinstance(browser_context, dict) or page_kind(args.url) not in ('douyin', 'xhs')):
+        raise ValueError('Browser context is only accepted for the Douyin/XHS validation paths')
     if args.exe:
         return packaged(args.url, args.release.resolve(), args.height, browser_context)
     directory = ROOT / 'output' / (page_kind(args.url) + '-validation-' + uuid.uuid4().hex[:8])

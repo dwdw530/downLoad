@@ -1,0 +1,25 @@
+{
+ "note": {
+  "firstNoteId": "66c3e1a3000000001e02b5b5",
+  "noteDetailMap": {
+   "undefined": null,
+   "66c3e1a3000000001e02b5b5": {
+    "note": {
+     "noteId": "66c3e1a3000000001e02b5b5",
+     "type": "normal",
+     "title": "portrait note",
+     "video": {
+      "capa": {
+       "duration": 5
+      },
+      "media": {
+       "stream": {
+        "EF4": []
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

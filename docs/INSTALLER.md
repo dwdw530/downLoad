@@ -2,9 +2,9 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.7.0/daw-downloader-v0.7.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.7.0/daw-downloader-v0.7.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.7.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-downloader-v0.7.2-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-downloader-v0.7.2-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.7.2)
 
-本版包含浏览器扩展 **0.6.0**，新增普通文件链接手动右键下载：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.0/daw-browser-extension-v0.6.0.zip) · [更新日志](releases/v0.7.0.md)。本次必须同时更新桌面程序、BrowserBridge 与扩展；安装后在扩展管理页重新加载并完整刷新网页，接受新增右键菜单与通知权限。
+本版包含浏览器扩展 **0.6.2**，修复小红书网页视频无法下载：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.7.2.md)。本次必须同时更新桌面程序、BrowserBridge 与扩展；安装后在扩展管理页重新加载并完整刷新网页。
 
 ## 安装、升级和卸载
 

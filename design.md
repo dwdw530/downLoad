@@ -196,11 +196,13 @@ pending ──start──► downloading ──pause──► paused ──resum
 | `hls` / `dash` | M3U8 / MPD 播放列表 | yt-dlp + FFmpeg，native 分片下载器，保留断点 |
 | `youtube` / `x` / `bilibili` | 视频页 | yt-dlp 解析页面 |
 | `douyin` | 抖音视频页 | 浏览器已取得签名 formats，经 `--load-info-json` 交给 yt-dlp，避免重复请求未签名页面 API |
+| `xhs` | 小红书视频笔记详情页 | 浏览器已读取页面状态中的官方签名 MP4 候选（排除小程序水印流），经 `--load-info-json` 交给 yt-dlp，桌面端校验笔记 ID、`.xhscdn.com`、编码与时长 |
 
-- `VIDEO_KINDS`（`youtube_downloader.py:17`）为可下载类型全集；`STREAM_KINDS` = hls/dash；`CONTEXT_KINDS` = douyin/hls/dash，需要携带 Cookie 与请求头。
+- `VIDEO_KINDS`（`youtube_downloader.py:17`）为可下载类型全集；`STREAM_KINDS` = hls/dash；`CONTEXT_KINDS` = douyin/hls/dash/xhs，需要携带 Cookie 与请求头。
 - 清晰度固定 480/720/1080，由扩展设置项控制，通过 `--format` 过滤 `height<=N`。
 - 视频任务统一走 `YoutubeDownloader`：构造 yt-dlp 命令、解析 `__LW_PROGRESS__` 进度行、用 ffprobe 校验音视频轨与时长，时长与页面声明不符则拒绝发布不完整文件。
 - 抖音额外校验：只接受 `*.douyinvod.com` 的完整 MP4，拒绝 `media-video`/`media-audio` 分轨地址。
+- 小红书额外校验：`video.id` 必须与页面 URL 中的笔记 ID 一致，只接受 `*.xhscdn.com` 且路径以 `.mp4` 结尾、无 `range` 参数的 HTTPS 地址，`vcodec` 限 h264/h265，时长必须为正且与页面声明一致。
 
 ### 7.3 安全模型
 

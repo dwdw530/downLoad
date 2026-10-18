@@ -71,19 +71,24 @@ def call_desktop(message, path=None, timeout=90):
         connection.close()
 
 
+PAGE_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'xhs')
+
+
 def video_filename(message):
     kind = message.get('kind')
     if kind in ('hls', 'dash'):
         message = {**message, 'kind': 'mp4', 'filename': re.sub(r'\.(m3u8|mpd)$', '',
             message.get('filename') or unquote(urlsplit(http_url(message.get('url'))).path.rsplit('/', 1)[-1]), flags=re.I) or 'video'}
         kind = 'mp4'
-    if kind in ('youtube', 'x', 'bilibili', 'douyin'):
+    if kind in PAGE_KINDS:
         url = video_page_url(message.get('url'), kind)
         if kind == 'bilibili':
             parsed = urlsplit(url)
             default_name = f'Bilibili-{parsed.path.split("/")[2]}-P{parse_qs(parsed.query)["p"][0]}'
         elif kind == 'douyin':
             default_name = 'Douyin-' + urlsplit(url).path.rsplit('/', 1)[-1]
+        elif kind == 'xhs':
+            default_name = 'XHS-' + urlsplit(url).path.rsplit('/', 1)[-1]
         else:
             default_name = 'YouTube-' + url.split('v=')[1] if kind == 'youtube' else 'X-' + urlsplit(url).path.split('/status/')[1].replace('/', '-')
         message = {**message, 'kind': 'mp4', 'url': url,
@@ -207,7 +212,7 @@ class BridgeServer:
                 return self.receipts[request_id]
             filename = video_filename(message)
             kind = message.get('kind')
-            is_page = kind in ('youtube', 'x', 'bilibili', 'douyin')
+            is_page = kind in PAGE_KINDS
             url = video_page_url(message['url'], kind) if is_page else http_url(message['url'])
             context = None if is_page else normalize_context(url, {'headers': message.get('headers', {})})
             if kind in CONTEXT_KINDS:

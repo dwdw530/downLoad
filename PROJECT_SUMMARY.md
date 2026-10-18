@@ -12,11 +12,13 @@
 |------|------|------|
 | 桌面程序 | `dist/daw下载器.exe` | 便携版入口，原名“老王下载器” |
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
-| 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.0 |
+| 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.2 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.7.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.7.2-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.7.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.6.1`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。
+发布统一走 GitHub Releases（当前 `v0.7.2`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.7.0`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+
+v0.7.2 修复小红书网页视频无法下载：真实页面把 `media.stream` 的档位键改成 `EF4/EF5`、`videoCodec` 内存放档位名、`masterUrl` 为 `http`、分辨率为竖屏，原实现四项假设全部不匹配，导致一条候选都取不到。现按位置遍历档位（不依赖键名）、仅把协议换为 https、按短边判断清晰度、只收 `.mp4`，桌面端固定 `--format <format_id>` 下载。43 项扩展测试与 329 项 Python 回归通过，用户登录态实网确认可下载，详见 [v0.7.2 更新日志](docs/releases/v0.7.2.md)。
 
 v0.7.0 新增普通网页链接的手动右键下载，独立于视频识别开关；复用原下载队列及暂停续传，保护页面与 iframe 上下文，保留签名 URL，并提供脱敏结果反馈。323 项 Python/GUI、33 项扩展和 9 组视频浏览器冒烟通过，详见 [v0.7.0 更新日志](docs/releases/v0.7.0.md)及[测试报告](docs/BROWSER_LINK_TEST_REPORT.md)。
 

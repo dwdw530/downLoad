@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import threading
 from downloader.utils.config import get_app_root
+from downloader.core.youtube_downloader import VIDEO_KINDS
 from downloader.utils.file_utils import available_download_path
 
 
@@ -202,7 +203,7 @@ class DatabaseManager:
                     ''', (task_id, url, filename, save_path, total_size, 1 if support_range else 0,
                           thread_count, status, self._next_list_order(cursor), resource_etag, resource_last_modified))
 
-                    if download_type in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
+                    if download_type in VIDEO_KINDS:
                         cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
                                        (download_type, video_height, task_id))
                     if browser_context:

@@ -2,7 +2,7 @@
 // Only an explicit user click on the browser context menu reaches the native host;
 // normal navigation, "save as" and the browser's own downloads stay untouched.
 
-import {youtubeUrl, xUrl, bilibiliUrl, douyinUrl, isDouyinPage} from "./media.js";
+import {youtubeUrl, xUrl, bilibiliUrl, douyinUrl, isDouyinPage, xhsUrl} from "./media.js";
 
 export const MENU_ID = "daw-download-link-v1";
 export const FILE_FEATURE = "file_download_v1";
@@ -32,7 +32,7 @@ const MESSAGES = {
 };
 
 function videoOnlyLink(value) {
-  if (youtubeUrl(value) || xUrl(value) || bilibiliUrl(value) || douyinUrl(value) || isDouyinPage(value)) return true;
+  if (youtubeUrl(value) || xUrl(value) || bilibiliUrl(value) || douyinUrl(value) || xhsUrl(value) || isDouyinPage(value)) return true;
   const parsed = new URL(value);
   const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
   let path = parsed.pathname;

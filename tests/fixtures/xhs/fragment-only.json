@@ -1,0 +1,35 @@
+{
+ "note": {
+  "firstNoteId": "66c3e1a3000000001e02b5b8",
+  "noteDetailMap": {
+   "undefined": null,
+   "66c3e1a3000000001e02b5b8": {
+    "note": {
+     "noteId": "66c3e1a3000000001e02b5b8",
+     "type": "video",
+     "title": "portrait note",
+     "video": {
+      "capa": {
+       "duration": 12.34
+      },
+      "media": {
+       "stream": {
+        "EF5": [
+         {
+          "masterUrl": "http://sns-video-v3.xhscdn.com/stream/79/110/3041/720_3041.m4s",
+          "backupUrls": [],
+          "width": 720,
+          "height": 1280,
+          "videoCodec": "EF5",
+          "duration": 12340,
+          "streamType": 3041
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

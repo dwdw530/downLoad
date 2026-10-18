@@ -151,6 +151,62 @@
       return true;
     });
   }
+  if (["xiaohongshu.com", "www.xiaohongshu.com"].includes(location.hostname)) {
+    const playerNoteOnce = video => new Promise(resolve => {
+      const nonce = crypto.randomUUID();
+      let settled = false;
+      const finish = detail => {
+        if (settled) return;
+        settled = true;
+        video.removeEventListener("daw-xhs-data", receive);
+        clearTimeout(timer);
+        resolve(detail);
+      };
+      const receive = event => {
+        if (event.target !== video || typeof event.detail !== "string" || event.detail.length > 2 * 1024 * 1024) return;
+        try {
+          const response = JSON.parse(event.detail);
+          if (response.nonce === nonce && typeof response.detail?.id === "string" &&
+              /^[0-9a-f]{24}$/.test(response.detail.id) && Array.isArray(response.detail.formats)) finish(response.detail);
+        } catch { /* Page data is untrusted. */ }
+      };
+      const timer = setTimeout(() => finish(null), 120);
+      video.addEventListener("daw-xhs-data", receive);
+      try { video.dispatchEvent(new CustomEvent("daw-xhs-read", {bubbles: true, detail: nonce})); }
+      catch { finish(null); }
+    });
+    const playerNote = async video => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const detail = await playerNoteOnce(video);
+        if (detail) return detail;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      return null;
+    };
+    chrome.runtime.onMessage.addListener((message, sender, reply) => {
+      if (sender.id !== chrome.runtime.id || message?.action !== "xhsContext") return;
+      (async () => {
+        const id = /^https:\/\/www\.xiaohongshu\.com\/explore\/([0-9a-f]{24})$/.exec(message.videoUrl || "")?.[1];
+        if (!id) return {ok: false, error: "无效的小红书笔记地址"};
+        const page = location.href;
+        const videos = [...document.querySelectorAll("video")];
+        const players = (await Promise.all(videos.map(async video => ({video, detail: await playerNote(video)}))))
+          .filter(item => item.detail);
+        const selected = players.find(item => item.detail.id === id);
+        const video = selected?.video || (!players.length && videos.find(item => videoPostFor(item) === message.videoUrl));
+        if (!video) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
+        const source = video.currentSrc || video.src;
+        const detail = selected?.detail || await playerNote(video);
+        if (!detail || detail.id !== id) return {ok: false, error: "未获取当前小红书视频信息，请刷新笔记详情页后重试"};
+        if (location.href !== page || !video.isConnected || (video.currentSrc || video.src) !== source ||
+            videoPostFor(video) !== message.videoUrl) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
+        if (!detail.formats.length || !Number.isFinite(detail.duration) || detail.duration <= 0)
+          return {ok: false, error: "未获取当前小红书视频信息，请刷新笔记详情页后重试"};
+        return {ok: true, video: {id: detail.id, duration: detail.duration, formats: detail.formats}};
+      })().then(reply).catch(() => reply({ok: false, error: "小红书视频信息获取失败，请刷新笔记页后重试"}));
+      return true;
+    });
+  }
   const styles = `
     :host {all:initial;position:fixed!important;z-index:2147483646!important;pointer-events:none!important;font:13px "Microsoft YaHei",sans-serif!important;letter-spacing:0!important;}
     :host([hidden]) {display:none!important}
@@ -219,6 +275,29 @@
       }
       return null;
     }
+    if (["xiaohongshu.com", "www.xiaohongshu.com"].includes(location.hostname)) {
+      const xhs = value => {
+        try {
+          const url = new URL(value, location.href);
+          if (url.protocol !== "https:" || url.username || url.password ||
+              (url.port && url.port !== "443") ||
+              !["xiaohongshu.com", "www.xiaohongshu.com"].includes(url.hostname)) return null;
+          const match = /^\/(?:explore|discovery\/item)\/([0-9a-f]{24})\/?$/.exec(url.pathname);
+          return match ? `https://www.xiaohongshu.com/explore/${match[1]}` : null;
+        } catch { return null; }
+      };
+      // Mirror media.js: the current note URL wins; ambiguous containers fail closed.
+      return xhs(location.href) || (() => {
+        for (let parent = video.parentElement; parent; parent = parent.parentElement) {
+          if (parent.querySelectorAll("video").length > 1) break;
+          const urls = [...new Set([...parent.querySelectorAll('a[href*="/explore/"], a[href*="/discovery/item/"]')]
+            .map(link => xhs(link.href)).filter(Boolean))];
+          if (urls.length === 1) return urls[0];
+          if (urls.length > 1) break;
+        }
+        return null;
+      })();
+    }
     if (!["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(location.hostname)) return null;
     const valid = value => {
       try {
@@ -277,12 +356,12 @@
       const row = text("div", "", "row");
       const info = text("div", "");
       info.append(text("div", item.name, "name"));
-      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
+      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
         : !["mp4", "webm"].includes(item.kind) ? item.unsupportedReason : item.sizeLabel;
       info.append(text("div", `${item.kindLabel} · ${reason}`, "meta"));
       const button = text("button", "下载", "download");
       button.type = "button";
-      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind);
+      button.disabled = item.protected || !["mp4", "webm", "youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind);
       button.addEventListener("click", async event => {
         if (!event.isTrusted) return;
         if (location.href !== requestedPage || await resolvePost(video) !== postUrl) { await open(video, state); return; }

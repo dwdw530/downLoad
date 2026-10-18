@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 URL_PATTERN = re.compile(r'https?://\S+')
 SECRET_PATTERN = re.compile(r'(?i)\b(cookie|authorization)\b\s*[:=]\s*\S+')
 
-VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash')
+VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash', 'xhs')
 STREAM_KINDS = ('hls', 'dash')
-CONTEXT_KINDS = ('douyin', *STREAM_KINDS)
+CONTEXT_KINDS = ('douyin', *STREAM_KINDS, 'xhs')
 
 
 def video_task_url(value, kind):
@@ -98,6 +98,21 @@ def douyin_url(value):
     return f'https://www.douyin.com/video/{video_id}'
 
 
+def xhs_url(value):
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
+        raise ValueError('无效的小红书笔记地址')
+    parsed = urlsplit(value)
+    if (parsed.scheme not in ('http', 'https') or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443)
+            or parsed.hostname not in ('xiaohongshu.com', 'www.xiaohongshu.com')):
+        raise ValueError('无效的小红书笔记地址')
+    match = re.fullmatch(r'/(?:explore|discovery/item)/([0-9a-f]{24})/?', parsed.path)
+    if not match or parsed.scheme != 'https':
+        raise ValueError('仅接受小红书视频笔记详情页地址')
+    # 源页面的 xsec_token 等签名参数只留在浏览器内，不写入数据库或日志
+    return f'https://www.xiaohongshu.com/explore/{match[1]}'
+
+
 def video_page_url(value, kind='youtube'):
     if kind == 'youtube':
         return youtube_url(value)
@@ -107,46 +122,100 @@ def video_page_url(value, kind='youtube'):
         return bilibili_url(value)
     if kind == 'douyin':
         return douyin_url(value)
+    if kind == 'xhs':
+        return xhs_url(value)
     raise ValueError('不支持的视频站点')
 
 
-def video_request_context(url, kind, context):
+def video_request_context(url, kind, context, height=None):
     result = normalize_stream_context(url, context)
-    if kind != 'douyin':
+    if kind == 'douyin':
+        video_id = douyin_url(url).rsplit('/', 1)[-1]
+        video = (context or {}).get('video')
+        if not isinstance(video, dict) or video.get('id') != video_id:
+            raise ValueError('未获取当前抖音视频信息，请刷新视频详情页后重试')
+        duration = video.get('duration')
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError('抖音视频时长无效，无法确认完整视频')
+        formats = video.get('formats')
+        if not isinstance(formats, list) or not 1 <= len(formats) <= 64:
+            raise ValueError('未找到抖音完整 MP4，请刷新视频详情页后重试')
+        normalized = []
+        seen = set()
+        for item in formats:
+            if not isinstance(item, dict):
+                raise ValueError('无效的抖音视频格式')
+            media_url = http_url(item.get('url'))
+            parsed = urlsplit(media_url)
+            if (parsed.scheme != 'https' or parsed.port not in (None, 443)
+                    or not parsed.hostname.endswith('.douyinvod.com')
+                    or re.search(r'/media-(?:video|audio)-', parsed.path)
+                    or 'range' in parse_qs(parsed.query, keep_blank_values=True)):
+                raise ValueError('拒绝将抖音分轨或未知地址作为完整视频')
+            if any(type(item.get(key)) is not int or not 0 < item[key] <= 16384 for key in ('width', 'height')):
+                raise ValueError('无效的抖音视频分辨率')
+            if item.get('vcodec') not in ('h264', 'h265'):
+                raise ValueError('无效的抖音视频编码')
+            if media_url in seen:
+                continue
+            seen.add(media_url)
+            normalized.append({'format_id': f'douyin-{len(normalized)}', 'url': media_url,
+                               'ext': 'mp4', 'protocol': 'https', 'vcodec': item['vcodec'], 'acodec': 'unknown',
+                               'width': item['width'], 'height': item['height']})
+        result['video'] = {'id': video_id, 'title': 'Douyin-' + video_id, 'duration': duration,
+                           'is_live': False, 'formats': normalized}
         return result
-    video_id = douyin_url(url).rsplit('/', 1)[-1]
+    if kind == 'xhs':
+        return xhs_request_context(url, context, height)
+    return result
+
+
+def xhs_request_context(url, context, height=None):
+    result = normalize_stream_context(url, context)
+    video_id = xhs_url(url).rsplit('/', 1)[-1]
     video = (context or {}).get('video')
     if not isinstance(video, dict) or video.get('id') != video_id:
-        raise ValueError('未获取当前抖音视频信息，请刷新视频详情页后重试')
+        raise ValueError('未获取当前小红书视频信息，请刷新笔记详情页后重试')
     duration = video.get('duration')
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
-        raise ValueError('抖音视频时长无效，无法确认完整视频')
+        raise ValueError('小红书视频时长无效，无法确认完整视频')
     formats = video.get('formats')
     if not isinstance(formats, list) or not 1 <= len(formats) <= 64:
-        raise ValueError('未找到抖音完整 MP4，请刷新视频详情页后重试')
+        raise ValueError('未找到小红书完整 MP4，请刷新笔记详情页后重试')
     normalized = []
     seen = set()
     for item in formats:
         if not isinstance(item, dict):
-            raise ValueError('无效的抖音视频格式')
+            raise ValueError('无效的小红书视频格式')
         media_url = http_url(item.get('url'))
         parsed = urlsplit(media_url)
+        # 页面播放器在 https 页面里请求 http 地址，同一签名路径的 https 可直取
+        if parsed.scheme == 'http':
+            media_url = 'https://' + media_url[7:]
+            parsed = urlsplit(media_url)
         if (parsed.scheme != 'https' or parsed.port not in (None, 443)
-                or not parsed.hostname.endswith('.douyinvod.com')
-                or re.search(r'/media-(?:video|audio)-', parsed.path)
+                or not parsed.hostname.endswith('.xhscdn.com')
+                or not parsed.path.lower().endswith('.mp4')
                 or 'range' in parse_qs(parsed.query, keep_blank_values=True)):
-            raise ValueError('拒绝将抖音分轨或未知地址作为完整视频')
+            raise ValueError('拒绝将非小红书 CDN 或不完整地址作为完整视频')
         if any(type(item.get(key)) is not int or not 0 < item[key] <= 16384 for key in ('width', 'height')):
-            raise ValueError('无效的抖音视频分辨率')
+            raise ValueError('无效的小红书视频分辨率')
         if item.get('vcodec') not in ('h264', 'h265'):
-            raise ValueError('无效的抖音视频编码')
+            raise ValueError('无效的小红书视频编码')
+        # 小红书以竖屏为主，清晰度档位按短边计（1080x1920 即 1080p）
+        if height is not None and min(item['width'], item['height']) > height:
+            continue
         if media_url in seen:
             continue
         seen.add(media_url)
-        normalized.append({'format_id': f'douyin-{len(normalized)}', 'url': media_url,
+        normalized.append({'format_id': f'xhs-{len(normalized)}', 'url': media_url,
                            'ext': 'mp4', 'protocol': 'https', 'vcodec': item['vcodec'], 'acodec': 'unknown',
                            'width': item['width'], 'height': item['height']})
-    result['video'] = {'id': video_id, 'title': 'Douyin-' + video_id, 'duration': duration,
+    if not normalized:
+        raise ValueError('未找到不高于所选清晰度的完整 MP4')
+    # 最高档排在最前，command() 直接按 format_id 固定选择
+    normalized.sort(key=lambda entry: min(entry['width'], entry['height']), reverse=True)
+    result['video'] = {'id': video_id, 'title': 'XHS-' + video_id, 'duration': duration,
                        'is_live': False, 'formats': normalized}
     return result
 
@@ -192,6 +261,8 @@ def failure_message(lines, kind=None):
     if '403' in text:
         if kind == 'douyin':
             return '抖音视频地址已过期或被拒绝，请刷新视频页面后重新下载'
+        if kind == 'xhs':
+            return '小红书视频地址已过期，请重新打开笔记页后重试'
         return '网站拒绝下载（403），请检查网络或更新视频组件'
     if 'timed out' in text or 'unable to download' in text:
         return '视频下载网络失败，请检查代理或稍后重试'
@@ -216,6 +287,7 @@ class YoutubeDownloader:
         self.cookie_file = None
         self.info_file = None
         self.expected_duration = None
+        self.xhs_format_id = None
 
     def command(self):
         height = int(self.task.get('video_height') or 720)
@@ -245,14 +317,20 @@ class YoutubeDownloader:
                         '--remux-video', 'mp4']
         if self.kind in CONTEXT_KINDS:
             context = video_request_context(self.task['url'], self.kind,
-                unprotect(self.task['browser_context']) if self.task.get('browser_context') else None)
+                unprotect(self.task['browser_context']) if self.task.get('browser_context') else None, height)
             for key, value in context['headers'].items():
                 command += ['--add-header', f'{key}:{value}']
             if self.cookie_file:
                 command += ['--cookies', self.cookie_file]
-        if self.kind == 'douyin':
+        if self.kind in ('douyin', 'xhs'):
             if not self.info_file:
-                raise ValueError('抖音视频信息尚未准备好')
+                label = '抖音' if self.kind == 'douyin' else '小红书'
+                raise ValueError(f'{label}视频信息尚未准备好')
+            if self.kind == 'xhs':
+                if not self.xhs_format_id:
+                    raise ValueError('未找到不高于所选清晰度的完整 MP4')
+                # 竖屏下 yt-dlp 的 [height<=N] 永远选不到，直接固定已校验的那一条
+                command[command.index('--format') + 1] = self.xhs_format_id
             # The browser already obtained signed formats. Do not repeat an unsigned page API request.
             return command + ['--load-info-json', self.info_file]
         return command + ['--', video_task_url(self.task['url'], self.kind)]
@@ -273,11 +351,17 @@ class YoutubeDownloader:
                     cookie['path'], 'TRUE' if cookie['secure'] else 'FALSE', '0', cookie['name'], cookie['value'])) + '\n')
 
     def prepare_video_info(self):
-        if self.kind != 'douyin':
+        if self.kind not in ('douyin', 'xhs'):
             return
+        try:
+            height = int(self.task.get('video_height') or 720)
+        except (TypeError, ValueError):
+            height = 720
         context = video_request_context(self.task['url'], self.kind,
-            unprotect(self.task['browser_context']) if self.task.get('browser_context') else None)
+            unprotect(self.task['browser_context']) if self.task.get('browser_context') else None, height)
         self.expected_duration = context['video']['duration']
+        if self.kind == 'xhs':
+            self.xhs_format_id = context['video']['formats'][0]['format_id']
         stream = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.info.json', delete=False)
         self.info_file = stream.name
         with stream:

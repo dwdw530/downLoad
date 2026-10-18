@@ -58,6 +58,22 @@ export function douyinUrl(value) {
   return /^[1-9][0-9]{0,24}$/.test(id) ? `https://www.douyin.com/video/${id}` : null;
 }
 
+export function isXhsPage(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password &&
+      (!url.port || ["80", "443"].includes(url.port)) &&
+      ["xiaohongshu.com", "www.xiaohongshu.com"].includes(url.hostname);
+  } catch { return false; }
+}
+
+export function xhsUrl(value) {
+  if (typeof value !== "string" || value.length > 2048 || /[\x00-\x1f]/.test(value) || !isXhsPage(value)) return null;
+  const match = /^\/(?:explore|discovery\/item)\/([0-9a-f]{24})\/?$/.exec(new URL(value).pathname);
+  // Source tokens (xsec_token etc.) stay in the browser; the queue only stores the bare note URL.
+  return match ? `https://www.xiaohongshu.com/explore/${match[1]}` : null;
+}
+
 export function classify(url, mime = "") {
   let parsed;
   try { parsed = new URL(url); } catch { return null; }
@@ -113,6 +129,6 @@ export function publicItem(item) {
     ? `${Math.max(1, Math.round(item.size / 1024))} KB` : `${(item.size / 1048576).toFixed(1)} MB`;
   return {id: item.id, url: item.url, name: item.name, kind: item.kind, size: item.size,
     sizeLabel, frameId: item.frameId, protected: !!item.protected,
-    kindLabel: item.kind === "douyin" ? "抖音" : item.kind === "bilibili" ? "B站" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
+    kindLabel: item.kind === "douyin" ? "抖音" : item.kind === "bilibili" ? "B站" : item.kind === "xhs" ? "小红书" : item.kind === "stream" ? "媒体流" : String(item.kind || "").toUpperCase(),
     unsupportedReason: item.kind === "stream" ? "分片或媒体流，请选择对应的 HLS/DASH 资源" : "资源类型暂不支持"};
 }

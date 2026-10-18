@@ -31,3 +31,8 @@ __pycache__/
 /logs/
 # 打包目录下的运行日志
 /dist/logs/
+
+# 本地 Playwright 诊断依赖（非项目构建依赖）
+/node_modules/
+/package.json
+/package-lock.json

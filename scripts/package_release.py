@@ -9,7 +9,7 @@ import zipfile
 from build_exe import VIDEO_FILES
 
 
-EXTENSION_FILES = ('background.js', 'content.js', 'douyin-page.js', 'link-download.js', 'media.js', 'manifest.json', 'package.json',
+EXTENSION_FILES = ('background.js', 'content.js', 'douyin-page.js', 'xhs-page.js', 'link-download.js', 'media.js', 'manifest.json', 'package.json',
                    'popup.js', 'popup.html', 'popup.css', 'icons/download.svg', 'icons/LICENSE')
 PROGRAM_FILES = ('daw下载器.exe', 'BrowserBridge.exe', 'install_browser_bridge.cmd', 'uninstall_browser_bridge.cmd')
 

@@ -1,4 +1,4 @@
-import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage} from "./media.js";
+import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage, xhsUrl, isXhsPage} from "./media.js";
 import {registerLinkDownloadMenu} from "./link-download.js";
 
 const HOST = "com.laowang.downloader";
@@ -102,7 +102,7 @@ async function download(tabId, id, senderFrame) {
   const item = (await getItems(tabId)).find(i => i.id === id);
   if (!item || (senderFrame !== undefined && item.frameId !== senderFrame)) return {ok: false, error: "视频资源已过期，请重新播放"};
   if (item.protected) return {ok: false, error: "受保护视频不支持下载"};
-  if (!["mp4", "webm", "youtube", "x", "bilibili", "douyin", "hls", "dash"].includes(item.kind)) return {ok: false, error: "未找到完整视频地址，请选择 HLS/DASH 播放列表"};
+  if (!["mp4", "webm", "youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind)) return {ok: false, error: "未找到完整视频地址，请选择 HLS/DASH 播放列表"};
   if (item.kind === "bilibili") {
     const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
     if (bilibiliUrl(frame?.url) !== item.url) return {ok: false, error: "视频分 P 已切换，请刷新资源列表"};
@@ -111,6 +111,11 @@ async function download(tabId, id, senderFrame) {
     const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
     const current = douyinUrl(frame?.url);
     if (!isDouyinPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+  }
+  if (item.kind === "xhs") {
+    const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+    const current = xhsUrl(frame?.url);
+    if (!isXhsPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
   }
   const sendKey = `${tabId}:${id}`;
   if (sending.has(sendKey)) return sending.get(sendKey);
@@ -126,11 +131,12 @@ async function download(tabId, id, senderFrame) {
     }
     const headers = {"User-Agent": navigator.userAgent};
     const segmented = ["hls", "dash"].includes(item.kind);
-    const scopedContext = segmented || item.kind === "douyin";
+    const scopedContext = segmented || item.kind === "douyin" || item.kind === "xhs";
     if (scopedContext) {
       const connection = await native({action: "ping"});
       if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: item.kind === "douyin"
-        ? "请更新并重启桌面下载器，抖音模块尚未就绪" : "请更新并重启桌面下载器，流媒体模块尚未就绪"};
+        ? "请更新并重启桌面下载器，抖音模块尚未就绪" : item.kind === "xhs"
+        ? "请更新并重启桌面下载器，小红书模块尚未就绪" : "请更新并重启桌面下载器，流媒体模块尚未就绪"};
     }
     let video;
     if (item.kind === "douyin") {
@@ -140,6 +146,18 @@ async function download(tabId, id, senderFrame) {
       const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
       const current = douyinUrl(frame?.url);
       if (!isDouyinPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+      const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
+      if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
+      if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
+      video = context.video;
+    }
+    if (item.kind === "xhs") {
+      const context = await chrome.tabs.sendMessage(tabId, {action: "xhsContext", videoUrl: item.url}, {frameId: item.frameId})
+        .catch(() => ({ok: false, error: "请刷新小红书笔记页后重试"}));
+      if (!context.ok) return context;
+      const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+      const current = xhsUrl(frame?.url);
+      if (!isXhsPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
       const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
       if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
       if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
@@ -165,6 +183,15 @@ async function download(tabId, id, senderFrame) {
         // Reading cookies/settings is asynchronous: a feed may switch after metadata was captured.
         const selected = await chrome.tabs.sendMessage(tabId, {action: "douyinPost"}, {frameId: item.frameId}).catch(() => null);
         if (selected?.postUrl !== item.url) return {ok: false, error: "抖音视频已切换，请刷新资源列表"};
+        const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
+        if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
+        if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
+      }
+      if (item.kind === "xhs") {
+        // Reading cookies/settings is asynchronous: an SPA overlay may switch notes meanwhile.
+        const frame = await chrome.webNavigation.getFrame({tabId, frameId: item.frameId}).catch(() => null);
+        const current = xhsUrl(frame?.url);
+        if (!isXhsPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
         const latest = (await getItems(tabId)).find(candidate => candidate.id === item.id && candidate.url === item.url);
         if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
         if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
@@ -230,20 +257,24 @@ async function handle(message, sender) {
       : {...await chrome.webNavigation.getFrame({tabId, frameId: sender.frameId}), title: sender.tab?.title};
     const onX = isXPage(page.url);
     const onDouyin = isDouyinPage(page.url);
+    const onXhs = isXhsPage(page.url);
+    const xhsUrlValue = onXhs ? xhsUrl(popup ? page.url : message.postUrl) : null;
     const biliUrl = bilibiliUrl(page.url);
     const douyinPost = popup && onDouyin ? await chrome.tabs.sendMessage(tabId, {action: "douyinPost"}, {frameId: 0})
       .catch(() => null) : null;
     const pageUrl = onX ? xUrl(popup ? page.url : message.postUrl)
-      : onDouyin ? douyinUrl(popup ? douyinPost?.postUrl || page.url : message.postUrl) : biliUrl || youtubeUrl(page.url);
-    const pageKind = onX ? "x" : onDouyin ? "douyin" : biliUrl ? "bilibili" : "youtube";
+      : onDouyin ? douyinUrl(popup ? douyinPost?.postUrl || page.url : message.postUrl)
+      : xhsUrlValue || biliUrl || youtubeUrl(page.url);
+    const pageKind = onX ? "x" : onDouyin ? "douyin" : xhsUrlValue ? "xhs" : biliUrl ? "bilibili" : "youtube";
     if (pageUrl && await setting()) {
       await serial(tabId, async () => {
         const frameId = popup ? 0 : sender.frameId;
         const frames = (await chrome.storage.session.get(`protected:${tabId}`))[`protected:${tabId}`] || [];
-        const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili", "douyin"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
+        const current = (await getItems(tabId)).filter(i => !["youtube", "bilibili", "douyin", "xhs"].includes(i.kind) || i.frameId !== frameId || i.url === pageUrl);
         await saveItems(tabId, upsert(current, {id: crypto.randomUUID(), url: pageUrl,
           name: onX ? `X-${new URL(pageUrl).pathname.split("/status/")[1].replaceAll("/", "-")}`
             : onDouyin ? `抖音-${new URL(pageUrl).pathname.split("/")[2]}`
+            : xhsUrlValue ? `小红书-${new URL(pageUrl).pathname.split("/")[2]}`
             : biliUrl ? `${(page.title || `Bilibili-${new URL(biliUrl).pathname.split("/")[2]}`).slice(0, 120)} - P${new URL(biliUrl).searchParams.get("p")}`
             : (page.title || `YouTube-${new URL(pageUrl).searchParams.get("v")}`).replace(/ - YouTube$/, "").slice(0, 140),
           kind: pageKind, frameId, pageUrl: page.url, size: 0, protected: frames.includes(frameId)}));
@@ -255,6 +286,7 @@ async function handle(message, sender) {
     const emptyMessage = applies(states[`protected:${tabId}`]) ? "检测到受保护视频，本版不支持下载"
       : onX ? "未确认视频所属帖子，请打开该视频的帖子详情后重试"
       : onDouyin ? "未确认当前视频，请先播放视频并完整刷新页面后重试"
+      : onXhs ? "未获取笔记视频信息，请刷新笔记页后重试"
       : applies(states[`blob:${tabId}`]) ? "检测到浏览器内视频源（blob），尚未获取可下载直链" : "当前页面尚未发现视频资源";
     const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
     return {ok: true, enabled: await setting(), emptyMessage, videoHeight,

@@ -9,6 +9,7 @@ import os
 from contextlib import contextmanager
 from typing import List, Dict, Optional, Callable
 from downloader.core.download_engine import DownloadEngine
+from downloader.core.youtube_downloader import VIDEO_KINDS
 from downloader.database.db_manager import DatabaseManager
 
 
@@ -60,7 +61,7 @@ class TaskManager:
         tasks = self.db.get_all_tasks()
 
         for task in tasks:
-            if task.get('download_type') in ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash'):
+            if task.get('download_type') in VIDEO_KINDS:
                 continue
             status = task.get('status')
             # 终态不碰，避免误改历史结果
