@@ -154,6 +154,16 @@
 - 发布前已核对远端 main/master 为 `18d7ea7`、latest 为 v0.6.0，且不存在 v0.6.1 标签或 Release；比对发布前 7 个历史 Release 的 id、标签、发布时间与附件清单，发布后未变。
 - 发布方式：`git credential fill` 取凭据管理器中仓库所有者账号令牌，经进程内变量与 curl 标准输入使用；未写入文件或仓库，临时发布脚本与响应体已删除。
 
+## v0.7.2 发布（2026-10-18）
+
+- 版本内容：修复小红书网页视频无法下载（真实页面 `EF4/EF5` 档位键、`videoCodec` 存档位名、`masterUrl` 为 `http`、竖屏分辨率），扩展版本升至 0.6.2。`v0.7.1` 与 `extension-v0.6.1` **从未发布**（远端标签只到 `v0.7.0`），其内容并入本版。
+- 构建：`conda run -n py310_env python -B scripts/build_installer.py --rebuild v0.7.2`。构建前后核对 `dist/data`、`dist/temp` 四个文件哈希未变（含用户 `config.json`、`downloads.db` 与两条断点）。
+- 安装包：`dist/daw-downloader-v0.7.2-windows-x64-setup.exe`，155,741,923 字节，SHA256 `3de13850ed6033de8dff6e148a65da0fe8df67b2cc27645144ec77acdd00f327`。
+- 便携包：`daw-downloader-v0.7.2-windows-x64.zip` 213,863,327 字节 / `6680e34bb2f7474132f5c584154d115689afe5a2f82bd604d1e9422f5259f585`；扩展包 `daw-browser-extension-v0.6.2.zip` 30,514 字节 / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`。
+- 发布提交 `5f8a3a5`，记录提交 `e8e7f47`；`master` 与 `master:main` 同指向 `e8e7f47`（原子推送）。annotated 标签 `v0.7.2`（tag 对象 `22fa0c8`）指向发布提交 `5f8a3a5`。
+- Release id `416188131`，非 draft、非 prerelease，`latest` 指向 v0.7.2；发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.7.2`，正文为 `docs/releases/v0.7.2.md` 加“v0.7.1 未单独发布”说明。五附件上传后经 API 核对，大小与 `digest` 与本地一致；`v0.7.0`、`v0.6.1`、`extension-v0.5.2` 的附件数与 digest 未变。
+- 验收：`smoke_exe.py` 3 组、`smoke_installer.py` 6 组通过（中文向导、带空格自定义路径、升级保留数据、在用时阻止覆盖、卸载清理与浏览器注册恢复）。未执行 `scripts/smoke_xhs.cjs` 自动化实网脚本，由用户手工登录态实网确认代替。
+
 ## v0.6.0 发布（2026-10-11）
 
 - 更新内容：左侧分类树（状态/文件类型/站点）、任务右键菜单与手动排序（落库 `list_order`，影响 pending 出队顺序）、主题切换（深色/浅色/跟随系统）；分类树改原生 `tkinter.Label` 并修复切主题后侧栏配色不同步。详见 `docs/releases/v0.6.0.md` 与 IDM 档第 8 节。
