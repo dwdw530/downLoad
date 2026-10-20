@@ -58,6 +58,14 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 
 静默安装支持 `/S`、`/NODESKTOP`、`/NOBRIDGE`；自选路径使用最后一个参数 `/D=完整路径`。静默卸载使用 `Uninstall.exe /S`，同样保留用户数据。
 
+## 2026-10-20 v0.7.3 构建与验收
+
+- 桌面版 v0.7.3、扩展 0.6.2（未改动），设置页新增可配置的临时文件目录并改为「下载 / 其他」标签页；[更新日志](releases/v0.7.3.md)。
+- 安装包：`dist/daw-downloader-v0.7.3-windows-x64-setup.exe`，155,765,325 字节；SHA256 `6ad2a74bf2f8ceec8041543ef2af2459b38f47272971deb67649a4f71d6895e8`。
+- 便携包：`daw-downloader-v0.7.3-windows-x64.zip` 213,866,498 字节 / `5cc2d5b99ad61195630279629a259ecdd3c2c0b9e75971007a8650beef96cf3a`；扩展包 `daw-browser-extension-v0.6.2.zip` 30,514 字节 / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`（与 v0.7.2 相同）。
+- `py310_env` 全量 337 项、GUI 137 项通过；`smoke_exe.py` 3 组、`smoke_installer.py` 全部通过。构建前后 `dist/data`、`dist/temp` 五个文件哈希一致（含用户配置、数据库和一条 HLS 断点）。
+- 发布：提交 `b0b3757`，annotated 标签 `v0.7.3`（tag 对象 `70dd38f`），Release id `418506719`；五附件远端大小与 digest 与本地一致，latest 指向 v0.7.3，历史 Release 未改动。
+
 ## 2026-10-14 v0.7.0 构建与验收
 
 - 桌面版 v0.7.0、扩展 0.6.0，新增普通文件链接手动右键下载；[更新日志](releases/v0.7.0.md)。

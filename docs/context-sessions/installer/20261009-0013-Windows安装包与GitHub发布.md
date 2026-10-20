@@ -3,14 +3,14 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-10-14 20:03 +08:00（v0.7.0 收尾及两套本地记忆同步）
-- 状态：已完成（v0.7.0 构建验收、双分支推送、标签和 GitHub 发布完成，五附件校验一致）
+- 更新时间：2026-10-20（v0.7.3 临时文件目录设置发布完成）
+- 状态：已完成（v0.7.3 已构建、双分支推送、打标签并发布，五附件校验一致）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
 ## 上下文摘要
 
-**最新 v0.7.0**：用户明确授权打包、提交 GitHub、发布新版本和更新日志。右键普通文件下载经独立审查及 323 项 Python/GUI、33 项扩展、9 组视频浏览器回归；正式 `dist` 已重建，正式 EXE 三组及安装包六组验收通过。扩展为 0.6.0，需要与桌面、桥接一并升级。[GitHub 发布完成](https://github.com/dwdw530/downLoad/releases/tag/v0.7.0)，五附件大小和 digest 与本地一致，latest 已更新，历史 v0.6.1、extension-v0.5.2 及更早版本保留。
+**最新 v0.7.3**：设置页新增可配置的临时文件目录（可指向 U 盘/移动硬盘，保存后立即生效），并改为「下载 / 其他」标签页；扩展保持 0.6.2 未改动。337 项 Python 全量、137 项 GUI、正式 EXE 三组及安装包验收通过，`dist/data`、`dist/temp` 构建前后哈希未变。[GitHub 发布完成](https://github.com/dwdw530/downLoad/releases/tag/v0.7.3)，五附件大小和 digest 与本地一致，latest 已更新，历史 Release 保留。
 
 ### v0.7.0 正式构建（2026-10-14）
 
@@ -153,6 +153,17 @@
 - 远端附件与本地逐项一致：安装包 155,717,801 B / `23a90276…62954f`、安装包 `.sha256` 111 B / `fcaf7a45…f684db`、便携 ZIP 213,848,008 B / `bdacd3f5…a7783d5`、扩展 ZIP 17,768 B / `b0bdbb7b…f168682a`、`SHA256SUMS.txt` 205 B / `3057e60b…3af14ee`。
 - 发布前已核对远端 main/master 为 `18d7ea7`、latest 为 v0.6.0，且不存在 v0.6.1 标签或 Release；比对发布前 7 个历史 Release 的 id、标签、发布时间与附件清单，发布后未变。
 - 发布方式：`git credential fill` 取凭据管理器中仓库所有者账号令牌，经进程内变量与 curl 标准输入使用；未写入文件或仓库，临时发布脚本与响应体已删除。
+
+## v0.7.3 发布（2026-10-20）
+
+- 版本内容：设置页新增“临时文件目录”，可指向 U 盘/移动硬盘，保存后立即生效（新任务直接使用，新目录会建目录并做写探针；无断点数据的排队任务同步改分块路径，已有断点/进行中的任务保持原目录）；设置页改为「下载 / 其他」标签页，窗口 520×800 → 560×520。扩展保持 0.6.2 未改动。
+- 构建：`conda run --no-capture-output -n py310_env python -B scripts/build_installer.py --rebuild v0.7.3`，随后 `scripts/package_release.py v0.7.3`。构建前后核对 `dist/data`、`dist/temp` 五个文件哈希一致（含用户 `config.json`、`downloads.db` 与一条 HLS 断点）。
+- 安装包：`dist/daw-downloader-v0.7.3-windows-x64-setup.exe`，155,765,325 字节，SHA256 `6ad2a74bf2f8ceec8041543ef2af2459b38f47272971deb67649a4f71d6895e8`；校验文件 111 字节 / `64e8f2f6db5fe1c3e8745733a36a4edcee6121a44c94d347a40566efe5147228`。
+- 便携包：`daw-downloader-v0.7.3-windows-x64.zip` 213,866,498 字节 / `5cc2d5b99ad61195630279629a259ecdd3c2c0b9e75971007a8650beef96cf3a`；扩展包 `daw-browser-extension-v0.6.2.zip` 30,514 字节 / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`；`SHA256SUMS.txt` 205 字节 / `6625550bfe5179038b871ac13bb3b680fff7636892738e42f4b8857263ca81f1`。
+- 发布提交 `b0b3757`，`master` 与 `master:main` 已原子推送至同提交；annotated 标签 `v0.7.3`（tag 对象 `70dd38f`）指向该提交。
+- Release id `418506719`，非 draft、非 prerelease，`latest` 指向 v0.7.3；发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.7.3`，正文与 `docs/releases/v0.7.3.md` 一致。五附件上传后经 API 核对，大小与 `digest` 与本地一致；11 个历史 Release 的 id、发布时间与附件未变。
+- 验收：`py310_env` 全量 337 项、GUI 137 项通过；`smoke_exe.py` 3 组、`smoke_installer.py` 全部通过（中文向导、含空格自定义路径、占用时阻止覆盖、升级保留数据、卸载清理、重装与浏览器注册恢复）。
+- 发布方式：同前，`git credential fill` 指定 `dwdw530` 取凭据管理器令牌，令牌仅经 `curl --config -` 标准输入使用；API 未认证读取触发速率限制后改用带令牌请求完成核对，临时响应体均在 `output/` 且未入库。
 
 ## v0.7.2 发布（2026-10-18）
 
