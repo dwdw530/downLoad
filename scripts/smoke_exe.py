@@ -319,7 +319,8 @@ def click_toolbar(hwnd, index, expected_buttons=5, design_width=900, bottom=Fals
     scale = rect.right / design_width
     children = enum_children(hwnd)
     buttons = [c for c in children if c['class'] == 'TkChild'
-               and abs(c['rect'][2] - c['rect'][0] - 100 * scale) < 2
+               # 按钮宽度随界面字号调过（100 -> 110/132），这里只卡高度和合理宽度区间
+               and 60 * scale <= c['rect'][2] - c['rect'][0] <= 240 * scale
                and abs(c['rect'][3] - c['rect'][1] - 28 * scale) < 2]
     top = (max if bottom else min)(c['rect'][1] for c in buttons)
     rectangles = sorted(set(tuple(c['rect']) for c in buttons if c['rect'][1] == top))

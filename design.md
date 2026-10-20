@@ -27,6 +27,9 @@ downloader/
 │   └── db_manager.py          SQLite 封装：任务表、分块表、历史表与老库字段迁移
 ├── ui/
 │   ├── main_window.py         主窗口、任务卡片，及添加/删除/退出确认对话框
+│   ├── ctk_helpers.py        CTk Toplevel 延迟回调守卫
+│   ├── typography.py         左侧分类树字体（微软雅黑 UI 18pt / 标题 17pt 加粗）
+│   ├── float_bar.py           桌面速度悬浮条（完整/迷你两种样式，Canvas 自绘）
 │   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速、完成后动作）
 │   ├── history_dialog.py      下载历史对话框
 │   └── tray_manager.py        系统托盘图标与下载完成通知
@@ -214,7 +217,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ## 8. 配置
 
-`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）、`ui_active_category`（左侧分类树选中项，默认 all）、`ui_appearance_mode`（主题 dark/light/system，默认 dark）、`clipboard_monitor_enabled`（剪贴板监视，默认 true）、`clipboard_ignore_hosts`（忽略站点域名列表）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速与主题）。
+`data/config.json`，默认值见 `config.py`：`download_dir`（默认 `~/Downloads/daw下载器`）、`temp_dir`、`thread_count`（1-16）、`max_concurrent_downloads`（1-5）、`retry_times`、`chunk_size`、`timeout`、`user_agent`、`proxy{enabled,http,https}`、`close_behavior`（ask/minimize/exit）、`speed_limit`（字节/秒）、`after_download{open_file,open_folder,shutdown}`（下载完成后动作，默认全关）、`ui_hide_completed`（任务列表隐藏已完成，默认 false）、`ui_active_category`（左侧分类树选中项，默认 all）、`ui_appearance_mode`（主题 dark/light/system，默认 dark）、`ui_float_bar_enabled`/`ui_float_bar_mode`（悬浮条开关与 normal/mini 样式）、`clipboard_monitor_enabled`（剪贴板监视，默认 true）、`clipboard_ignore_hosts`（忽略站点域名列表）。设置对话框保存后通过回调即时同步运行时对象（含活跃下载器限速与主题）。
 
 ### 8.1 任务列表显示与过滤
 
@@ -239,6 +242,18 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 - `config.ui_appearance_mode` 取 `dark`/`light`/`system`（其他值回退 `dark`），启动时由 `MainWindow.__init__` 调 `ctk.set_appearance_mode()` 应用；设置对话框「主题」用 `CTkSegmentedButton`（深色/浅色/跟随系统），保存或恢复默认后经 `_apply_saved_settings` 立即重新应用。
 - 自定义颜色统一用 `(light, dark)` 元组（如分类选中态 `("gray70", "gray35")`），切换模式时由 CustomTkinter 自动重绘。
+
+### 8.1.4 左侧分类树字号与设置保存反馈
+
+- 侧栏分类项与分组标题只做字号调整：`ui/typography.py` 提供 `SIDEBAR_ITEM_FONT`（微软雅黑 UI 18pt）与 `SIDEBAR_HEADING_FONT`（17pt 加粗），侧栏宽度 210 → 240、行内边距加大，避免字数多的分类被挤掉。
+- 原生 `tkinter.Label` 的 font 元组里**正数是磅、负数是像素**；侧栏必须给正值，写成负值反而会比原来的 `("Arial", 14)` 更小。其它界面（按钮、输入框、设置页、各对话框）字体一律保持原样，不做统一定制。
+- 设置保存成功不再弹 `messagebox`：对话框直接关闭，主窗口状态栏闪 3 秒「设置已保存」后自动恢复常规统计（`MainWindow._flash_status`；`_status_flash` 由状态栏定时器尊重）。恢复默认在按钮旁就地提示 2 秒，不弹窗。
+- 仅错误路径仍用弹窗（目录不可写、配置写入失败等），失败必须让用户停下来处理。
+
+### 8.1.5 桌面悬浮条样式（normal / mini）
+
+- `config.ui_float_bar_mode` 取 `normal`（280×118，速度+百分比+进度条+文件名+一分钟曲线）或 `mini`（158×34，只留状态点、速度、百分比与底部细进度线）；两者都比首版（348×160 / 196×44）整体缩一档，字号同步下调，避免小条子里字占一半。
+- 右键菜单「迷你模式」用 checkbutton 即时切换并落盘；设置页「悬浮条样式」分段按钮保存后经 `_apply_saved_settings` 调用 `FloatBar.set_mode(..., persist=False)`。切换时保留左上角并重新夹进虚拟桌面，DPI 缩放在两种样式下都有效。
 
 ### 8.2 添加任务（批量与稍后）
 

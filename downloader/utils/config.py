@@ -52,6 +52,7 @@ class ConfigManager:
         "ui_active_category": "all",  # 左侧分类树当前选中项：all / status:xxx / type:xxx / host:xxx
         "ui_appearance_mode": "dark",  # 主题：dark 深色 / light 浅色 / system 跟随系统
         "ui_float_bar_enabled": False,  # 桌面悬浮条：默认关闭，不打扰存量用户
+        "ui_float_bar_mode": "normal",  # 悬浮条样式：normal 完整 / mini 迷你（只显示速度与进度）
         "ui_float_bar_pos": [],  # 悬浮条上次位置（物理像素 [x, y]，空表示首次放在右下角）
         "clipboard_monitor_enabled": True,  # 剪贴板监视：复制链接时弹出添加提示
         "clipboard_ignore_hosts": [],  # 剪贴板监视忽略的站点域名列表
@@ -240,6 +241,16 @@ class ConfigManager:
     @ui_float_bar_enabled.setter
     def ui_float_bar_enabled(self, value: bool):
         self._config["ui_float_bar_enabled"] = bool(value)
+
+    @property
+    def ui_float_bar_mode(self) -> str:
+        """悬浮条样式：normal 完整 / mini 迷你（非法值回退到完整）"""
+        mode = self._config.get("ui_float_bar_mode") or "normal"
+        return mode if mode in ("normal", "mini") else "normal"
+
+    @ui_float_bar_mode.setter
+    def ui_float_bar_mode(self, value: str):
+        self._config["ui_float_bar_mode"] = value if value in ("normal", "mini") else "normal"
 
     @property
     def ui_float_bar_pos(self) -> list:

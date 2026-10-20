@@ -22,6 +22,7 @@ from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
+from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class MainWindow(ctk.CTk):
         self._shutdown_activity = None
         self._loading_tasks = False
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
+        self._status_flash = None  # (文本, 截止时间) 状态栏临时提示：如“设置已保存”
         self._speed_history = {}  # {task_id: deque(maxlen=180)} 速度曲线采样，仅内存不落盘
         self._detail_windows = {}  # {task_id: TaskDetailWindow} 打开中的详情窗
         self._clipboard_dialog = None  # 剪贴板提示浮窗（同时只开一个）
@@ -251,7 +253,7 @@ class MainWindow(ctk.CTk):
         # 分类项数量有限（状态+类型+站点），用普通 Frame 即可；
         # 侧栏不用 CTkScrollableFrame：它会在每次创建/销毁窗口时反复注册全局鼠标滚轮绑定，
         # 大量测试窗口累积后会拖慢整个 Tk 事件循环（实测让 GUI 测试从 120s 劣化到 530s）。
-        self.sidebar_frame = ctk.CTkFrame(content, width=210)
+        self.sidebar_frame = ctk.CTkFrame(content, width=240)
         self.sidebar_frame.pack(side="left", fill="y", padx=(0, 8))
         self.sidebar_frame.pack_propagate(False)
 
@@ -336,20 +338,20 @@ class MainWindow(ctk.CTk):
         return dict(SIDEBAR_PALETTE['dark' if dark else 'light'])
 
     def _create_sidebar_heading(self, text: str):
-        """侧栏分组标题（原生 Label，字号对齐右侧正文）"""
+        """侧栏分组标题（原生 Label 用磅值，字号与分类项同档）"""
         colors = self._sidebar_colors_cache
-        label = tkinter.Label(self.sidebar_frame, text=text, anchor="w", padx=8, pady=2,
-                              bg=colors['bg'], fg=colors['muted'], font=("Arial", 14, "bold"))
-        label.pack(fill="x", pady=(8, 1))
+        label = tkinter.Label(self.sidebar_frame, text=text, anchor="w", padx=10, pady=3,
+                              bg=colors['bg'], fg=colors['muted'], font=SIDEBAR_HEADING_FONT)
+        label.pack(fill="x", pady=(10, 1))
         self._sidebar_heading_labels.append(label)
         return label
 
     def _create_category_button(self, parent, key: str, text: str):
         """创建一个分类项（原生 Label，点击过滤，hover/选中换底色）"""
         colors = self._sidebar_colors_cache
-        item = tkinter.Label(parent, text=text, anchor="w", padx=12, pady=4,
+        item = tkinter.Label(parent, text=text, anchor="w", padx=12, pady=6,
                              bg=colors['bg'], fg=colors['fg'], cursor="hand2",
-                             font=("Arial", 14))
+                             font=SIDEBAR_ITEM_FONT)
         item.pack(fill="x")
         item.bind("<Button-1>", lambda _event, k=key: self._on_category_select(k))
         item.bind("<Enter>", lambda _event, widget=item: self._on_category_hover(widget, True))
@@ -637,6 +639,10 @@ class MainWindow(ctk.CTk):
             self.float_bar.refresh_theme()
         # 悬浮条开关立即生效
         self._set_float_bar_visible(config.ui_float_bar_enabled)
+        # 悬浮条样式（完整/迷你）也随设置即时切换
+        if getattr(self, 'float_bar', None) is not None:
+            self.float_bar.set_mode(config.ui_float_bar_mode, persist=False)
+        self._flash_status("设置已保存")
         if self._active_category != config.ui_active_category:
             self._active_category = config.ui_active_category
             for key in list(self.category_buttons):
@@ -1301,9 +1307,23 @@ class MainWindow(ctk.CTk):
         # 同步详情窗
         self._push_detail_update(task_id, downloaded_size, total_size, speed)
 
+    def _flash_status(self, text: str, seconds: float = 3.0):
+        """状态栏闪一条临时提示，不弹窗：到点自动恢复常规统计"""
+        self._status_flash = (text, time.monotonic() + seconds)
+        try:
+            self.status_label.configure(text=text)
+        except Exception:
+            pass
+
     def _start_ui_update_thread(self):
         """使用Tk定时器更新状态栏，窗口销毁后不再保留后台线程。"""
         def update_status_bar():
+            flash = self._status_flash
+            if flash and time.monotonic() < flash[1]:
+                self.status_label.configure(text=flash[0])
+                self.after(1000, update_status_bar)
+                return
+            self._status_flash = None
             stats = self.task_manager.get_statistics()
             downloading_tasks = self.task_manager.get_downloading_tasks()
             total_speed = sum(task['speed'] for task in downloading_tasks)

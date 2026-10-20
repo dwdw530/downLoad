@@ -24,10 +24,15 @@ logger = logging.getLogger(__name__)
 
 # ==================== 尺寸与布局（逻辑像素，绘制时再乘 DPI 缩放） ====================
 
-BAR_WIDTH = 348
-BAR_HEIGHT = 160
-CARD_RADIUS = 16
-PAD = 18
+BAR_WIDTH = 280
+BAR_HEIGHT = 118
+# 迷你模式：只留速度、百分比和一条底部进度线，放在桌面角落不碍事
+MINI_BAR_WIDTH = 158
+MINI_BAR_HEIGHT = 34
+CARD_RADIUS = 14
+MINI_CARD_RADIUS = 10
+PAD = 14
+MINI_PAD = 9
 
 # 拖动松手后的贴边距离
 SNAP_DISTANCE = 16
@@ -177,8 +182,8 @@ class FloatBar:
             pass
 
         self._scale = self._detect_scale()
-        self._width = max(1, round(BAR_WIDTH * self._scale))
-        self._height = max(1, round(BAR_HEIGHT * self._scale))
+        self._mode = 'mini' if config.get('ui_float_bar_mode') == 'mini' else 'normal'
+        self._apply_mode_metrics()
 
         self.canvas = tk.Canvas(
             self.window, bg=TRANSPARENT_KEY, highlightthickness=0, bd=0,
@@ -213,14 +218,27 @@ class FloatBar:
         """字体尺寸按物理像素取负值，避免 Tk 自己再做一次磅→像素换算"""
         size = self._scale
         family = 'Microsoft YaHei UI'
-        # 字号整体上调一档：悬浮条是小窗，字小了看着就是一块毛玻璃
-        self._font_label = tkfont.Font(family=family, size=-max(10, round(12 * size)))
-        self._font_label_bold = tkfont.Font(family=family, size=-max(10, round(12 * size)), weight='bold')
-        self._font_speed = tkfont.Font(family=family, size=-max(16, round(26 * size)), weight='bold')
-        self._font_speed_small = tkfont.Font(family=family, size=-max(13, round(20 * size)), weight='bold')
-        self._font_percent = tkfont.Font(family=family, size=-max(12, round(18 * size)), weight='bold')
-        self._font_meta = tkfont.Font(family=family, size=-max(9, round(11 * size)))
-        self._font_menu = tkfont.Font(family=family, size=-max(9, round(11 * size)))
+        # 字号跟着尺寸一起缩：条子缩小了，字不能还占掉一半
+        self._font_label = tkfont.Font(family=family, size=-max(9, round(11 * size)))
+        self._font_label_bold = tkfont.Font(family=family, size=-max(9, round(11 * size)), weight='bold')
+        self._font_speed = tkfont.Font(family=family, size=-max(14, round(22 * size)), weight='bold')
+        self._font_speed_small = tkfont.Font(family=family, size=-max(11, round(17 * size)), weight='bold')
+        self._font_percent = tkfont.Font(family=family, size=-max(10, round(15 * size)), weight='bold')
+        self._font_meta = tkfont.Font(family=family, size=-max(8, round(10 * size)))
+        self._font_menu = tkfont.Font(family=family, size=-max(10, round(12 * size)))
+        # 迷你模式：字号仍保证可读，不因为条子小就把字缩成蚂蚁
+        self._font_mini_speed = tkfont.Font(family=family, size=-max(11, round(14 * size)), weight='bold')
+        self._font_mini_speed_small = tkfont.Font(family=family, size=-max(10, round(12 * size)), weight='bold')
+        self._font_mini_percent = tkfont.Font(family=family, size=-max(9, round(11 * size)))
+
+    def _apply_mode_metrics(self):
+        """按当前样式重新算窗口逻辑尺寸与物理尺寸（DPI 缩放一起乘）"""
+        if self._mode == 'mini':
+            self._base_width, self._base_height = MINI_BAR_WIDTH, MINI_BAR_HEIGHT
+        else:
+            self._base_width, self._base_height = BAR_WIDTH, BAR_HEIGHT
+        self._width = max(1, round(self._base_width * self._scale))
+        self._height = max(1, round(self._base_height * self._scale))
 
     def _resolve_theme(self):
         """深色/浅色跟随主窗口当前外观模式"""
@@ -318,8 +336,12 @@ class FloatBar:
     # ==================== 右键菜单 ====================
 
     def _build_menu(self):
+        self._mini_var = tk.BooleanVar(master=self.window, value=self._mode == 'mini')
         self._menu = tk.Menu(self.window, tearoff=0, font=self._font_menu)
         self._menu.add_command(label='显示主窗口', command=self._emit(self._on_show_window))
+        self._menu.add_separator()
+        self._menu.add_checkbutton(label='迷你模式', variable=self._mini_var,
+                                   command=self._on_toggle_mini)
         self._menu.add_separator()
         self._menu.add_command(label='暂停全部', command=self._emit(self._on_pause_all))
         self._menu.add_command(label='继续全部', command=self._emit(self._on_resume_all))
@@ -328,6 +350,34 @@ class FloatBar:
         self._menu.add_command(label='隐藏悬浮条', command=self.hide_by_user)
         self._menu.add_separator()
         self._menu.add_command(label='退出程序', command=self._emit(self._on_exit))
+
+    def _on_toggle_mini(self):
+        """右键切换完整/迷你：立即生效并记住选择"""
+        self.set_mode('mini' if self._mini_var.get() else 'normal')
+
+    def set_mode(self, mode, persist: bool = True):
+        """切换悬浮条样式（完整/迷你），位置仍夹在当前桌面内"""
+        if self._destroyed:
+            return
+        mode = 'mini' if mode == 'mini' else 'normal'
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self._mini_var.set(mode == 'mini')
+        self._apply_mode_metrics()
+        # 尺寸变了：保留左上角，但重新夹进可视桌面，避免小屏上越界
+        x, y = self._pos
+        x, y = clamp_position(x, y, self._width, self._height, self._bounds())
+        self._pos = (x, y)
+        self.canvas.configure(width=self._width, height=self._height)
+        self.window.geometry(f'{self._width}x{self._height}+{x}+{y}')
+        if persist:
+            try:
+                self.config.ui_float_bar_mode = mode
+                self.config.save()
+            except Exception as error:
+                logger.warning('保存悬浮条样式失败: %s', error)
+        self._draw()
 
     @staticmethod
     def _emit(callback):
@@ -515,11 +565,16 @@ class FloatBar:
     def _draw(self):
         if self._destroyed:
             return
+        self.canvas.delete('all')
+        if self._mode == 'mini':
+            self._draw_mini(self._theme)
+        else:
+            self._draw_full(self._theme)
+
+    def _draw_full(self, theme):
         canvas = self.canvas
-        canvas.delete('all')
 
         scale = self._scale
-        theme = self._theme
         width = BAR_WIDTH
         height = BAR_HEIGHT
         state = self._state
@@ -539,11 +594,11 @@ class FloatBar:
         # 顶部行：状态点 + 标题，右侧任务数
         dot_color = {'downloading': theme['accent'],
                      'pending': theme['muted']}.get(state['status'], theme['idle_dot'])
-        center_y = px(26)
-        dot_r = px(3.5)
+        center_y = px(19)
+        dot_r = px(3)
         canvas.create_oval(px(PAD), center_y - dot_r, px(PAD) + dot_r * 2, center_y + dot_r,
                            fill=dot_color, outline='')
-        canvas.create_text(px(PAD + 13), center_y, text='daw 下载器', anchor='w',
+        canvas.create_text(px(PAD + 11), center_y, text='daw 下载器', anchor='w',
                            fill=theme['muted'], font=self._font_meta)
 
         if state['downloading']:
@@ -567,16 +622,20 @@ class FloatBar:
         if speed_font.measure(speed_text) > available:
             speed_font = self._font_speed_small
         speed_color = theme['text'] if state['status'] != 'idle' else theme['faint']
-        canvas.create_text(px(PAD), px(68), text=speed_text, anchor='w',
+        available = px(width - PAD * 2) - percent_width - px(10)
+        if speed_font.measure(speed_text) > available:
+            speed_font = self._font_speed_small
+        speed_color = theme['text'] if state['status'] != 'idle' else theme['faint']
+        canvas.create_text(px(PAD), px(47), text=speed_text, anchor='w',
                            fill=speed_color, font=speed_font)
-        canvas.create_text(px(width - PAD), px(68), text=percent_text, anchor='e',
+        canvas.create_text(px(width - PAD), px(47), text=percent_text, anchor='e',
                            fill=theme['accent'] if state['status'] != 'idle' else theme['faint'],
                            font=self._font_percent)
 
         # 进度条：底色轨道 + 主色（分段画，避免引入图像依赖）
         bar_left, bar_right = px(PAD), px(width - PAD)
-        bar_top, bar_bottom = px(92), px(99)
-        radius = px(3.5)
+        bar_top, bar_bottom = px(64), px(70)
+        radius = px(3)
         self._round_rect(bar_left, bar_top, bar_right, bar_bottom, radius,
                          fill=theme['track'], outline='')
 
@@ -597,19 +656,75 @@ class FloatBar:
         else:
             eta_text = ''
         eta_width = self._font_meta.measure(eta_text)
-        name_max = (bar_right - bar_left) - eta_width - px(14)
+        name_max = (bar_right - bar_left) - eta_width - px(12)
         name_text = self._ellipsize(state['filename'], self._font_label_bold, name_max)
         if state['status'] == 'idle':
             name_text = '暂无下载任务'
-        canvas.create_text(px(PAD), px(116), text=name_text, anchor='w',
+        canvas.create_text(px(PAD), px(85), text=name_text, anchor='w',
                            fill=theme['text'] if state['status'] != 'idle' else theme['faint'],
                            font=self._font_label_bold)
         if eta_text:
-            canvas.create_text(px(width - PAD), px(117), text=eta_text, anchor='e',
+            canvas.create_text(px(width - PAD), px(86), text=eta_text, anchor='e',
                                fill=theme['muted'], font=self._font_meta)
 
         # 最近速度曲线
-        self._draw_curve(theme, px(PAD), px(width - PAD), px(128), px(height - 12))
+        self._draw_curve(theme, px(PAD), px(width - PAD), px(95), px(height - 9))
+
+    def _draw_mini(self, theme):
+        """迷你模式：一条小卡片，左侧速度、右侧百分比、底部一条进度线"""
+        canvas = self.canvas
+        scale = self._scale
+        width = self._base_width
+        height = self._base_height
+        state = self._state
+
+        def px(value):
+            return round(value * scale)
+
+        line = max(1, px(1))
+        border_color = theme['border_hover'] if self._hovered else theme['border']
+        self._round_rect(px(1), px(1), px(width - 1), px(height - 1), px(MINI_CARD_RADIUS),
+                         fill=theme['card'], outline=border_color, width=line)
+
+        center_y = px(height / 2 - 2)
+        dot_r = px(2.6)
+        dot_color = {'downloading': theme['accent'],
+                     'pending': theme['muted']}.get(state['status'], theme['idle_dot'])
+        canvas.create_oval(px(MINI_PAD), center_y - dot_r,
+                           px(MINI_PAD) + dot_r * 2, center_y + dot_r,
+                           fill=dot_color, outline='')
+
+        if state['status'] == 'idle':
+            speed_text = '0 B/s'
+            percent_text = '--'
+        else:
+            speed_text = format_speed(state['speed'])
+            percent_text = f'{self._progress() * 100:.0f}%'
+
+        canvas.create_text(px(width - MINI_PAD), center_y, text=percent_text, anchor='e',
+                           fill=theme['accent'] if state['status'] != 'idle' else theme['faint'],
+                           font=self._font_mini_percent)
+
+        percent_width = self._font_mini_percent.measure(percent_text)
+        text_left = px(MINI_PAD + 8)
+        available = px(width - MINI_PAD) - text_left - percent_width - px(6)
+        speed_font = self._font_mini_speed
+        if speed_font.measure(speed_text) > available:
+            speed_font = self._font_mini_speed_small
+        canvas.create_text(text_left, center_y, text=speed_text, anchor='w',
+                           fill=theme['text'] if state['status'] != 'idle' else theme['faint'],
+                           font=speed_font)
+
+        # 底部进度线：占满卡片宽度的细条，不给小窗再塞字
+        bar_left, bar_right = px(MINI_CARD_RADIUS), px(width - MINI_CARD_RADIUS)
+        bar_top, bar_bottom = px(height - 4), px(height - 2)
+        self._round_rect(bar_left, bar_top, bar_right, bar_bottom, px(1),
+                         fill=theme['track'], outline='')
+        progress = self._progress()
+        if state['status'] != 'idle' and progress > 0:
+            filled_right = min(bar_right, bar_left + max(px(4), (bar_right - bar_left) * progress))
+            self._round_rect(bar_left, bar_top, filled_right, bar_bottom, px(1),
+                             fill=theme['accent'], outline='')
 
     def _progress(self):
         """当前任务进度（0~1）"""

@@ -948,6 +948,49 @@ class TransientUiTests(GuiFeatures):
         self.assertIsNotNone(self.app.float_bar)
         self.assertTrue(self.app.float_bar._visible)
 
+    def test_settings_save_closes_without_popup_and_flashes_status(self):
+        """保存设置不再弹"已保存"：直接关框，状态栏给一条不拦截的提示"""
+        showinfo = self.mocks[2]
+
+        self.dialog_action(self.app._on_settings, SettingsDialog, lambda dialog: dialog._on_save())
+        self.pump(0.2)
+        showinfo.assert_not_called()
+        self.assertIsNotNone(self.app._status_flash)
+        self.assertIn('设置已保存', self.app.status_label.cget('text'))
+        # 闪一下就自己恢复，不残留提示
+        self.app._flash_status('设置已保存', seconds=0.05)
+        self.pump(1.3)
+        self.assertIsNone(self.app._status_flash)
+
+    def test_float_bar_mini_mode_shrinks_and_persists(self):
+        self.app._set_float_bar_visible(True)
+        self.pump(0.2)
+        bar = self.app.float_bar
+        full_size = (bar._width, bar._height)
+
+        bar.set_mode('mini')
+        self.pump(0.2)
+        self.assertEqual(bar._mode, 'mini')
+        self.assertLess(bar._width, full_size[0])
+        self.assertLess(bar._height, full_size[1])
+        self.assertEqual(ConfigManager(self.config.config_path).ui_float_bar_mode, 'mini')
+
+        bar.set_mode('normal')
+        self.pump(0.2)
+        self.assertEqual((bar._width, bar._height), full_size)
+
+    def test_settings_saves_float_bar_mode_and_applies_immediately(self):
+        def fill(dialog):
+            dialog.float_bar_var.set(True)
+            dialog.float_bar_mode_segment.set('迷你')
+            dialog._on_save()
+
+        self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+        self.assertEqual(ConfigManager(self.config.config_path).ui_float_bar_mode, 'mini')
+        self.pump(0.3)
+        self.assertIsNotNone(self.app.float_bar)
+        self.assertEqual(self.app.float_bar._mode, 'mini')
+
     # ==================== 失败分块重试的临时提示 ====================
 
     def _add_card(self, filename):

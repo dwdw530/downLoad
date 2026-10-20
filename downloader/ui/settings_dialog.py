@@ -15,6 +15,10 @@ from downloader.utils.config import ConfigManager
 APPEARANCE_LABELS = {"dark": "深色", "light": "浅色", "system": "跟随系统"}
 APPEARANCE_VALUE_BY_LABEL = {label: value for value, label in APPEARANCE_LABELS.items()}
 
+# 悬浮条样式：配置值 <-> 界面标签
+FLOAT_BAR_MODE_LABELS = {"normal": "完整", "mini": "迷你"}
+FLOAT_BAR_MODE_VALUE_BY_LABEL = {label: value for value, label in FLOAT_BAR_MODE_LABELS.items()}
+
 
 class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """设置对话框"""
@@ -28,7 +32,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("560x520")  # 标签页只展示当前分组，比单页长表单矮一半
+        self.geometry("560x560")  # 「其他」页新增悬浮条样式，高度加一档避免控件被切
         self.resizable(False, False)
 
         # 模态对话框
@@ -43,7 +47,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
     def _create_ui(self):
         """创建UI组件：分标签页，避免单页太长"""
-        self.tabview = ctk.CTkTabview(self, width=500, height=420)
+        self.tabview = ctk.CTkTabview(self, width=500, height=460)
         self.tabview.pack(fill="both", expand=True, padx=16, pady=(16, 0))
 
         self._build_download_tab(self.tabview.add("下载"))
@@ -61,6 +65,12 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         reset_btn = ctk.CTkButton(button_frame, text="恢复默认", command=self._on_reset, width=100)
         reset_btn.pack(side="left", padx=5)
+
+        # 恢复默认是就地生效，不能弹窗打断；状态直接写在按钮旁边，2 秒后自己消失
+        self.status_label = ctk.CTkLabel(button_frame, text="", font=("Arial", 11),
+                                        text_color=("#0f7b4f", "#4ade80"))
+        self.status_label.pack(side="left", padx=10)
+        self._status_job = None
 
     def _build_download_tab(self, tab):
         """下载相关设置：目录、线程、限速、超时和代理"""
@@ -254,9 +264,17 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         ctk.CTkLabel(
             float_frame,
-            text="双击悬浮条显示主窗口，右键可隐藏或退出",
+            text="双击悬浮条显示主窗口，右键可隐藏、退出或切换迷你模式",
             font=("Arial", 11), text_color="gray",
         ).pack(anchor="w", pady=(4, 0))
+
+        mode_row = ctk.CTkFrame(float_frame, fg_color="transparent")
+        mode_row.pack(anchor="w", pady=(8, 0))
+        ctk.CTkLabel(mode_row, text="悬浮条样式:", font=("Arial", 12)).pack(side="left", padx=(0, 8))
+        self.float_bar_mode_segment = ctk.CTkSegmentedButton(
+            mode_row, values=list(FLOAT_BAR_MODE_LABELS.values()), width=200)
+        self.float_bar_mode_segment.pack(side="left")
+        self.float_bar_mode_segment.set(FLOAT_BAR_MODE_LABELS[self.config.ui_float_bar_mode])
 
     def _load_config(self):
         """加载当前配置"""
@@ -290,6 +308,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
         # 桌面悬浮条
         self.float_bar_var.set(self.config.ui_float_bar_enabled)
+        self.float_bar_mode_segment.set(FLOAT_BAR_MODE_LABELS[self.config.ui_float_bar_mode])
 
     def _browse_directory(self):
         """浏览目录"""
@@ -399,6 +418,9 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             # 桌面悬浮条
             float_bar_enabled = bool(self.float_bar_var.get())
             self.config.ui_float_bar_enabled = float_bar_enabled
+            float_bar_mode = FLOAT_BAR_MODE_VALUE_BY_LABEL.get(
+                self.float_bar_mode_segment.get(), "normal")
+            self.config.ui_float_bar_mode = float_bar_mode
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
@@ -422,10 +444,12 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
                     'after_download': after_config,
                     'appearance_mode': appearance_mode,
                     'float_bar_enabled': float_bar_enabled,
+                    'float_bar_mode': float_bar_mode,
                 }
                 self.on_save_callback(runtime_settings)
 
-            messagebox.showinfo("成功", "设置已保存！", parent=self)
+            # 保存成功不弹窗：设置框直接关掉，主窗口状态栏闪一条“设置已保存”，
+            # 既确认结果又不打断操作（弹窗还要再点一次“确定”）。
             self.destroy()
 
         except Exception as e:
@@ -434,6 +458,36 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
     def _on_cancel(self):
         """取消"""
         self.destroy()
+
+    def _flash_status(self, text: str, seconds: float = 2.0):
+        """按钮区短暂提示：不弹窗、不拦操作，到点自己消失"""
+        if self._status_job is not None:
+            try:
+                self.after_cancel(self._status_job)
+            except Exception:
+                pass
+            self._status_job = None
+        self.status_label.configure(text=text)
+
+        def clear():
+            self._status_job = None
+            try:
+                if self.winfo_exists():
+                    self.status_label.configure(text="")
+            except Exception:
+                pass
+
+        self._status_job = self.after(int(seconds * 1000), clear)
+
+    def destroy(self):
+        """销毁前撤掉提示定时器，避免窗口没了回调还在排队"""
+        if getattr(self, '_status_job', None) is not None:
+            try:
+                self.after_cancel(self._status_job)
+            except Exception:
+                pass
+            self._status_job = None
+        super().destroy()
 
     def _on_reset(self):
         """恢复默认设置"""
@@ -478,4 +532,5 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
             # 桌面悬浮条重置
             self.float_bar_var.set(self.config.ui_float_bar_enabled)
-            messagebox.showinfo("成功", "已恢复默认设置！", parent=self)
+            self.float_bar_mode_segment.set(FLOAT_BAR_MODE_LABELS[self.config.ui_float_bar_mode])
+            self._flash_status("已恢复默认设置")
