@@ -567,6 +567,27 @@ class DatabaseManager:
                 logger.error("更新分块进度失败: %s", e)
                 return False
 
+    def update_chunk_temp_files(self, items: List[Tuple[int, str]]) -> bool:
+        """批量更新分块临时文件路径（切换临时目录时同步未开始的任务）"""
+        if not items:
+            return True
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                with conn:
+                    conn.executemany(
+                        'UPDATE download_chunks SET temp_file = ? WHERE chunk_id = ?',
+                        [(path, chunk_id) for chunk_id, path in items],
+                    )
+                return True
+            except Exception as e:
+                logger.error("更新分块临时路径失败: %s", e)
+                return False
+            finally:
+                if conn:
+                    conn.close()
+
     def increment_chunk_retry(self, chunk_id: int) -> bool:
         """增加分块重试次数"""
         with self._lock:

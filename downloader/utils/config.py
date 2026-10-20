@@ -143,11 +143,18 @@ class ConfigManager:
     @property
     def temp_dir(self) -> str:
         """临时文件目录（返回绝对路径）"""
-        temp_dir = self._config.get("temp_dir", "temp")
+        # 空值会被解析成程序根目录本身，必须回退到默认 temp 子目录
+        temp_dir = str(self._config.get("temp_dir") or "temp").strip() or "temp"
+        temp_dir = os.path.expandvars(os.path.expanduser(temp_dir))
         # 如果是相对路径，转换为应用根目录下的绝对路径
         if not os.path.isabs(temp_dir):
             temp_dir = os.path.join(get_app_root(), temp_dir)
-        return temp_dir
+        return os.path.abspath(temp_dir)
+
+    @temp_dir.setter
+    def temp_dir(self, value: str):
+        """设置临时文件目录；空值回退默认 temp，避免解析成程序根目录"""
+        self._config["temp_dir"] = str(value or "").strip() or "temp"
 
     @property
     def thread_count(self) -> int:

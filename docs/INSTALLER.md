@@ -2,13 +2,13 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-downloader-v0.7.2-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-downloader-v0.7.2-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.7.2)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.7.3/daw-downloader-v0.7.3-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.7.3/daw-downloader-v0.7.3-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.7.3)
 
-本版包含浏览器扩展 **0.6.2**，修复小红书网页视频无法下载：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.7.2.md)。本次必须同时更新桌面程序、BrowserBridge 与扩展；安装后在扩展管理页重新加载并完整刷新网页。
+本版桌面程序升级设置页：新增可配置的临时文件目录（可指向 U 盘/移动硬盘，保存后立即生效），设置页改为「下载 / 其他」标签页；浏览器扩展保持 **0.6.2** 未改动：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.3/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.7.3.md)。升级桌面端后重启下载器即可，无需重新加载扩展。
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.7.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.7.3-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -25,7 +25,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.7.0 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.7.3 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -33,10 +33,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.7.0
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.7.3
 ```
 
-输出为 `dist/daw-downloader-v0.7.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 的默认版本同步为 v0.7.0；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.7.3-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 的默认版本同步为 v0.7.3；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -49,7 +49,7 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 在尚未安装本安装版的 Windows 测试用户下运行：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.7.0-windows-x64-setup.exe
+conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.7.3-windows-x64-setup.exe
 ```
 
 脚本操作真实中文安装向导，选择包含中文和空格的隔离路径，验证文件、快捷方式、注册表卸载入口和浏览器连接。随后直接通过安装后的 BrowserBridge 冷启动安装后的 EXE，复用现有带测试授权信息的视频下载、字节一致性、去重、单实例及正常退出检查；再验证文件占用拦截、覆盖升级、卸载保留数据、重装及浏览器注册归属。已有安装版或同名快捷方式时拒绝测试，结束后恢复原浏览器注册。

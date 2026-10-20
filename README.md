@@ -6,9 +6,9 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-downloader-v0.7.2-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.7.3/daw-downloader-v0.7.3-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
-当前桌面版 **v0.7.2**、浏览器扩展 **0.6.2**，修复小红书网页视频无法下载（真实页面 `EF4/EF5` 档位结构、`http` 地址与竖屏分辨率适配）：[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.2/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.7.2.md)。请同时更新桌面程序和桥接，重新加载扩展并完整刷新网页。
+当前桌面版 **v0.7.3**、浏览器扩展 **0.6.2**（未改动）。设置页新增可配置的**临时文件目录**：可指向 U 盘/移动硬盘，保存后立即生效，下载数据不再固定先写系统盘；设置页同时改为「下载 / 其他」标签页。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.7.3/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.7.3.md)。升级桌面端后重启下载器即可。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -202,6 +202,8 @@ python -B -m unittest discover -s tests -v
 
 测试使用本地HTTP服务和独立临时数据库，无需访问外部下载站点。覆盖续传漏块、异常Range响应、短文件/超长文件、断流重试、跨磁盘保存、暂停/取消、队列调度、限速、代理、MD5/SHA256校验、重启恢复、历史记录、设置和真实Tk界面回调。
 
+2026-10-20 v0.7.3：**设置页新增临时文件目录并改为标签页**——可把分块/合并/视频临时文件直接放到 U 盘或移动硬盘，保存后立即生效，解决“下载目录在 U 盘、数据仍先写系统盘”的问题；已有断点数据与进行中任务保持原目录。337 项 Python 全量回归、137 项 GUI、EXE 与安装包冒烟通过。详见 [v0.7.3 更新日志](docs/releases/v0.7.3.md)。
+
 2026-10-18 v0.7.2：**修复小红书网页视频无法下载**——真实页面档位键已改为 `EF4/EF5`、`videoCodec` 存档位名、地址为 `http`、分辨率为竖屏，原实现四项假设全部不匹配。现已按位置遍历档位、按短边判断清晰度、固定 `--format` 下载。43 项扩展测试、329 项 Python 全量回归通过，用户登录态实网确认可下载。详见 [v0.7.2 更新日志](docs/releases/v0.7.2.md)。
 
 2026-10-16 v0.7.1（**未单独发布**，内容并入 v0.7.2）：小红书视频笔记适配初版。该版本文档中“测试通过”的记录不成立——`tests/browser_xhs_page.test.mjs` 当时存在缺失 `}` 的语法错误、无法执行，且 `dist/chrome-extension` 未与源码同步；真实页面适配也未验证，实际无法下载。相关结论与修复见 v0.7.2。
@@ -257,6 +259,8 @@ python -B scripts/smoke_exe.py
 ```
 
 `close_behavior` 取值为 `ask`（每次询问）/ `minimize`（最小化到托盘）/ `exit`（直接退出）；`speed_limit` 单位为字节/秒，0 表示不限速。
+
+`temp_dir` 为临时分块目录（默认程序目录下的 `temp/`），也可在“设置”里修改并选择目录：保存后立即生效，新任务直接写入新目录；没有断点数据的排队任务会同步改路径，已有下载字节的任务继续使用原临时目录，避免移动大文件或破坏断点。临时目录与下载目录在同一磁盘时，完成后的发布是改名（不复制）；跨磁盘时会多一次完整复制。
 
 `after_download` 控制下载完成后的动作，三项默认均为 `false`（不做任何动作）；只有校验通过（`completed`）才触发，校验失败（`verify_failed`）不触发。开启 `shutdown` 时，若队列里还有下载中/等待/校验中的任务，会等最后一个完成再弹出 60 秒倒计时确认框，点“取消”或直接关闭窗口都不会关机。后台探测与批量添加也计入未完成工作；倒计时期间新增或重试任务、关闭关机设置会使旧倒计时失效，真正执行前再检查一次。
 

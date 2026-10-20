@@ -198,6 +198,28 @@ class GuiFeatures(FeatureFixture):
         self.assertEqual(reloaded.speed_limit, 128 * 1024)
         self.assertEqual(reloaded.proxies['http'], self.base_url)
 
+    def test_settings_save_applies_temp_dir_immediately(self):
+        new_dir = self.root / 'new-parts'
+
+        def fill(dialog):
+            dialog.temp_entry.delete(0, 'end')
+            dialog.temp_entry.insert(0, str(new_dir))
+            dialog._on_save()
+
+        self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+        # 保存时已直接写回共享的 config 对象，新任务不需要重启就能用新目录
+        self.assertEqual(Path(self.config.temp_dir), new_dir)
+        self.assertTrue(new_dir.is_dir())
+        self.assertEqual(Path(ConfigManager(self.config.config_path).temp_dir), new_dir)
+
+    def test_settings_runtime_sync_retargets_queued_tasks(self):
+        task_id = self.create('/range')
+        new_dir = self.root / 'runtime-parts'
+        self.app._apply_saved_settings({'temp_dir': str(new_dir)})
+        self.assertEqual(Path(self.config.temp_dir), new_dir)
+        for chunk in self.db.get_chunks(task_id):
+            self.assertEqual(Path(chunk['temp_file']).parent, new_dir)
+
     def test_settings_rejects_zero_timeout(self):
         dialog = SettingsDialog(self.app, self.config, on_save_callback=self.app._on_settings_saved)
         self.pump(0.25)

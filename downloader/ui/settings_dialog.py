@@ -3,6 +3,7 @@
 设置对话框
 老王说：设置简单点就行，别搞太复杂！
 """
+import os
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from typing import Callable, Optional
@@ -31,7 +32,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("520x730")  # 加高给代理、完成后动作、剪贴板监视和主题腾位置
+        self.geometry("560x520")  # 标签页只展示当前分组，比单页长表单矮一半
         self.resizable(False, False)
 
         # 模态对话框
@@ -45,61 +46,122 @@ class SettingsDialog(ctk.CTkToplevel):
         self._load_config()
 
     def _create_ui(self):
-        """创建UI组件"""
-        # 主容器
-        main_frame = ctk.CTkFrame(self)
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        """创建UI组件：分标签页，避免单页太长"""
+        self.tabview = ctk.CTkTabview(self, width=500, height=420)
+        self.tabview.pack(fill="both", expand=True, padx=16, pady=(16, 0))
+
+        self._build_download_tab(self.tabview.add("下载"))
+        self._build_other_tab(self.tabview.add("其他"))
+
+        # 按钮区域
+        button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        button_frame.pack(fill="x", padx=16, pady=12)
+
+        save_btn = ctk.CTkButton(button_frame, text="保存", command=self._on_save, width=100)
+        save_btn.pack(side="right", padx=5)
+
+        cancel_btn = ctk.CTkButton(button_frame, text="取消", command=self._on_cancel, width=100)
+        cancel_btn.pack(side="right", padx=5)
+
+        reset_btn = ctk.CTkButton(button_frame, text="恢复默认", command=self._on_reset, width=100)
+        reset_btn.pack(side="left", padx=5)
+
+    def _build_download_tab(self, tab):
+        """下载相关设置：目录、线程、限速、超时和代理"""
+        tab.columnconfigure(1, weight=1)
 
         # 下载目录设置
-        dir_label = ctk.CTkLabel(main_frame, text="默认下载目录:", font=("Arial", 12))
-        dir_label.grid(row=0, column=0, sticky="w", pady=10)
+        dir_label = ctk.CTkLabel(tab, text="默认下载目录:", font=("Arial", 12))
+        dir_label.grid(row=0, column=0, sticky="w", pady=8)
 
-        dir_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        dir_frame.grid(row=0, column=1, sticky="ew", pady=10, padx=10)
+        dir_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        dir_frame.grid(row=0, column=1, sticky="ew", pady=8, padx=10)
 
-        self.dir_entry = ctk.CTkEntry(dir_frame, width=250)
+        self.dir_entry = ctk.CTkEntry(dir_frame, width=270)
         self.dir_entry.pack(side="left", padx=5)
 
         browse_btn = ctk.CTkButton(dir_frame, text="浏览", command=self._browse_directory, width=80)
         browse_btn.pack(side="left")
 
+        # 临时文件目录：分块/合并/视频下载都先落这里，和最终下载目录分开配置
+        temp_label = ctk.CTkLabel(tab, text="临时文件目录:", font=("Arial", 12))
+        temp_label.grid(row=1, column=0, sticky="w", pady=8)
+
+        temp_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        temp_frame.grid(row=1, column=1, sticky="ew", pady=8, padx=10)
+
+        temp_row = ctk.CTkFrame(temp_frame, fg_color="transparent")
+        temp_row.pack(fill="x")
+
+        self.temp_entry = ctk.CTkEntry(temp_row, width=270)
+        self.temp_entry.pack(side="left", padx=5)
+
+        temp_browse_btn = ctk.CTkButton(temp_row, text="浏览", command=self._browse_temp_directory, width=80)
+        temp_browse_btn.pack(side="left")
+
+        ctk.CTkLabel(
+            temp_frame, text="与下载目录不在同一磁盘时会多一次复制",
+            font=("Arial", 10), text_color="gray",
+        ).pack(anchor="w", padx=5, pady=(2, 0))
+
         # 线程数设置
-        thread_label = ctk.CTkLabel(main_frame, text="下载线程数:", font=("Arial", 12))
-        thread_label.grid(row=1, column=0, sticky="w", pady=10)
+        thread_label = ctk.CTkLabel(tab, text="下载线程数:", font=("Arial", 12))
+        thread_label.grid(row=2, column=0, sticky="w", pady=8)
 
-        self.thread_slider = ctk.CTkSlider(main_frame, from_=1, to=16, number_of_steps=15, width=200)
-        self.thread_slider.grid(row=1, column=1, sticky="w", pady=10, padx=10)
+        thread_row = ctk.CTkFrame(tab, fg_color="transparent")
+        thread_row.grid(row=2, column=1, sticky="w", pady=8, padx=10)
 
-        self.thread_value_label = ctk.CTkLabel(main_frame, text="8", font=("Arial", 12))
-        self.thread_value_label.grid(row=1, column=2, sticky="w", pady=10)
+        self.thread_slider = ctk.CTkSlider(thread_row, from_=1, to=16, number_of_steps=15, width=220)
+        self.thread_slider.pack(side="left")
+
+        self.thread_value_label = ctk.CTkLabel(thread_row, text="8", font=("Arial", 12),
+                                               width=28, anchor="w")
+        self.thread_value_label.pack(side="left", padx=(10, 0))
 
         self.thread_slider.configure(command=self._on_thread_slider_change)
 
         # 并发任务数设置
-        concurrent_label = ctk.CTkLabel(main_frame, text="同时下载任务数:", font=("Arial", 12))
-        concurrent_label.grid(row=2, column=0, sticky="w", pady=10)
+        concurrent_label = ctk.CTkLabel(tab, text="同时下载任务数:", font=("Arial", 12))
+        concurrent_label.grid(row=3, column=0, sticky="w", pady=8)
 
-        self.concurrent_slider = ctk.CTkSlider(main_frame, from_=1, to=5, number_of_steps=4, width=200)
-        self.concurrent_slider.grid(row=2, column=1, sticky="w", pady=10, padx=10)
+        concurrent_row = ctk.CTkFrame(tab, fg_color="transparent")
+        concurrent_row.grid(row=3, column=1, sticky="w", pady=8, padx=10)
 
-        self.concurrent_value_label = ctk.CTkLabel(main_frame, text="3", font=("Arial", 12))
-        self.concurrent_value_label.grid(row=2, column=2, sticky="w", pady=10)
+        self.concurrent_slider = ctk.CTkSlider(concurrent_row, from_=1, to=5, number_of_steps=4, width=220)
+        self.concurrent_slider.pack(side="left")
+
+        self.concurrent_value_label = ctk.CTkLabel(concurrent_row, text="3", font=("Arial", 12),
+                                                   width=28, anchor="w")
+        self.concurrent_value_label.pack(side="left", padx=(10, 0))
 
         self.concurrent_slider.configure(command=self._on_concurrent_slider_change)
 
-        # 超时设置
-        timeout_label = ctk.CTkLabel(main_frame, text="请求超时(秒):", font=("Arial", 12))
-        timeout_label.grid(row=3, column=0, sticky="w", pady=10)
+        # 速度限制设置
+        speed_limit_label = ctk.CTkLabel(tab, text="速度限制(KB/s):", font=("Arial", 12))
+        speed_limit_label.grid(row=4, column=0, sticky="w", pady=8)
 
-        self.timeout_entry = ctk.CTkEntry(main_frame, width=200)
-        self.timeout_entry.grid(row=3, column=1, sticky="w", pady=10, padx=10)
+        speed_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        speed_frame.grid(row=4, column=1, sticky="ew", pady=8, padx=10)
+
+        self.speed_limit_entry = ctk.CTkEntry(speed_frame, width=120, placeholder_text="0=不限速")
+        self.speed_limit_entry.pack(side="left", padx=5)
+
+        speed_hint_label = ctk.CTkLabel(speed_frame, text="(0表示不限速)", font=("Arial", 10), text_color="gray")
+        speed_hint_label.pack(side="left")
+
+        # 超时设置
+        timeout_label = ctk.CTkLabel(tab, text="请求超时(秒):", font=("Arial", 12))
+        timeout_label.grid(row=5, column=0, sticky="w", pady=8)
+
+        self.timeout_entry = ctk.CTkEntry(tab, width=120)
+        self.timeout_entry.grid(row=5, column=1, sticky="w", pady=8, padx=10)
 
         # ========== 代理设置 ==========
-        proxy_label = ctk.CTkLabel(main_frame, text="代理设置:", font=("Arial", 12))
-        proxy_label.grid(row=4, column=0, sticky="nw", pady=10)
+        proxy_label = ctk.CTkLabel(tab, text="代理设置:", font=("Arial", 12))
+        proxy_label.grid(row=6, column=0, sticky="nw", pady=8)
 
-        proxy_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        proxy_frame.grid(row=4, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+        proxy_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        proxy_frame.grid(row=6, column=1, sticky="ew", pady=8, padx=10)
 
         # 代理开关
         self.proxy_enabled_var = ctk.BooleanVar(value=False)
@@ -125,25 +187,16 @@ class SettingsDialog(ctk.CTkToplevel):
         self.https_proxy_entry = ctk.CTkEntry(https_proxy_frame, width=250, placeholder_text="http://127.0.0.1:7890")
         self.https_proxy_entry.pack(side="left", padx=5)
 
-        # 速度限制设置（row改为5）
-        speed_limit_label = ctk.CTkLabel(main_frame, text="速度限制(KB/s):", font=("Arial", 12))
-        speed_limit_label.grid(row=5, column=0, sticky="w", pady=10)
-
-        speed_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        speed_frame.grid(row=5, column=1, sticky="ew", pady=10, padx=10)
-
-        self.speed_limit_entry = ctk.CTkEntry(speed_frame, width=120, placeholder_text="0=不限速")
-        self.speed_limit_entry.pack(side="left", padx=5)
-
-        speed_hint_label = ctk.CTkLabel(speed_frame, text="(0表示不限速)", font=("Arial", 10), text_color="gray")
-        speed_hint_label.pack(side="left")
+    def _build_other_tab(self, tab):
+        """完成后动作、剪贴板监视和主题"""
+        tab.columnconfigure(1, weight=1)
 
         # ========== 下载完成后动作 ==========
-        after_label = ctk.CTkLabel(main_frame, text="下载完成后:", font=("Arial", 12))
-        after_label.grid(row=6, column=0, sticky="nw", pady=10)
+        after_label = ctk.CTkLabel(tab, text="下载完成后:", font=("Arial", 12))
+        after_label.grid(row=0, column=0, sticky="nw", pady=10)
 
-        after_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        after_frame.grid(row=6, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+        after_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        after_frame.grid(row=0, column=1, sticky="ew", pady=10, padx=10)
 
         # 开关默认全关，避免替用户做多余动作
         self.after_open_file_var = ctk.BooleanVar(value=False)
@@ -156,11 +209,11 @@ class SettingsDialog(ctk.CTkToplevel):
         ctk.CTkCheckBox(after_frame, text="全部下载完成后关机", variable=self.after_shutdown_var).pack(anchor="w")
 
         # ========== 剪贴板监视 ==========
-        clipboard_label = ctk.CTkLabel(main_frame, text="剪贴板监视:", font=("Arial", 12))
-        clipboard_label.grid(row=7, column=0, sticky="nw", pady=10)
+        clipboard_label = ctk.CTkLabel(tab, text="剪贴板监视:", font=("Arial", 12))
+        clipboard_label.grid(row=1, column=0, sticky="nw", pady=10)
 
-        clipboard_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        clipboard_frame.grid(row=7, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+        clipboard_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        clipboard_frame.grid(row=1, column=1, sticky="ew", pady=10, padx=10)
 
         self.clipboard_monitor_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
@@ -174,40 +227,26 @@ class SettingsDialog(ctk.CTkToplevel):
             font=("Arial", 11), text_color="gray",
         ).pack(anchor="w", pady=(8, 2))
 
-        self.ignore_hosts_textbox = ctk.CTkTextbox(clipboard_frame, width=300, height=70)
+        self.ignore_hosts_textbox = ctk.CTkTextbox(clipboard_frame, width=320, height=100)
         self.ignore_hosts_textbox.pack(anchor="w")
 
         # ========== 外观主题 ==========
-        appearance_label = ctk.CTkLabel(main_frame, text="主题:", font=("Arial", 12))
-        appearance_label.grid(row=8, column=0, sticky="w", pady=10)
+        appearance_label = ctk.CTkLabel(tab, text="主题:", font=("Arial", 12))
+        appearance_label.grid(row=2, column=0, sticky="w", pady=10)
 
-        appearance_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        appearance_frame.grid(row=8, column=1, columnspan=2, sticky="ew", pady=10, padx=10)
+        appearance_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        appearance_frame.grid(row=2, column=1, sticky="ew", pady=10, padx=10)
 
         self.appearance_segment = ctk.CTkSegmentedButton(
             appearance_frame, values=list(APPEARANCE_LABELS.values()), width=300)
         self.appearance_segment.pack(anchor="w")
         self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
 
-        # 按钮区域
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.pack(fill="x", padx=20, pady=10)
-
-        save_btn = ctk.CTkButton(button_frame, text="保存", command=self._on_save, width=100)
-        save_btn.pack(side="right", padx=5)
-
-        cancel_btn = ctk.CTkButton(button_frame, text="取消", command=self._on_cancel, width=100)
-        cancel_btn.pack(side="right", padx=5)
-
-        reset_btn = ctk.CTkButton(button_frame, text="恢复默认", command=self._on_reset, width=100)
-        reset_btn.pack(side="left", padx=5)
-
-        # 配置grid权重
-        main_frame.columnconfigure(1, weight=1)
-
     def _load_config(self):
         """加载当前配置"""
         self.dir_entry.insert(0, self.config.download_dir)
+        self._initial_temp_dir = self.config.temp_dir
+        self.temp_entry.insert(0, self._initial_temp_dir)
         self.thread_slider.set(self.config.thread_count)
         self.thread_value_label.configure(text=str(self.config.thread_count))
         self.concurrent_slider.set(self.config.max_concurrent_downloads)
@@ -241,6 +280,13 @@ class SettingsDialog(ctk.CTkToplevel):
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, directory)
 
+    def _browse_temp_directory(self):
+        """浏览临时文件目录"""
+        directory = filedialog.askdirectory(title="选择临时文件目录")
+        if directory:
+            self.temp_entry.delete(0, "end")
+            self.temp_entry.insert(0, directory)
+
     def _on_thread_slider_change(self, value):
         """线程数滑块变化"""
         self.thread_value_label.configure(text=str(int(value)))
@@ -265,6 +311,27 @@ class SettingsDialog(ctk.CTkToplevel):
                 messagebox.showerror("错误", "下载目录不能为空！", parent=self)
                 return
 
+            # 临时目录先规范化再落地：抽盘/只读目录在这里就拒绝，不要等下载到一半才报错
+            temp_dir = self.temp_entry.get().strip()
+            if not temp_dir:
+                messagebox.showerror("错误", "临时文件目录不能为空！", parent=self)
+                return
+            temp_dir = os.path.abspath(os.path.expandvars(os.path.expanduser(temp_dir)))
+            try:
+                os.makedirs(temp_dir, exist_ok=True)
+                probe = os.path.join(temp_dir, '.daw-write-check')
+                with open(probe, 'w', encoding='utf-8'):
+                    pass
+                os.remove(probe)
+            except OSError as error:
+                messagebox.showerror("错误", f"临时目录不可写：{error}", parent=self)
+                return
+
+            # 未改动时保留原始写法（如相对路径 "temp"），避免把程序目录写死进配置
+            temp_dir_value = temp_dir
+            if os.path.normcase(temp_dir) == os.path.normcase(getattr(self, '_initial_temp_dir', '')):
+                temp_dir_value = self.config.get('temp_dir') or 'temp'
+
             thread_count = int(self.thread_slider.get())
             concurrent_count = int(self.concurrent_slider.get())
 
@@ -288,6 +355,7 @@ class SettingsDialog(ctk.CTkToplevel):
             # 保存配置
             previous_settings = self.config.get_all()
             self.config.download_dir = download_dir
+            self.config.temp_dir = temp_dir_value
             self.config.thread_count = thread_count
             self.config.max_concurrent_downloads = concurrent_count
             self.config.set('timeout', timeout)
@@ -320,6 +388,7 @@ class SettingsDialog(ctk.CTkToplevel):
             if self.on_save_callback:
                 runtime_settings = {
                     'download_dir': download_dir,
+                    'temp_dir': temp_dir_value,
                     'thread_count': thread_count,
                     'max_concurrent_downloads': concurrent_count,
                     'timeout': timeout,
@@ -355,6 +424,9 @@ class SettingsDialog(ctk.CTkToplevel):
             # 重新加载配置
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, self.config.download_dir)
+            self.temp_entry.delete(0, "end")
+            self._initial_temp_dir = self.config.temp_dir
+            self.temp_entry.insert(0, self._initial_temp_dir)
             self.thread_slider.set(self.config.thread_count)
             self.thread_value_label.configure(text=str(self.config.thread_count))
             self.concurrent_slider.set(self.config.max_concurrent_downloads)

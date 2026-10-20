@@ -558,6 +558,14 @@ class MainWindow(ctk.CTk):
         # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
         if 'download_dir' in settings:
             config.download_dir = settings['download_dir']
+        if 'temp_dir' in settings:
+            old_temp_dir = config.temp_dir
+            config.temp_dir = settings['temp_dir']
+            if os.path.normcase(old_temp_dir) != os.path.normcase(config.temp_dir):
+                # 新任务直接用新目录；没有断点数据的排队任务同步改路径，
+                # 已有字节的任务保留原目录，避免移动大文件或破坏断点
+                moved = self.task_manager.engine.retarget_temp_dir(config.temp_dir)
+                logger.info("临时目录已切换: %s（同步排队任务 %s 个）", config.temp_dir, moved)
         if 'thread_count' in settings:
             config.thread_count = settings['thread_count']
         if 'timeout' in settings:

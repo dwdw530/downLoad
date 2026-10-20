@@ -219,6 +219,49 @@ class DownloadEngine:
 
         return chunks
 
+    def retarget_temp_dir(self, new_dir: str, exclude=()) -> int:
+        """切换临时目录后，把没有断点数据的任务分块指向新目录。
+
+        已有字节的分块不能就地换路径：文件还在旧目录，改了之后恢复会当成
+        新任务重下，合并也找不到分块。返回实际同步的任务数。
+        """
+        new_dir = os.path.abspath(new_dir)
+        exclude = set(exclude or ())
+        updated = 0
+        for task in self.db.get_all_tasks():
+            task_id = task['task_id']
+            if task_id in exclude or task_id in self.active_downloaders:
+                continue
+            if task['status'] in ('completed', 'verify_failed', 'cancelled'):
+                continue
+            chunks = self.db.get_chunks(task_id)
+            if not chunks:
+                continue
+            targets = []
+            blocked = False
+            for chunk in chunks:
+                old_path = chunk.get('temp_file')
+                if not old_path:
+                    blocked = True
+                    break
+                old_path = os.path.abspath(old_path)
+                if os.path.normcase(os.path.dirname(old_path)) == os.path.normcase(new_dir):
+                    continue
+                try:
+                    has_data = os.path.getsize(old_path) > 0
+                except OSError:
+                    has_data = False
+                if int(chunk.get('downloaded_bytes') or 0) > 0 or has_data:
+                    blocked = True
+                    break
+                targets.append((chunk['chunk_id'], os.path.join(new_dir, os.path.basename(old_path))))
+            # 整个任务要么全迁要么不迁，一半新一半旧会在合并时找不到分块
+            if blocked or not targets:
+                continue
+            if self.db.update_chunk_temp_files(targets):
+                updated += 1
+        return updated
+
     def _create_chunks(self, task_id: str, url: str, total_size: int, thread_count: int):
         """
         创建分块记录

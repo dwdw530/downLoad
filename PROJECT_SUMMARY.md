@@ -14,9 +14,11 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.2 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.7.2-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.7.3-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.7.2`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.7.0`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+发布统一走 GitHub Releases（当前 `v0.7.3`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.7.0`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+
+v0.7.3 新增可配置的临时文件目录（设置页「下载」标签）：可指向 U 盘/移动硬盘，保存后立即生效，下载数据不再固定先写系统盘；无断点数据的排队任务同步换目录，已有断点的任务保持原目录。设置页同时改为「下载 / 其他」两个标签页。337 项 Python 全量、137 项 GUI、EXE 与安装包冒烟通过，详见 [v0.7.3 更新日志](docs/releases/v0.7.3.md)。
 
 v0.7.2 修复小红书网页视频无法下载：真实页面把 `media.stream` 的档位键改成 `EF4/EF5`、`videoCodec` 内存放档位名、`masterUrl` 为 `http`、分辨率为竖屏，原实现四项假设全部不匹配，导致一条候选都取不到。现按位置遍历档位（不依赖键名）、仅把协议换为 https、按短边判断清晰度、只收 `.mp4`，桌面端固定 `--format <format_id>` 下载。43 项扩展测试与 329 项 Python 回归通过，用户登录态实网确认可下载，详见 [v0.7.2 更新日志](docs/releases/v0.7.2.md)。
 

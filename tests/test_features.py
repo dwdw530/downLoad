@@ -95,6 +95,22 @@ class FeatureFixture(unittest.TestCase):
 
 
 class CoreFeatures(FeatureFixture):
+    def test_retarget_temp_dir_updates_unstarted_chunk_paths(self):
+        task_id = self.create()
+        new_dir = self.root / 'new-parts'
+        self.assertEqual(self.engine.retarget_temp_dir(str(new_dir)), 1)
+        for chunk in self.db.get_chunks(task_id):
+            self.assertEqual(Path(chunk['temp_file']).parent, new_dir)
+
+    def test_retarget_temp_dir_keeps_chunks_with_partial_data(self):
+        task_id = self.create()
+        chunk = self.db.get_chunks(task_id)[0]
+        Path(chunk['temp_file']).parent.mkdir(parents=True, exist_ok=True)
+        Path(chunk['temp_file']).write_bytes(b'partial')
+        before = [item['temp_file'] for item in self.db.get_chunks(task_id)]
+        self.assertEqual(self.engine.retarget_temp_dir(str(self.root / 'new-parts')), 0)
+        self.assertEqual([item['temp_file'] for item in self.db.get_chunks(task_id)], before)
+
     def test_cancel_does_not_change_a_completed_download(self):
         task_id = self.create()
         self.manager.start_task(task_id)
