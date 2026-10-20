@@ -14,9 +14,11 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.2 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.8.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.8.1-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.8.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.7.0`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+发布统一走 GitHub Releases（当前 `v0.8.1`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；`v0.7.0`、`extension-v0.5.2` 及更早版本的发布记录与附件保持原样。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+
+v0.8.1 为界面细节调整：左侧分类树字号放大到微软雅黑 UI 18pt（侧栏 210→240），保存设置不再弹「已保存」而改为主窗口状态栏提示，悬浮条新增迷你模式（158×34）并把完整模式收窄到 280×118。388 项 Python 全量（GUI 185 项）通过，详见 [v0.8.1 更新日志](docs/releases/v0.8.1.md)。
 
 v0.8.0 新增桌面速度悬浮条（可拖动、置顶、默认关闭）与失败分块单独重试：临时性错误只重下失败的分块并按指数退避重试，403/404 立即失败并保留已下载数据，不再整份作废；进度监控改为内存聚合。385 项 Python 全量（GUI 182 项）通过，详见 [v0.8.0 更新日志](docs/releases/v0.8.0.md)。
 

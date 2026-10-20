@@ -6,9 +6,9 @@
 
 正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.8.0/daw-downloader-v0.8.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.8.1/daw-downloader-v0.8.1-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
-当前桌面版 **v0.8.0**、浏览器扩展 **0.6.2**（未改动）。新增**桌面速度悬浮条**（可拖动、置顶，默认关闭）与**失败分块单独重试**：临时性错误只重下出错的那几块并按指数退避重试，403/404 立即失败并保留已下载数据。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.8.0/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.8.0.md)。升级桌面端后重启下载器即可。
+当前桌面版 **v0.8.1**、浏览器扩展 **0.6.2**（未改动）。本版为界面细节调整：**左侧分类树字号放大**、**保存设置不再弹窗**（改为状态栏提示）、**悬浮条新增迷你模式**并整体收窄（完整 280×118、迷你 158×34）。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.8.1/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.8.1.md)。升级桌面端后重启下载器即可。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -222,6 +222,8 @@ python -B -m unittest discover -s tests -v
 ```
 
 测试使用本地HTTP服务和独立临时数据库，无需访问外部下载站点。覆盖续传漏块、异常Range响应、短文件/超长文件、断流重试、跨磁盘保存、暂停/取消、队列调度、限速、代理、MD5/SHA256校验、重启恢复、历史记录、设置和真实Tk界面回调。
+
+2026-10-21 v0.8.1：**界面细节调整**——左侧分类树字号放大到微软雅黑 UI 18pt（侧栏 210→240），保存设置不再弹「已保存」而改为状态栏提示，悬浮条新增迷你模式（158×34）并整体收窄（完整模式 280×118）。388 项 Python 全量回归（GUI 185 项）与正式 EXE、安装包冒烟通过。详见 [v0.8.1 更新日志](docs/releases/v0.8.1.md)。
 
 2026-10-21 v0.8.0：**桌面速度悬浮条 + 失败分块单独重试**——悬浮条可拖动、贴边吸附，显示总速度/进度/剩余时间/一分钟速度曲线，双击回主窗口、右键可暂停全部或退出；分块失败按临时性/致命/协议三类处理，临时错误只重试失败分块并保留已完成数据，不再整份作废。385 项 Python 全量回归（GUI 182 项）通过。详见 [v0.8.0 更新日志](docs/releases/v0.8.0.md)。
 
