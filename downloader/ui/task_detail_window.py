@@ -8,6 +8,7 @@ from collections import deque
 import customtkinter as ctk
 import tkinter as tk
 
+from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.utils.file_utils import format_progress_texts, format_speed
 
 # 状态文案映射（任务卡片与详情窗共用，改这里两处一起变）
@@ -36,7 +37,7 @@ TEXT_COLOR = "#9c9c9c"
 HIGHLIGHT_COLOR = "#c8c8c8"
 
 
-class TaskDetailWindow(ctk.CTkToplevel):
+class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
     """
     任务详情窗：进度统计 + 实时速度曲线（非模态，不抢主窗口操作）
 

@@ -6,6 +6,7 @@
 import customtkinter as ctk
 from typing import List, Dict
 from datetime import datetime, timezone
+from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.utils.file_utils import format_speed
 
 
@@ -35,19 +36,8 @@ def format_duration(seconds: float) -> str:
         return f"{hours}小时{minutes}分"
 
 
-class HistoryDialog(ctk.CTkToplevel):
+class HistoryDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """下载历史对话框"""
-
-    def focus_set(self):
-        if self.winfo_exists():
-            super().focus_set()
-
-    focus = focus_set
-
-    def _revert_withdraw_after_windows_set_titlebar_color(self):
-        # CustomTkinter 的标题栏延迟回调可能晚于窗口关闭。
-        if self.winfo_exists():
-            super()._revert_withdraw_after_windows_set_titlebar_color()
 
     def __init__(self, parent, db_manager):
         super().__init__(parent)

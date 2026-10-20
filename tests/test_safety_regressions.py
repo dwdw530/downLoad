@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from downloader.core.chunk_downloader import ChunkDownloader
+from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError
 from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
 from downloader.database.db_manager import DatabaseManager
@@ -222,7 +222,7 @@ class SafetyCoreTests(FeatureFixture):
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         with patch('downloader.core.chunk_downloader.requests.get', return_value=response):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ChunkDownloadError):
                 worker._download_chunk(4)
         self.assertEqual(path.read_bytes(), b'AAAA')
 

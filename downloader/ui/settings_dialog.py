@@ -7,6 +7,7 @@ import os
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from typing import Callable, Optional
+from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.utils.config import ConfigManager
 
 
@@ -15,13 +16,8 @@ APPEARANCE_LABELS = {"dark": "深色", "light": "浅色", "system": "跟随系�
 APPEARANCE_VALUE_BY_LABEL = {label: value for value, label in APPEARANCE_LABELS.items()}
 
 
-class SettingsDialog(ctk.CTkToplevel):
+class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """设置对话框"""
-
-    def _revert_withdraw_after_windows_set_titlebar_color(self):
-        # 快速保存关闭时窗口可能已销毁，CTk 的延迟标题栏回调不能再来 deiconify
-        if self.winfo_exists():
-            super()._revert_withdraw_after_windows_set_titlebar_color()
 
     def __init__(self, parent, config_manager: ConfigManager,
                  on_save_callback: Optional[Callable] = None):
@@ -242,6 +238,26 @@ class SettingsDialog(ctk.CTkToplevel):
         self.appearance_segment.pack(anchor="w")
         self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
 
+        # ========== 桌面悬浮条 ==========
+        float_label = ctk.CTkLabel(tab, text="桌面悬浮条:", font=("Arial", 12))
+        float_label.grid(row=3, column=0, sticky="nw", pady=10)
+
+        float_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        float_frame.grid(row=3, column=1, sticky="ew", pady=10, padx=10)
+
+        self.float_bar_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            float_frame,
+            text="显示可拖动的速度悬浮条",
+            variable=self.float_bar_var,
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            float_frame,
+            text="双击悬浮条显示主窗口，右键可隐藏或退出",
+            font=("Arial", 11), text_color="gray",
+        ).pack(anchor="w", pady=(4, 0))
+
     def _load_config(self):
         """加载当前配置"""
         self.dir_entry.insert(0, self.config.download_dir)
@@ -272,6 +288,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
         # 外观主题
         self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
+        # 桌面悬浮条
+        self.float_bar_var.set(self.config.ui_float_bar_enabled)
 
     def _browse_directory(self):
         """浏览目录"""
@@ -378,6 +396,9 @@ class SettingsDialog(ctk.CTkToplevel):
             # 外观主题（控件上是中文标签，落库用配置值）
             appearance_mode = APPEARANCE_VALUE_BY_LABEL.get(self.appearance_segment.get(), "dark")
             self.config.ui_appearance_mode = appearance_mode
+            # 桌面悬浮条
+            float_bar_enabled = bool(self.float_bar_var.get())
+            self.config.ui_float_bar_enabled = float_bar_enabled
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
@@ -400,6 +421,7 @@ class SettingsDialog(ctk.CTkToplevel):
                     },
                     'after_download': after_config,
                     'appearance_mode': appearance_mode,
+                    'float_bar_enabled': float_bar_enabled,
                 }
                 self.on_save_callback(runtime_settings)
 
@@ -454,4 +476,6 @@ class SettingsDialog(ctk.CTkToplevel):
             self.ignore_hosts_textbox.insert("1.0", "\n".join(self.config.clipboard_ignore_hosts))
             # 外观主题重置
             self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
+            # 桌面悬浮条重置
+            self.float_bar_var.set(self.config.ui_float_bar_enabled)
             messagebox.showinfo("成功", "已恢复默认设置！", parent=self)

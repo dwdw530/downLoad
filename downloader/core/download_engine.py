@@ -7,13 +7,14 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import uuid
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional, Callable
-from downloader.core.chunk_downloader import ChunkDownloader
+from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
@@ -23,6 +24,12 @@ from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url
 
 
 logger = logging.getLogger(__name__)
+
+# 失败分块重试：轮数与总时长双上限，避免断网时任务无限挂住；
+# 协议性失败（服务端不守 Range）不在此列，仍然降级单线程。
+CHUNK_RETRY_ROUNDS = 3
+CHUNK_RETRY_DEADLINE = 300
+CHUNK_RETRY_BACKOFF = (1, 3, 10)
 
 
 class DownloadEngine:
@@ -41,6 +48,8 @@ class DownloadEngine:
         self.thread_pools = {}  # {task_id: ThreadPoolExecutor}
         self.cancelled_tasks = set()  # 艹，取消标记必须单独维护，不然后台线程会把状态回写炸掉
         self.task_run_ids = {}  # {task_id: run_id}，用于隔离旧下载会话，防止暂停/恢复串状态
+        # {task_id: {chunk_id: 已下载字节}}：进度监控只读内存，不再每秒查分块表
+        self.chunk_progress = {}
 
         # 回调函数
         self.progress_callback: Optional[Callable] = None
@@ -412,14 +421,29 @@ class DownloadEngine:
         task_id = task['task_id']
         chunks = self.db.get_chunks(task_id)
         if not chunks:
-            self.db.update_task_status(task_id, 'failed', '没有分块信息')
-            if self.status_callback:
-                self.status_callback(task_id, 'failed', '没有分块信息')
+            self._fail_task(task_id, '没有分块信息')
             return False
 
+        # 进度基准以数据库现状为准，进入本轮下载后再由分块回调覆盖
+        self.chunk_progress[task_id] = {
+            chunk['chunk_id']: int(chunk.get('downloaded_bytes') or 0) for chunk in chunks}
+
+        # 多留一个工作线程给调度任务本身，否则分块并行度会少一路
+        thread_pool = ThreadPoolExecutor(max_workers=max(1, int(task['thread_count'])) + 1)
+        self.thread_pools[task_id] = thread_pool
+        threading.Thread(target=self._monitor_progress,
+                         args=(task_id, task['total_size'], time.time(), run_id), daemon=True).start()
+        # 不能用不受管理的 daemon 合并线程，否则暂停返回后它仍在写输出。
+        thread_pool.submit(self._run_chunk_rounds, task, chunks, resume, run_id, thread_pool)
+        return True
+
+    def _build_chunk_downloaders(self, task: dict, chunk_rows: list) -> list:
+        """按分块行构建下载器；限速按本轮参与的分块数均分"""
+        task_id = task['task_id']
+        chunk_speed_limit = (max(1, self.config.speed_limit // len(chunk_rows))
+                            if self.config.speed_limit and chunk_rows else 0)
         downloaders = []
-        chunk_speed_limit = max(1, self.config.speed_limit // len(chunks)) if self.config.speed_limit else 0
-        for chunk in chunks:
+        for chunk in chunk_rows:
             downloader = ChunkDownloader(
                 chunk_id=chunk['chunk_id'], task_id=task_id, url=task['url'],
                 start_byte=chunk['start_byte'], end_byte=chunk['end_byte'], temp_file=chunk['temp_file'],
@@ -429,53 +453,111 @@ class DownloadEngine:
                 total_size=task['total_size'], etag=task.get('resource_etag'),
                 last_modified=task.get('resource_last_modified'),
             )
-            downloader.set_progress_callback(self._on_chunk_progress)
+            downloader.set_progress_callback(
+                lambda chunk_id, size, tid=task_id: self._record_chunk_progress(tid, chunk_id, size))
             downloaders.append(downloader)
+        return downloaders
 
-        self.active_downloaders[task_id] = downloaders
-        thread_pool = ThreadPoolExecutor(max_workers=task['thread_count'])
-        self.thread_pools[task_id] = thread_pool
-        futures = {thread_pool.submit(d.download, resume): d for d in downloaders}
-        import threading
-        threading.Thread(target=self._monitor_progress,
-                         args=(task_id, task['total_size'], time.time(), run_id, downloaders), daemon=True).start()
+    def _run_chunk_rounds(self, task: dict, chunks: list, resume: bool, run_id: int, thread_pool):
+        """
+        跑完所有分块，只重试失败的那几块。
 
-        def wait_and_merge():
-            try:
-                all_success = True
+        失败分三类处理：
+        - protocol：服务端不守 Range，只能降级单线程（保留旧逻辑）
+        - fatal：403/404/ETag 变化，直接失败并保留已完成的分块
+        - transient：超时/断流/5xx，按轮次和总时长上限退避重试
+        """
+        task_id = task['task_id']
+        rows = {chunk['chunk_id']: chunk for chunk in chunks}
+        pending = list(chunks)
+        deadline = time.monotonic() + CHUNK_RETRY_DEADLINE
+        downloaders = []
+
+        try:
+            for round_index in range(CHUNK_RETRY_ROUNDS):
+                downloaders = self._build_chunk_downloaders(task, pending)
+                if not downloaders:
+                    break
+                self.active_downloaders[task_id] = downloaders
+                # 首轮沿用调用方的续传意图；重试轮必须续传，否则会把已下字节抹掉
+                round_resume = bool(resume) if round_index == 0 else True
+                futures = {thread_pool.submit(d.download, round_resume): d for d in downloaders}
+
+                failed = []
                 for future in as_completed(futures):
                     if not self._can_finish(task_id, run_id):
                         return
                     downloader = futures[future]
-                    success = future.result()
+                    try:
+                        success = bool(future.result())
+                    except Exception as error:
+                        logger.warning('分块执行异常: chunk=%s, err=%s', downloader.chunk_id, error)
+                        downloader.last_error = ChunkDownloadError(str(error), 'transient')
+                        success = False
                     if not self._can_finish(task_id, run_id):
                         return
                     self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes,
                                                   'completed' if success else 'failed')
-                    all_success = all_success and success
-                if not self._can_finish(task_id, run_id):
-                    return
-                if all_success:
-                    self._merge_and_finish(task_id, task['save_path'], chunks, run_id)
-                elif not self._fallback_to_singlethread(task, run_id) and self._can_finish(task_id, run_id):
-                    self.db.update_task_status(task_id, 'failed', '部分分块下载失败')
-                    if self.status_callback:
-                        self.status_callback(task_id, 'failed', '下载失败')
-            except Exception as error:
-                if self._can_finish(task_id, run_id):
-                    self.db.update_task_status(task_id, 'failed', str(error))
-                    if self.status_callback:
-                        self.status_callback(task_id, 'failed', str(error))
-            finally:
-                if self.thread_pools.get(task_id) is thread_pool:
-                    del self.thread_pools[task_id]
-                if self.active_downloaders.get(task_id) is downloaders:
-                    del self.active_downloaders[task_id]
-                thread_pool.shutdown(wait=False)
+                    if not success:
+                        failed.append(downloader)
 
-        # 不能用不受管理的 daemon 合并线程，否则暂停返回后它仍在写输出。
-        thread_pool.submit(wait_and_merge)
-        return True
+                if not failed:
+                    self._merge_and_finish(task_id, task['save_path'], chunks, run_id)
+                    return
+
+                kinds = {downloader.error_kind() for downloader in failed}
+                if 'protocol' in kinds:
+                    if (not self._fallback_to_singlethread(task, run_id)
+                            and self._can_finish(task_id, run_id)):
+                        self._fail_task(task_id, '服务器不支持稳定的分块下载，单线程重试也失败了')
+                    return
+                if 'transient' not in kinds:
+                    # 全是致命错误，再试也是浪费时间；已完成的分块和临时文件都保留
+                    message = next((d.error_message() for d in failed if d.error_message()), '下载失败')
+                    self._fail_task(task_id, message)
+                    return
+                if round_index + 1 >= CHUNK_RETRY_ROUNDS or time.monotonic() >= deadline:
+                    self._fail_task(task_id, '部分分块下载失败，已完成的数据已保留，可稍后继续')
+                    return
+
+                delay = CHUNK_RETRY_BACKOFF[min(round_index, len(CHUNK_RETRY_BACKOFF) - 1)]
+                logger.info('重试失败分块: task=%s, 轮次=%s, 数量=%s',
+                            task_id, round_index + 1, len(failed))
+                if self.status_callback:
+                    self.status_callback(task_id, 'downloading',
+                                         f'正在重试 {len(failed)} 个分块（第 {round_index + 1} 轮）')
+                if not self._sleep_unless_stopped(task_id, run_id, delay):
+                    return
+                # 只把失败的分块放回下一轮，已完成的一块都不重下
+                pending = [rows[d.chunk_id] for d in failed if d.chunk_id in rows]
+                if not pending:
+                    return
+        except Exception as error:
+            if self._can_finish(task_id, run_id):
+                self._fail_task(task_id, str(error))
+        finally:
+            if self.thread_pools.get(task_id) is thread_pool:
+                del self.thread_pools[task_id]
+            if self.active_downloaders.get(task_id) is downloaders:
+                del self.active_downloaders[task_id]
+            thread_pool.shutdown(wait=False)
+
+    def _fail_task(self, task_id: str, message: str):
+        """标记任务失败并通报 UI"""
+        # 先结束内存进度汇总，避免监控线程对失败任务继续每秒写进度
+        self.chunk_progress.pop(task_id, None)
+        self.db.update_task_status(task_id, 'failed', message)
+        if self.status_callback:
+            self.status_callback(task_id, 'failed', message)
+
+    def _sleep_unless_stopped(self, task_id: str, run_id: int, delay: float) -> bool:
+        """分段睡眠，期间一旦任务被暂停/取消就立刻返回 False"""
+        deadline = time.monotonic() + max(0.0, delay)
+        while time.monotonic() < deadline:
+            if not self._can_finish(task_id, run_id):
+                return False
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        return self._can_finish(task_id, run_id)
 
     def _fallback_to_singlethread(self, task: dict, run_id: int) -> bool:
         """分块失败时自动降级到单线程重试"""
@@ -497,6 +579,9 @@ class DownloadEngine:
                     except Exception as e:
                         logger.warning("删除分块临时文件失败: %s, %s", temp_file, e)
                 self.db.update_chunk_progress(chunk['chunk_id'], 0, 'pending')
+
+            # 降级后本任务不再走分块汇总，旧监控线程靠这张表退出
+            self.chunk_progress.pop(task_id, None)
 
             # 切换任务为单线程模式，并把任务进度归零后重新开始
             self.db.mark_task_singlethread(task_id)
@@ -603,7 +688,7 @@ class DownloadEngine:
                         or self._is_task_cancelled(task_id) or self._is_task_paused(task_id)):
                     return
                 if not success:
-                    raise RuntimeError('下载失败')
+                    raise RuntimeError(downloader.error_message() or '下载失败')
                 self._verify_and_finish(task_id, temp_file, run_id=run_id)
             except Exception as e:
                 if (self._is_current_task_run(task_id, run_id)
@@ -747,14 +832,21 @@ class DownloadEngine:
             self.db.update_task_progress(task_id, task['total_size'], 0)
             if self.progress_callback:
                 self.progress_callback(task_id, task['total_size'], task['total_size'], 0)
+        # 终态任务不再需要内存进度汇总，监控线程靠这里退出
+        self.chunk_progress.pop(task_id, None)
         self.db.update_task_status(task_id, status, message if status != 'completed' else None)
         if self.status_callback:
             self.status_callback(task_id, status, message)
 
     def _on_chunk_progress(self, chunk_id: int, downloaded_bytes: int):
-        """分块进度回调"""
+        """分块进度回写数据库（调用方已按字节/时间节流）"""
         # 艹，这个回调只给真正存在分块记录的多线程任务用
         self.db.update_chunk_progress(chunk_id, downloaded_bytes)
+
+    def _record_chunk_progress(self, task_id: str, chunk_id: int, downloaded_bytes: int):
+        """先记内存再回写数据库：监控线程靠内存求和，不用每秒查分块表"""
+        self.chunk_progress.setdefault(task_id, {})[chunk_id] = int(downloaded_bytes or 0)
+        self._on_chunk_progress(chunk_id, downloaded_bytes)
 
     def _is_task_cancelled(self, task_id: str) -> bool:
         """判断任务是否已取消（并发状态保护）"""
@@ -763,21 +855,22 @@ class DownloadEngine:
         task = self.db.get_task(task_id)
         return bool(task and task.get('status') == 'cancelled')
 
-    def _monitor_progress(self, task_id: str, total_size: int, start_time: float, run_id: int, downloaders_ref: list):
-        """监控下载进度（在后台线程中运行）"""
+    def _monitor_progress(self, task_id: str, total_size: int, start_time: float, run_id: int):
+        """监控下载进度（后台线程）：只读内存聚合，不再每秒查一次分块表"""
         # 艹，恢复后的新会话不能继承旧监控器的last_downloaded，不然首秒速度会炸穿天花板
-        chunks = self.db.get_chunks(task_id)
-        last_downloaded = sum(chunk['downloaded_bytes'] for chunk in chunks)
+        last_downloaded = sum(self.chunk_progress.get(task_id, {}).values())
 
-        while self._is_current_task_run(task_id, run_id) and self.active_downloaders.get(task_id) is downloaders_ref:
+        while self._is_current_task_run(task_id, run_id):
             time.sleep(1)  # 每秒更新一次
-            if (not self._is_current_task_run(task_id, run_id)
-                    or self.active_downloaders.get(task_id) is not downloaders_ref):
+            if not self._is_current_task_run(task_id, run_id):
                 break
 
-            # 计算总下载量
-            chunks = self.db.get_chunks(task_id)
-            downloaded_size = sum(chunk['downloaded_bytes'] for chunk in chunks)
+            # 任务已不在分块阶段（任务被删除/会话结束），安静退出
+            sizes = self.chunk_progress.get(task_id)
+            if sizes is None:
+                break
+            size_map = dict(sizes)
+            downloaded_size = sum(size_map.values())
 
             # 计算速度
             speed = max(0, downloaded_size - last_downloaded)
@@ -872,3 +965,4 @@ class DownloadEngine:
 
         self.active_downloaders.clear()
         self.thread_pools.clear()
+        self.chunk_progress.clear()

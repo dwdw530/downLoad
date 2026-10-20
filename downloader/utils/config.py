@@ -51,6 +51,8 @@ class ConfigManager:
         "ui_hide_completed": False,  # 任务列表是否隐藏已完成任务（搜索词不持久化）
         "ui_active_category": "all",  # 左侧分类树当前选中项：all / status:xxx / type:xxx / host:xxx
         "ui_appearance_mode": "dark",  # 主题：dark 深色 / light 浅色 / system 跟随系统
+        "ui_float_bar_enabled": False,  # 桌面悬浮条：默认关闭，不打扰存量用户
+        "ui_float_bar_pos": [],  # 悬浮条上次位置（物理像素 [x, y]，空表示首次放在右下角）
         "clipboard_monitor_enabled": True,  # 剪贴板监视：复制链接时弹出添加提示
         "clipboard_ignore_hosts": [],  # 剪贴板监视忽略的站点域名列表
         "after_download": {  # 下载完成后的动作，默认全部关闭
@@ -227,6 +229,28 @@ class ConfigManager:
     def ui_appearance_mode(self, value: str):
         mode = value if value in ("dark", "light", "system") else "dark"
         self._config["ui_appearance_mode"] = mode
+
+    # ==================== 桌面悬浮条 ====================
+
+    @property
+    def ui_float_bar_enabled(self) -> bool:
+        """桌面悬浮条是否显示"""
+        return bool(self._config.get("ui_float_bar_enabled", False))
+
+    @ui_float_bar_enabled.setter
+    def ui_float_bar_enabled(self, value: bool):
+        self._config["ui_float_bar_enabled"] = bool(value)
+
+    @property
+    def ui_float_bar_pos(self) -> list:
+        """悬浮条位置；数据不合法时返回空列表，由悬浮条自己回退到默认位置"""
+        pos = self._config.get("ui_float_bar_pos")
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            try:
+                return [int(pos[0]), int(pos[1])]
+            except (TypeError, ValueError):
+                return []
+        return []
 
     # ==================== 剪贴板监视 ====================
 

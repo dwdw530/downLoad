@@ -19,6 +19,33 @@ logger = logging.getLogger(__name__)
 PROGRESS_INTERVAL_BYTES = 256 * 1024
 PROGRESS_INTERVAL_SECONDS = 0.5
 
+# 临时性失败的重试退避：1s → 2s → 4s …… 封顶 30s
+RETRY_BACKOFF_BASE = 1.0
+RETRY_BACKOFF_MAX = 30.0
+
+# 可重试的 HTTP 状态（服务端临时性问题，等一等通常能好）
+RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 507, 520, 521, 522, 524})
+
+
+def classify_status(status_code: int) -> str:
+    """把 HTTP 状态码分成临时性/致命两类，决定要不要重试"""
+    return 'transient' if status_code in RETRYABLE_STATUS or status_code >= 500 else 'fatal'
+
+
+class ChunkDownloadError(Exception):
+    """
+    分块下载失败，带失败类型：
+
+    - transient：超时/断流/5xx/429，退避后重试有意义
+    - fatal：403/404/410、文件版本变化，重试也是白搭
+    - protocol：服务器不守 Range 或返回内容不符合协议，需要降级单线程
+    """
+
+    def __init__(self, message: str, kind: str = 'transient'):
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
 
 class SpeedLimiter:
     """
@@ -114,6 +141,7 @@ class ChunkDownloader:
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
         self.is_cancelled = False  # 取消标志
+        self.last_error = None  # 最后一次失败原因（ChunkDownloadError）
         self._reported_bytes = 0  # 上次回调给外部（数据库/UI）的字节数
         self._reported_at = 0.0  # 上次回调时间
 
@@ -130,6 +158,14 @@ class ChunkDownloader:
             callback: 回调函数，签名为 callback(chunk_id, downloaded_bytes)
         """
         self.progress_callback = callback
+
+    def error_kind(self) -> str:
+        """最后一次失败的类别；没失败过按临时错误算"""
+        return self.last_error.kind if self.last_error else 'transient'
+
+    def error_message(self) -> str:
+        """最后一次失败的文案；没失败过返回空串"""
+        return self.last_error.message if self.last_error else ''
 
     def _report_progress(self, force: bool = False) -> bool:
         """按字节或时间阈值上报进度。
@@ -157,7 +193,7 @@ class ChunkDownloader:
         Args:
             resume: 是否为断点续传
         Returns:
-            True表示成功，False表示失败
+            True表示成功，False表示失败（原因见 last_error）
         """
         # 确保临时文件目录存在
         temp_dir = os.path.dirname(self.temp_file)
@@ -170,11 +206,12 @@ class ChunkDownloader:
             with open(self.temp_file, 'wb'):
                 pass
         self.downloaded_bytes = 0
+        self.last_error = None
         self._reported_bytes = 0
         self._reported_at = 0.0
 
-        # 开始下载（带重试）
-        for attempt in range(self.retry_times):
+        attempts = max(1, int(self.retry_times or 1))
+        for attempt in range(1, attempts + 1):
             # 艹，暂停后不能继续疯狂重试，不然用户点了暂停还会被写成失败
             if not self._wait_if_paused_or_cancelled():
                 return False
@@ -200,15 +237,37 @@ class ChunkDownloader:
             try:
                 if self._download_chunk(actual_start):
                     return True
-            except Exception as e:
-                detail = type(e).__name__ if self.request_context else str(e)
-                logger.warning("分块%s下载失败（尝试%s/%s）: %s", self.chunk_id, attempt + 1, self.retry_times, detail)
-                if attempt < self.retry_times - 1:
-                    time.sleep(1)  # 重试前等待1秒
-                else:
+                # False 只代表暂停/取消，不是错误，不能进重试
+                return False
+            except ChunkDownloadError as error:
+                self.last_error = error
+                detail = type(error).__name__ if self.request_context else error.message
+                logger.warning("分块%s下载失败（尝试%s/%s）: %s", self.chunk_id, attempt, attempts, detail)
+                if error.kind != 'transient' or attempt >= attempts:
+                    return False
+                if not self._wait_before_retry(attempt):
+                    return False
+            except Exception as error:
+                # 没归类的异常（连接重置、DNS 抖动等）按临时错误重试，别一次就判死
+                detail = type(error).__name__ if self.request_context else str(error)
+                self.last_error = ChunkDownloadError(detail, 'transient')
+                logger.warning("分块%s下载异常（尝试%s/%s）: %s", self.chunk_id, attempt, attempts, detail)
+                if attempt >= attempts:
+                    return False
+                if not self._wait_before_retry(attempt):
                     return False
 
         return False
+
+    def _wait_before_retry(self, attempt: int) -> bool:
+        """指数退避后重试；等待期间仍能响应暂停/取消"""
+        delay = min(RETRY_BACKOFF_MAX, RETRY_BACKOFF_BASE * (2 ** (attempt - 1)))
+        deadline = time.monotonic() + delay
+        while time.monotonic() < deadline:
+            if not self._wait_if_paused_or_cancelled():
+                return False
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        return self._wait_if_paused_or_cancelled()
 
     def _download_chunk(self, start: int) -> bool:
         """
@@ -216,7 +275,9 @@ class ChunkDownloader:
         Args:
             start: 实际起始字节
         Returns:
-            True表示成功，False表示失败
+            True表示该分块下完；False表示被暂停/取消（不是错误）
+        Raises:
+            ChunkDownloadError：真正的失败，带 transient/fatal/protocol 分类
         """
         # 艹，非Range请求不允许带历史偏移，必须从块起点重下，避免重复拼接
         if not self.use_range and start > self.start_byte:
@@ -248,23 +309,26 @@ class ChunkDownloader:
         ) as response:
             expected_status = 206 if self.use_range else 200
             if response.status_code != expected_status:
-                logger.warning("分块%s请求失败: HTTP %s", self.chunk_id, response.status_code)
-                return False
+                if self.use_range and response.status_code == 200:
+                    # 服务端不认 Range，多线程拿到的是整份文件，继续拼就是脏数据
+                    raise ChunkDownloadError('服务器未按分块请求返回，无法多线程下载', 'protocol')
+                raise ChunkDownloadError(f'服务器返回 HTTP {response.status_code}',
+                                         classify_status(response.status_code))
 
             if self.etag and response.headers.get('ETag', self.etag) != self.etag:
-                raise ValueError('服务器文件版本已变化，请重新下载')
+                raise ChunkDownloadError('服务器文件版本已变化，请重新下载', 'fatal')
             if (not self.etag and self.last_modified
                     and response.headers.get('Last-Modified', self.last_modified) != self.last_modified):
-                raise ValueError('服务器文件修改时间已变化，请重新下载')
+                raise ChunkDownloadError('服务器文件修改时间已变化，请重新下载', 'fatal')
             if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
-                raise ValueError('服务器返回压缩内容，无法按字节范围保存')
+                raise ChunkDownloadError('服务器返回压缩内容，无法按字节范围保存', 'protocol')
             if self.use_range:
                 content_range = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+|\*)',
                                              response.headers.get('Content-Range', ''))
                 if (not content_range or int(content_range[1]) != start
                         or int(content_range[2]) != self.end_byte
                         or (self.total_size is not None and content_range[3] != str(self.total_size))):
-                    raise ValueError('服务器返回的Content-Range与请求不一致')
+                    raise ChunkDownloadError('服务器返回的Content-Range与请求不一致', 'protocol')
 
             expected_size = self.end_byte - self.start_byte + 1
             mode = 'ab' if self.downloaded_bytes > 0 else 'wb'
@@ -275,7 +339,9 @@ class ChunkDownloader:
                         return False
                     if data:
                         if self.downloaded_bytes + len(data) > expected_size:
-                            raise ValueError('下载内容超过预期分块大小')
+                            raise ChunkDownloadError(
+                                '服务器返回的数据超过预期分块大小',
+                                'protocol' if self.use_range else 'fatal')
                         self.speed_limiter.acquire(len(data))
                         if not self._wait_if_paused_or_cancelled():
                             self._report_progress(force=True)
@@ -284,10 +350,12 @@ class ChunkDownloader:
                         self.downloaded_bytes += len(data)
                         self._report_progress()
 
-            if self.downloaded_bytes == expected_size:
-                # 收尾必须补报一次，保证数据库拿到最终字节数
-                self._report_progress(force=True)
-            return self.downloaded_bytes == expected_size
+            if self.downloaded_bytes != expected_size:
+                # 连接中途断了，缺的字节下次按偏移续传，属于临时性失败
+                raise ChunkDownloadError('连接中断，数据未接收完整', 'transient')
+            # 收尾必须补报一次，保证数据库拿到最终字节数
+            self._report_progress(force=True)
+            return True
 
     def _wait_if_paused_or_cancelled(self) -> bool:
         """阻塞等待暂停结束；若任务被取消则返回False"""

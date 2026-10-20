@@ -26,6 +26,18 @@ class DownloadHandler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def _chunk_request(self):
+        """是否是真正的分块请求（排除探测用的 bytes=0-0）"""
+        header = self.headers.get('Range')
+        return bool(header) and header != 'bytes=0-0'
+
+    def _next_hit(self, path):
+        """记一次访问，返回本次是该路径的第几次（用于造“首次失败”场景）"""
+        with self.server.state_lock:
+            hit = self.server.state.get(path, 0)
+            self.server.state[path] = hit + 1
+            return hit
+
     def do_HEAD(self):
         if self.path == '/headless':
             self.send_error(405)
@@ -41,6 +53,19 @@ class DownloadHandler(BaseHTTPRequestHandler):
         if self.path == '/not-found':
             self.send_error(404)
             return
+        if self.path in ('/flaky-500', '/partial-404', '/always-503') and self._chunk_request():
+            hit = self._next_hit(self.path)
+            if self.path == '/always-503':
+                self.send_error(503)
+                return
+            if self.path == '/flaky-500' and hit == 0:
+                self.send_error(503)
+                return
+            if self.path == '/partial-404':
+                start_hint = int(re.fullmatch(r'bytes=(\d+)-.*', range_header)[1])
+                if start_hint != 0:
+                    self.send_error(404)
+                    return
         start, end = 0, len(PAYLOAD) - 1
         ignores_range = self.path == '/unreliable' and range_header != 'bytes=0-0'
         if (range_header and not ignores_range
@@ -74,6 +99,8 @@ class DownloadRegressions(unittest.TestCase):
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), DownloadHandler)
         cls.server.requests = []
+        cls.server.state = {}
+        cls.server.state_lock = threading.Lock()
         cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.server_thread.start()
         cls.base_url = f'http://127.0.0.1:{cls.server.server_port}'
@@ -101,11 +128,11 @@ class DownloadRegressions(unittest.TestCase):
         time.sleep(1.05)
         self.temp.cleanup()
 
-    def make_task(self, task_id='task', multithread=True, status='pending', save_path=None):
+    def make_task(self, task_id='task', multithread=True, status='pending', save_path=None, path='range'):
         count = 4 if multithread else 1
         chunks = self.engine._build_chunks(task_id, len(PAYLOAD), count) if multithread else []
         self.assertTrue(self.db.create_task_with_chunks(
-            task_id, self.base_url + ('/range' if multithread else '/no-range'),
+            task_id, self.base_url + ('/' + path if multithread else '/no-range'),
             task_id + '.bin', str(save_path or self.root / 'out' / (task_id + '.bin')),
             len(PAYLOAD), multithread, count, chunks,
             resource_etag='"regression-payload-v1"',
@@ -223,6 +250,44 @@ class DownloadRegressions(unittest.TestCase):
         self.assertIsNotNone(task_id)
         self.assert_download(task_id)
         self.assertFalse(self.db.get_task(task_id)['support_range'])
+
+    def test_transient_5xx_retries_only_the_failed_chunk(self):
+        task_id = self.make_task('flaky', path='flaky-500')
+        self.assert_download(task_id)
+        chunk_ranges = [header for path, header, _ in self.server.requests
+                        if path == '/flaky-500' and header and header != 'bytes=0-0']
+        # 4 个分块各请求一次，只有失败的那一块被重试了一次
+        self.assertEqual(len(chunk_ranges), 5)
+        self.assertEqual(len(set(chunk_ranges)), 4)
+
+    def test_fatal_404_fails_fast_and_keeps_completed_chunks(self):
+        task_id = self.make_task('gone', path='partial-404')
+        self.assertTrue(self.engine.start_download(task_id, resume=True))
+        task = self.wait_terminal(task_id)
+        self.assertEqual(task['status'], 'failed')
+        self.assertIn('404', task['error_message'])
+        # 致命错误不降级单线程、不重试，已完成分块和临时文件都保留
+        self.assertEqual(task['support_range'], 1)
+        chunk_ranges = [header for path, header, _ in self.server.requests
+                        if path == '/partial-404' and header and header != 'bytes=0-0']
+        self.assertEqual(len(chunk_ranges), 4)
+        chunks = self.db.get_chunks(task_id)
+        self.assertTrue(any(Path(chunk['temp_file']).exists() for chunk in chunks))
+        self.assertGreater(sum(int(chunk['downloaded_bytes'] or 0) for chunk in chunks), 0)
+
+    def test_exhausted_transient_retries_keep_partial_data(self):
+        task_id = self.make_task('busy', path='always-503')
+        with patch('downloader.core.download_engine.CHUNK_RETRY_BACKOFF', (0, 0, 0)):
+            self.assertTrue(self.engine.start_download(task_id, resume=True))
+            task = self.wait_terminal(task_id)
+        self.assertEqual(task['status'], 'failed')
+        self.assertIn('已保留', task['error_message'])
+        self.assertEqual(task['support_range'], 1)
+        # 三轮重试都只打分块请求，没有退化成从头重下的单线程
+        chunk_ranges = [header for path, header, _ in self.server.requests
+                        if path == '/always-503' and header and header != 'bytes=0-0']
+        self.assertEqual(len(chunk_ranges), 12)
+        self.assertFalse((Path(self.config.temp_dir) / (task_id + '.tmp')).exists())
 
     def test_interrupted_range_stream_retries_from_saved_offset(self):
         worker = self.worker('/truncated-once')
@@ -362,7 +427,7 @@ class UiCallbackRegressions(unittest.TestCase):
             callback, args = ui._ui_events.get_nowait()
             callback(*args)
         ui._add_task_widget.assert_called_once_with({'task_id': 'task'})
-        ui._update_task_status.assert_called_once_with('task', 'downloading')
+        ui._update_task_status.assert_called_once_with('task', 'downloading', '')
         ui._update_task_progress.assert_called_once_with('task', 10, 100, 5)
 
 

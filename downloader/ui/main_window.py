@@ -21,6 +21,7 @@ from downloader.utils.url_utils import extract_clipboard_url, host_from_url, hos
 from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
+from downloader.ui.ctk_helpers import SafeToplevelMixin
 
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,10 @@ class MainWindow(ctk.CTk):
         # 初始化系统托盘
         self._init_tray()
 
+        # 桌面悬浮条（默认关闭，随配置自动恢复）
+        self.float_bar = None
+        self.after(200, self._restore_float_bar)
+
         # 剪贴板监视：启动时先记下现有内容，避免冷启动就弹窗
         try:
             self._clipboard_last_seen = self.clipboard_get()
@@ -137,6 +142,35 @@ class MainWindow(ctk.CTk):
         self.tray_manager.set_exit_callback(lambda: self._ui_events.put((self._exit_app, ())))
         self.tray_manager.start()
 
+    def _restore_float_bar(self):
+        """按配置恢复悬浮条（启动时延后一点，等主窗口布局稳定再定位）"""
+        if self.task_manager.engine.config.ui_float_bar_enabled:
+            self._set_float_bar_visible(True)
+
+    def _set_float_bar_visible(self, visible: bool):
+        """显示或隐藏桌面悬浮条"""
+        config = self.task_manager.engine.config
+        if visible:
+            if self.float_bar is None:
+                from downloader.ui.float_bar import FloatBar
+                self.float_bar = FloatBar(
+                    self, self.task_manager, config,
+                    on_show_window=lambda: self._ui_events.put((self._restore_window, ())),
+                    on_pause_all=self._on_pause_all,
+                    on_resume_all=self._on_resume_all,
+                    on_settings=self._on_settings,
+                    on_exit=lambda: self._ui_events.put((self._exit_app, ())),
+                    on_hidden=self._on_float_bar_hidden,
+                )
+            else:
+                self.float_bar.show()
+        elif self.float_bar is not None:
+            self.float_bar.hide()
+
+    def _on_float_bar_hidden(self):
+        """悬浮条自己隐藏时同步配置，设置页下次打开不会又勾上"""
+        self.task_manager.engine.config.ui_float_bar_enabled = False
+
     def _show_from_tray(self):
         """从托盘恢复窗口"""
         # 在主线程中执行UI操作
@@ -168,6 +202,10 @@ class MainWindow(ctk.CTk):
             # 停止托盘
             if hasattr(self, 'tray_manager'):
                 self.tray_manager.stop()
+            # 悬浮条是独立 Toplevel，不手动销毁会跟着进程残留
+            if getattr(self, 'float_bar', None) is not None:
+                self.float_bar.destroy()
+                self.float_bar = None
             # 退出不清理线程？那就是找骂：ThreadPoolExecutor能把进程吊到天荒地老
             self.task_manager.shutdown()
         except Exception as e:
@@ -595,6 +633,10 @@ class MainWindow(ctk.CTk):
         # 主题与分类选中项同理：恢复默认后界面要跟配置一致
         ctk.set_appearance_mode(config.ui_appearance_mode)
         self._retheme_sidebar()
+        if getattr(self, 'float_bar', None) is not None:
+            self.float_bar.refresh_theme()
+        # 悬浮条开关立即生效
+        self._set_float_bar_visible(config.ui_float_bar_enabled)
         if self._active_category != config.ui_active_category:
             self._active_category = config.ui_active_category
             for key in list(self.category_buttons):
@@ -734,6 +776,7 @@ class MainWindow(ctk.CTk):
             # 分类树用：文件类型与站点；visible 由 _apply_task_filter 维护
             'category': guess_file_category(task.get('filename') or ''),
             'host': host_from_url(task.get('url') or ''),
+            'notice': '',
             'visible': True,
         }
 
@@ -1153,7 +1196,7 @@ class MainWindow(ctk.CTk):
 
     def _on_task_status_changed(self, task_id: str, status: str, message: str):
         """任务状态变更回调"""
-        self._ui_events.put((self._update_task_status, (task_id, status)))
+        self._ui_events.put((self._update_task_status, (task_id, status, message)))
 
         # 下载完成时发送托盘通知
         if status == 'completed':
@@ -1178,7 +1221,7 @@ class MainWindow(ctk.CTk):
         finally:
             self.after(50, self._drain_ui_events)
 
-    def _update_task_status(self, task_id: str, status: str):
+    def _update_task_status(self, task_id: str, status: str, message: str = None):
         """更新任务状态UI"""
         if task_id not in self.task_widgets:
             return
@@ -1191,7 +1234,13 @@ class MainWindow(ctk.CTk):
             widgets['category'] = guess_file_category(task['filename'])
             widgets['filename_label'].configure(text=task['filename'])
         widgets['status'] = status
-        widgets['status_label'].configure(text=self._get_status_text(status))
+        # 重试/降级属于临时提示：显示到状态标签上，一有真实速度就自动收回去
+        notice = ''
+        if status == 'downloading' and message and ('重试' in message or '降级' in message):
+            notice = message
+        widgets['notice'] = notice
+        widgets['status_label'].configure(
+            text=self._get_status_text(status) + (f" · {notice}" if notice else ""))
         if status != 'downloading':
             widgets['speed_label'].configure(text=format_speed(0))
             widgets['eta_label'].configure(text="剩余 --")
@@ -1214,6 +1263,11 @@ class MainWindow(ctk.CTk):
             return
 
         widgets = self.task_widgets[task_id]
+
+        # 数据又开始流动了，把“正在重试”这种临时提示收回成正常状态
+        if widgets.get('notice') and float(speed or 0) > 0:
+            widgets['notice'] = ''
+            widgets['status_label'].configure(text=self._get_status_text(widgets.get('status')))
 
         # 速度曲线采样：只在下载中记录，启动回填的0速度样本不进曲线
         if widgets.get('status') == 'downloading':
@@ -1372,19 +1426,8 @@ class MainWindow(ctk.CTk):
             self._minimize_app()
 
 
-class CloseConfirmDialog(ctk.CTkToplevel):
+class CloseConfirmDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """关闭确认对话框"""
-
-    def focus_set(self):
-        if self.winfo_exists():
-            super().focus_set()
-
-    focus = focus_set
-
-    def _revert_withdraw_after_windows_set_titlebar_color(self):
-        # CustomTkinter 5.2会延迟恢复标题栏，快速关闭时窗口可能已销毁。
-        if self.winfo_exists():
-            super()._revert_withdraw_after_windows_set_titlebar_color()
 
     def __init__(self, parent, config):
         super().__init__(parent)
@@ -1544,7 +1587,7 @@ class CloseConfirmDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-class ShutdownConfirmDialog(ctk.CTkToplevel):
+class ShutdownConfirmDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """全部下载完成后的关机确认（倒计时结束才真关机，关窗=取消）"""
 
     DEFAULT_COUNTDOWN = 60
@@ -1619,7 +1662,7 @@ class ShutdownConfirmDialog(ctk.CTkToplevel):
             self._on_shutdown()
 
 
-class DeleteTaskDialog(ctk.CTkToplevel):
+class DeleteTaskDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """删除任务对话框"""
 
     def __init__(self, parent, task):
@@ -1700,19 +1743,8 @@ class DeleteTaskDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-class AddTaskDialog(ctk.CTkToplevel):
+class AddTaskDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """添加任务对话框 - 支持多行批量与哈希校验"""
-
-    def _revert_withdraw_after_windows_set_titlebar_color(self):
-        # 与退出对话框相同：标题栏延迟回调可能晚于窗口销毁。
-        if self.winfo_exists():
-            super()._revert_withdraw_after_windows_set_titlebar_color()
-
-    def focus_set(self):
-        if self.winfo_exists():
-            super().focus_set()
-
-    focus = focus_set
 
     def __init__(self, parent, initial_url: str = None):
         super().__init__(parent)

@@ -5,10 +5,12 @@
 """
 import customtkinter as ctk
 
+from downloader.ui.ctk_helpers import SafeToplevelMixin
+
 MAX_URL_DISPLAY = 120
 
 
-class ClipboardLinkDialog(ctk.CTkToplevel):
+class ClipboardLinkDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """
     检测到剪贴板新链接时的小浮窗
 

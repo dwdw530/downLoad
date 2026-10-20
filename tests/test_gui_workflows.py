@@ -890,3 +890,82 @@ class ClipboardMonitorTests(GuiFeatures):
         self.assertEqual(dialog.parse_urls(), ['https://example.com/prefill.zip'])
         dialog.destroy()
 
+
+
+class TransientUiTests(GuiFeatures):
+    """桌面悬浮条与临时提示：显示/隐藏、拖动落盘、设置页开关、重试提示"""
+
+    def test_toggle_shows_and_hides_float_bar(self):
+        self.assertIsNone(self.app.float_bar)
+        self.app._set_float_bar_visible(True)
+        self.pump(0.2)
+        self.assertIsNotNone(self.app.float_bar)
+        self.assertTrue(self.app.float_bar.window.winfo_exists())
+        self.app._set_float_bar_visible(False)
+        self.pump(0.2)
+        # 隐藏保留窗口对象，再次显示不用重建
+        self.assertFalse(self.app.float_bar._visible)
+        self.app._set_float_bar_visible(True)
+        self.pump(0.2)
+        self.assertTrue(self.app.float_bar._visible)
+
+    def test_drag_updates_position_and_persists(self):
+        self.app._set_float_bar_visible(True)
+        self.pump(0.2)
+        bar = self.app.float_bar
+        start_x, start_y = bar._pos
+        bar._press = (100, 100, start_x, start_y)
+        bar._on_motion(SimpleNamespace(x_root=160, y_root=180))
+        bar._on_release(SimpleNamespace(x_root=160, y_root=180))
+        self.pump(0.2)
+        # 松手后贴边/夹屏幕，位置一定在虚拟桌面内且已写回配置
+        expected = bar.config.get('ui_float_bar_pos')
+        self.assertEqual(len(expected), 2)
+        self.assertEqual(bar._pos, (expected[0], expected[1]))
+        left, top, right, bottom = bar._bounds()
+        self.assertTrue(left <= bar._pos[0] <= right - bar._width)
+        self.assertTrue(top <= bar._pos[1] <= bottom - bar._height)
+        reloaded = ConfigManager(self.config.config_path)
+        self.assertEqual(reloaded.ui_float_bar_pos, expected)
+
+    def test_hide_by_user_turns_off_setting(self):
+        self.app._set_float_bar_visible(True)
+        self.pump(0.2)
+        self.app.float_bar.hide_by_user()
+        self.pump(0.2)
+        self.assertFalse(self.config.ui_float_bar_enabled)
+        self.assertFalse(ConfigManager(self.config.config_path).ui_float_bar_enabled)
+        self.assertFalse(self.app.float_bar._visible)
+
+    def test_settings_saves_float_bar_flag_and_applies_immediately(self):
+        def fill(dialog):
+            dialog.float_bar_var.set(True)
+            dialog._on_save()
+
+        self.dialog_action(self.app._on_settings, SettingsDialog, fill)
+        self.assertTrue(ConfigManager(self.config.config_path).ui_float_bar_enabled)
+        self.pump(0.3)
+        self.assertIsNotNone(self.app.float_bar)
+        self.assertTrue(self.app.float_bar._visible)
+
+    # ==================== 失败分块重试的临时提示 ====================
+
+    def _add_card(self, filename):
+        task_id = self.create('/tiny', filename=filename)
+        self.app._on_task_added(task_id)
+        self.pump(0.3)
+        return task_id
+
+    def test_retry_notice_shows_then_clears_when_bytes_flow(self):
+        task_id = self._add_card('retry.bin')
+        label = self.app.task_widgets[task_id]['status_label']
+        self.app._update_task_status(task_id, 'downloading', '正在重试 2 个分块（第 1 轮）')
+        self.assertIn('正在重试 2 个分块', label.cget('text'))
+        # 数据恢复流动后提示自动收回，不会一直挂在卡片上
+        self.app._update_task_progress(task_id, 10, 100, 2048)
+        self.assertEqual('下载中', label.cget('text'))
+
+    def test_ordinary_status_message_is_not_shown(self):
+        task_id = self._add_card('plain.bin')
+        self.app._update_task_status(task_id, 'downloading', '开始下载')
+        self.assertEqual('下载中', self.app.task_widgets[task_id]['status_label'].cget('text'))
