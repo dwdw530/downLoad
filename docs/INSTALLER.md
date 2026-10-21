@@ -62,7 +62,11 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 
 - 桌面版 v0.9.0、扩展 0.6.2（未改动），下载健壮性与全局限速一批改动 + 悬浮条真逐像素透明，[更新日志](releases/v0.9.0.md)。
 - 构建：`conda run --no-capture-output -n py310_env python -B scripts/build_exe.py`，随后 `python -B scripts/build_installer.py v0.9.0`（注意顺序：`build_exe.py` 会清理 `dist`，必须在重建 EXE 之后再打安装包）。
-- 详情见下方发布记录。
+- 安装包：`dist/daw-downloader-v0.9.0-windows-x64-setup.exe`，155,792,691 字节；SHA256 `ddd8f68d2afee811b84adecc0fe3e393b0456401870613c4af6bf0462e01deb5`；校验文件 111 字节。
+- 载荷双 EXE：`daw下载器.exe` 21,704,356 字节 / `8983e584dcfa89495ab60142d19525c999f766e85190f02aff906a0817bd2c1c`；`BrowserBridge.exe` 9,987,897 字节 / `a2f3f495b07d0c80fe4426c53758241634050e1f676c3ab9b3eb6be5fd08246a`。
+- 便携包：`daw-downloader-v0.9.0-windows-x64.zip` 213,901,403 字节 / `990f8f7d8ca7779e643b6395e84104229a90387377032058f8f56b9e69c57436`（27 项载荷，CRC 通过）；扩展包 `daw-browser-extension-v0.6.2.zip` 30,514 字节 / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`（与 v0.8.1 相同）；`SHA256SUMS.txt` 205 字节 / `7c0296b3ac091c93d0fbb295c6924a48ced47476b02389b6acfbf40b29253f8e`。
+- 验收：`py310_env` 全量 415 项通过；`scripts/smoke_exe.py` 3 组通过（产物 `downloader-exe-smoke-efhuc4d6`）；`scripts/smoke_installer.py` 七组 PASS，报告 `output/installer-smoke/run-xb6fous1/result.json`。
+- 构建与安装验收前后 `dist/data`、`dist/temp` 未被测试写入，原浏览器注册已恢复。
 
 ## 2026-10-21 v0.8.1 构建与验收
 
