@@ -67,6 +67,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 安装包七组通过，报告 `output/installer-smoke/run-erbxz4e3/result.json`：中文向导、自选中文空格路径、28 项白名单载荷、安装后下载、占用保护、升级/卸载/重装数据保留及浏览器注册恢复。
 - 便携 ZIP：213,909,114 字节，SHA256 `f3507f8786a2b2c87b9741d2b1f21e1c4a4ce9e2cf8d51d5df7759468a4a7bda`，27 项、CRC/白名单/逐项载荷一致。扩展 ZIP：30,514 字节，SHA256 `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`，13 项，与 v0.10.0 完全一致。
 - 安装包校验文件 112 字节；ZIP 的 SHA256SUMS.txt 为 206 字节。原四份配置/数据库与全部 28 个 Python 源文件的构建前后指纹一致，发布包不含用户 data/temp/logs/downloads。
+- 已发布：[v0.11.0](https://github.com/dwdw530/downLoad/releases/tag/v0.11.0)，Release id 419694874，2026-10-21 23:03:10 +08:00。发布提交 `90e39cc`，main/master 与 annotated 标签已推送，五附件 size/digest 全部与本地一致，latest 正确，历史 16 个 Release 保留。官方附件 API 的公开 CDN 下载状态/长度及校验文本已核对；本机 github.com 直连存在网络限制，未将其误报为全部直连成功。
 
 ## 2026-10-21 v0.10.0 构建与验收
 
