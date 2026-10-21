@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from downloader.browser.security import http_url, normalize_context, protect, reject_video_only_url, unprotect
 from downloader.utils.config import get_app_root
+from downloader.utils.file_utils import resolve_download_directory
 from downloader.core.youtube_downloader import video_page_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
 MAX_MESSAGE = 256 * 1024
@@ -218,7 +219,11 @@ class BridgeServer:
             if kind in CONTEXT_KINDS:
                 context = video_request_context(url, kind, {'headers': message.get('headers', {}),
                     'cookies': message.get('cookies', []), 'video': message.get('video')})
-            directory = os.path.abspath(self.manager.engine.config.download_dir)
+            config = self.manager.engine.config
+            # 按最终文件名决定目录，再在同一个目录里做重名预选；显式传引擎后不再二次分类
+            directory = os.path.abspath(resolve_download_directory(
+                config.download_dir, filename,
+                bool(getattr(config, 'auto_classify_downloads', False))))
             occupied = {os.path.normcase(os.path.abspath(task['save_path'])) for task in self.manager.get_all_tasks()}
             base, extension = os.path.splitext(filename)
             for index in range(10000):
@@ -237,7 +242,9 @@ class BridgeServer:
                 task_id = self.manager.add_task(url, filename=name, save_path=directory, request_context=context)
             if not task_id:
                 return {'ok': False, 'error': '无法下载此视频：链接已失效、需登录或文件大小未知'}
-            result = {'ok': True, 'task_id': task_id, 'filename': name}
+            # 回执取实际落库文件名，避免并发改名后返回预选的旧名
+            stored = self.manager.db.get_task(task_id) or {}
+            result = {'ok': True, 'task_id': task_id, 'filename': stored.get('filename') or name}
             self.receipts[request_id] = result
             if len(self.receipts) > 1024:
                 self.receipts.pop(next(iter(self.receipts)))
@@ -268,9 +275,8 @@ class BridgeServer:
                 context = normalize_context(url, {'headers': message.get('headers', {}), 'media': False})
             except ValueError:
                 return {'ok': False, 'error': '浏览器请求信息无效或不安全，已取消本次下载'}
-            directory = os.path.abspath(self.manager.engine.config.download_dir)
-            # Naming and same-name protection stay in the existing engine/database; no video filename branch.
-            task_id = self.manager.add_task(url, save_path=directory, request_context=context)
+            # 不传显式目录：让引擎按探测后的最终文件名分类，浏览器右键也遵守默认分目录
+            task_id = self.manager.add_task(url, request_context=context)
             if not task_id:
                 return {'ok': False, 'error': '无法下载此文件：链接已失效、需登录或文件大小未知'}
             task = self.manager.db.get_task(task_id) or {}

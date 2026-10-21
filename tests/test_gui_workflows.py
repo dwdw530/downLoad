@@ -687,8 +687,9 @@ class TaskDetailWindowTests(GuiFeatures):
 
     def test_double_click_on_card_opens_detail_window(self):
         task_id = self._add_card()
-        frame = self.app.task_widgets[task_id]['frame']
-        canvas = self._frame_canvas(frame)
+        # 卡片新增了勾选框，其内部 canvas 不参与双击；直接验证文件名区域的绑定
+        label = self.app.task_widgets[task_id]['filename_label']
+        canvas = self._frame_canvas(label)
         # Tk 的 bind 脚本里拿不到可调用对象，改从绑定表反查：双击已挂即可，
         # 真正的打开逻辑由 test_second_open 等用例直接调 _on_open_detail 覆盖
         script = canvas.bind('<Double-Button-1>')
@@ -1059,3 +1060,223 @@ class TransientUiTests(GuiFeatures):
         task_id = self._add_card('plain.bin')
         self.app._update_task_status(task_id, 'downloading', '开始下载')
         self.assertEqual('下载中', self.app.task_widgets[task_id]['status_label'].cget('text'))
+
+
+class BatchSelectionTests(GuiFeatures):
+    """多选批量：选择范围、筛选清理、删除记录与重复提交保护"""
+
+    def _inject(self, task_id, filename, status='pending'):
+        path = self.root / 'out' / filename
+        self.db.create_task_with_chunks(task_id, f'http://example.com/{filename}', filename,
+                                        str(path), status=status)
+        self.app._add_task_widget(self.db.get_task(task_id))
+        self.pump(0.1)
+        return task_id
+
+    def _wait_batch_idle(self, timeout=5):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.app._batch_busy:
+            self.pump(0.05)
+        self.assertFalse(self.app._batch_busy, '批量操作未在预期时间内结束')
+
+    def test_busy_survives_status_updates_and_new_cards(self):
+        task_id = self._inject('busy-existing', 'existing.bin', 'paused')
+        self.app._set_batch_busy(True)
+        self.app._update_task_status(task_id, 'downloading', '正在下载')
+        added = self._inject('busy-new', 'new.bin', 'paused')
+        for selected in (task_id, added):
+            widgets = self.app.task_widgets[selected]
+            for control in ('action_btn', 'cancel_btn', 'delete_btn', 'select_box'):
+                self.assertEqual(widgets[control].cget('state'), 'disabled', control)
+        self.app._set_batch_busy(False)
+        self.assertEqual(self.app.task_widgets[added]['action_btn'].cget('state'), 'normal')
+
+    def test_busy_blocks_context_mutations_but_keeps_viewing_actions(self):
+        first = self._inject('busy-menu-first', 'first.bin', 'paused')
+        second = self._inject('busy-menu-second', 'second.bin', 'paused')
+        self.app._set_batch_busy(True)
+        menu = self.app._build_task_menu(second)
+        try:
+            for index in (0, 6, 7, 9):
+                self.assertEqual(menu.entrycget(index, 'state'), 'disabled')
+            self.assertEqual(menu.entrycget(2, 'state'), 'normal')
+            self.assertEqual(menu.entrycget(4, 'state'), 'normal')
+        finally:
+            menu.destroy()
+        # 防住批量开始前就已经弹出的旧菜单，而不仅是新建菜单的 disabled 外观。
+        with patch.object(self.manager, 'resume_task') as resume, \
+                patch.object(self.manager, 'pause_task') as pause, \
+                patch.object(self.manager, 'cancel_task') as cancel, \
+                patch.object(self.manager, 'delete_task') as delete, \
+                patch.object(self.manager, 'move_task_to_top') as move, \
+                patch('downloader.ui.main_window.DeleteTaskDialog') as dialog:
+            self.app._on_start_task(first)
+            self.app._on_pause_task(first)
+            self.app._on_cancel_task(first)
+            self.app._on_delete_task(first)
+            self.app._on_move_task(second, 'top')
+        for call in (resume, pause, cancel, delete, move, dialog):
+            call.assert_not_called()
+
+    def test_thread_start_failure_releases_batch_and_controls(self):
+        task_id = self._inject('no-thread', 'worker.bin', 'paused')
+        self.app._on_batch_select_all()
+        with patch('downloader.ui.main_window.threading.Thread.start',
+                   side_effect=RuntimeError('cannot start thread')):
+            self.app._on_batch_action('start')
+        self.assertFalse(self.app._batch_busy)
+        self.assertFalse(self.manager.get_activity_state()[1])
+        self.assertEqual(self.app.task_widgets[task_id]['action_btn'].cget('state'), 'normal')
+
+    def test_delete_confirmation_cancel_leaves_everything_untouched(self):
+        task_id = self._inject('cancel-delete', 'keep.bin', 'paused')
+        self.app._on_batch_select_all()
+        self.mocks[4].return_value = False
+        with patch.object(self.manager, 'begin_batch_operation') as begin, \
+                patch.object(self.manager, 'delete_task') as delete:
+            self.app._on_batch_action('delete_records')
+        begin.assert_not_called()
+        delete.assert_not_called()
+        self.assertIsNotNone(self.db.get_task(task_id))
+        self.assertEqual(self.app._selected_task_ids, {task_id})
+
+    def test_checkbox_invocation_does_not_open_detail_or_start_download(self):
+        task_id = self._inject('checkbox-only', 'select.bin', 'paused')
+        with patch.object(self.app, '_on_open_detail') as detail, \
+                patch.object(self.manager, 'start_task') as start:
+            self.app.task_widgets[task_id]['select_box'].toggle()
+            self.pump(0.1)
+        self.assertEqual(self.app._selected_task_ids, {task_id})
+        detail.assert_not_called()
+        start.assert_not_called()
+
+    def test_slow_batch_keeps_tk_running_and_activity_busy_until_result(self):
+        task_id = self._inject('slow-pause', 'pause.bin', 'downloading')
+        self.app._on_batch_select_all()
+        entered, release = threading.Event(), threading.Event()
+        ticks = []
+
+        def pause(_task_id):
+            entered.set()
+            if not release.wait(3):
+                return False
+            return True
+
+        with patch.object(self.manager, 'pause_task', side_effect=pause):
+            self.app._on_batch_action('pause')
+            try:
+                self.assertTrue(self.app._has_active_tasks())
+                self.app.after(20, lambda: ticks.append(threading.get_ident()))
+                self.pump(0.15)
+                self.assertTrue(entered.is_set())
+                self.assertEqual(ticks, [threading.get_ident()])
+                self.assertTrue(self.manager.get_activity_state()[1])
+            finally:
+                release.set()
+                self._wait_batch_idle()
+        self.assertIn(task_id, self.app._selected_task_ids)
+
+    def test_auto_directory_setting_cancel_failure_save_and_reset(self):
+        dialog = SettingsDialog(self.app, self.config, on_save_callback=self.app._on_settings_saved)
+        dialog.auto_classify_var.set(True)
+        dialog._on_cancel()
+        self.assertFalse(self.config.auto_classify_downloads)
+        dialog = SettingsDialog(self.app, self.config, on_save_callback=self.app._on_settings_saved)
+        self.pump(0.25)
+        dialog.auto_classify_var.set(True)
+        with patch.object(self.config, 'save', return_value=False):
+            dialog._on_save()
+        self.assertFalse(self.config.auto_classify_downloads)
+        self.assertTrue(dialog.winfo_exists())
+        dialog._on_save()
+        self.pump(0.15)
+        self.assertTrue(self.config.auto_classify_downloads)
+        self.assertTrue(ConfigManager(self.config.config_path).auto_classify_downloads)
+        dialog = SettingsDialog(self.app, self.config, on_save_callback=self.app._on_settings_saved)
+        self.pump(0.25)
+        self.assertTrue(dialog.auto_classify_var.get())
+        # 重置的目录也隔离在测试根内，不能在用户默认下载目录建文件。
+        defaults = dict(ConfigManager.DEFAULT_CONFIG, download_dir=str(self.root / 'reset-out'),
+                        temp_dir=str(self.root / 'reset-parts'))
+        with patch.object(ConfigManager, 'DEFAULT_CONFIG', defaults):
+            dialog._on_reset()
+            self.pump(0.1)
+        self.assertFalse(dialog.auto_classify_var.get())
+        self.assertFalse(self.config.auto_classify_downloads)
+        self.assertFalse(ConfigManager(self.config.config_path).auto_classify_downloads)
+        dialog.destroy()
+
+    def test_selected_scope_follows_filter_and_is_not_restored(self):
+        alpha = self._inject('b-alpha', 'alpha.bin')
+        beta = self._inject('b-beta', 'beta.bin', status='completed')
+        gamma = self._inject('b-gamma', 'gamma.bin')
+        self.assertEqual(self.app.selection_label.cget('text'), '已选 0')
+
+        self.app.search_entry.insert(0, 'alpha')
+        self.app._apply_task_filter()
+        self.app._on_batch_select_all()
+        self.assertEqual(self.app._selected_task_ids, {alpha})
+
+        self.app.search_entry.delete(0, 'end')
+        self.app.search_entry.insert(0, 'zzz')
+        self.app._apply_task_filter()
+        self.assertEqual(self.app._selected_task_ids, set())
+        self.assertFalse(self.app.task_widgets[alpha]['select_var'].get())
+
+        self.app.search_entry.delete(0, 'end')
+        self.app._apply_task_filter()
+        self.assertEqual(self.app._selected_task_ids, set())
+        # 新任务不自动进入选择
+        self._inject('b-new', 'new.bin')
+        self.assertEqual(self.app._selected_task_ids, set())
+        self.assertFalse(self.app.task_widgets['b-new']['select_var'].get())
+        self.assertEqual(self.app.task_widgets[beta]['status'], 'completed')
+        self.assertIn(gamma, self.app.task_widgets)
+
+    def test_delete_records_keeps_files_and_clears_cards_once(self):
+        first = self._inject('b-one', 'one.bin')
+        second = self._inject('b-two', 'two.bin')
+        first = self.root / 'out' / 'one.bin'
+        second = self.root / 'out' / 'two.bin'
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.write_bytes(b'keep-one')
+        second.write_bytes(b'keep-two')
+        self.app._on_batch_select_all()
+        self.assertEqual(len(self.app._selected_task_ids), 2)
+
+        self.mocks[4].reset_mock()
+        self.app._on_batch_action('delete_records')
+        self._wait_batch_idle()
+
+        self.mocks[4].assert_called_once()
+        self.assertEqual(self.mocks[4].call_args.args[0], '删除记录')
+        self.assertEqual(self.db.get_all_tasks(), [])
+        self.assertEqual(self.app.task_widgets, {})
+        self.assertEqual(self.app._selected_task_ids, set())
+        self.assertEqual(first.read_bytes(), b'keep-one')
+        self.assertEqual(second.read_bytes(), b'keep-two')
+
+    def test_double_click_submits_only_one_batch_with_frozen_scope(self):
+        alpha = self._inject('b-a', 'alpha.bin', status='downloading')
+        beta = self._inject('b-b', 'beta.bin', status='downloading')
+        self.app._on_batch_select_all()
+        calls = []
+
+        def slow_operate(task_ids, action, reserved=False):
+            calls.append((list(task_ids), action))
+            time.sleep(0.2)
+            self.manager.end_batch_operation()
+            return {'action': action, 'total': len(task_ids), 'succeeded': [],
+                    'skipped': [], 'failed': []}
+
+        with patch.object(self.app.task_manager, 'batch_operate', side_effect=slow_operate):
+            self.app._on_batch_action('pause')
+            # 提交后立即改筛选，已提交快照不能跟着变化
+            self.app.search_entry.insert(0, 'alpha')
+            self.app._apply_task_filter()
+            self.app._on_batch_action('pause')
+            self._wait_batch_idle()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(set(calls[0][0]), {alpha, beta})
+        self.assertEqual(calls[0][1], 'pause')

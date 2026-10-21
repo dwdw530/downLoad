@@ -32,7 +32,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         # 设置窗口
         self.title("设置")
-        self.geometry("560x560")  # 「其他」页新增悬浮条样式，高度加一档避免控件被切
+        self.geometry("560x600")  # 下载页新增自动分目录说明，高度再放一档避免控件被切
         self.resizable(False, False)
 
         # 模态对话框
@@ -47,7 +47,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
     def _create_ui(self):
         """创建UI组件：分标签页，避免单页太长"""
-        self.tabview = ctk.CTkTabview(self, width=500, height=460)
+        self.tabview = ctk.CTkTabview(self, width=500, height=500)
         self.tabview.pack(fill="both", expand=True, padx=16, pady=(16, 0))
 
         self._build_download_tab(self.tabview.add("下载"))
@@ -83,11 +83,27 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         dir_frame = ctk.CTkFrame(tab, fg_color="transparent")
         dir_frame.grid(row=0, column=1, sticky="ew", pady=8, padx=10)
 
-        self.dir_entry = ctk.CTkEntry(dir_frame, width=270)
+        dir_row = ctk.CTkFrame(dir_frame, fg_color="transparent")
+        dir_row.pack(fill="x")
+
+        self.dir_entry = ctk.CTkEntry(dir_row, width=270)
         self.dir_entry.pack(side="left", padx=5)
 
-        browse_btn = ctk.CTkButton(dir_frame, text="浏览", command=self._browse_directory, width=80)
+        browse_btn = ctk.CTkButton(dir_row, text="浏览", command=self._browse_directory, width=80)
         browse_btn.pack(side="left")
+
+        # 自动分目录：默认关，只影响之后的新任务；显式指定的保存位置原样使用
+        self.auto_classify_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            dir_frame,
+            text="按文件类型自动建立子目录",
+            variable=self.auto_classify_var,
+        ).pack(anchor="w", padx=5, pady=(6, 0))
+
+        ctk.CTkLabel(
+            dir_frame, text="仅影响新任务；手动指定保存位置时使用该位置",
+            font=("Arial", 10), text_color="gray",
+        ).pack(anchor="w", padx=5)
 
         # 临时文件目录：分块/合并/视频下载都先落这里，和最终下载目录分开配置
         temp_label = ctk.CTkLabel(tab, text="临时文件目录:", font=("Arial", 12))
@@ -282,6 +298,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.dir_entry.insert(0, self.config.download_dir)
         self._initial_temp_dir = self.config.temp_dir
         self.temp_entry.insert(0, self._initial_temp_dir)
+        self.auto_classify_var.set(self.config.auto_classify_downloads)
         self.thread_slider.set(self.config.thread_count)
         self.thread_value_label.configure(text=str(self.config.thread_count))
         self.concurrent_slider.set(self.config.max_concurrent_downloads)
@@ -393,6 +410,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             # 保存配置
             previous_settings = self.config.get_all()
             self.config.download_dir = download_dir
+            self.config.auto_classify_downloads = bool(self.auto_classify_var.get())
             self.config.temp_dir = temp_dir_value
             self.config.thread_count = thread_count
             self.config.max_concurrent_downloads = concurrent_count
@@ -432,6 +450,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             if self.on_save_callback:
                 runtime_settings = {
                     'download_dir': download_dir,
+                    'auto_classify_downloads': bool(self.auto_classify_var.get()),
                     'temp_dir': temp_dir_value,
                     'thread_count': thread_count,
                     'max_concurrent_downloads': concurrent_count,
@@ -504,6 +523,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             self.temp_entry.delete(0, "end")
             self._initial_temp_dir = self.config.temp_dir
             self.temp_entry.insert(0, self._initial_temp_dir)
+            self.auto_classify_var.set(self.config.auto_classify_downloads)
             self.thread_slider.set(self.config.thread_count)
             self.thread_value_label.configure(text=str(self.config.thread_count))
             self.concurrent_slider.set(self.config.max_concurrent_downloads)

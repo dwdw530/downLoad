@@ -16,6 +16,19 @@ from downloader.database.db_manager import DatabaseManager
 logger = logging.getLogger(__name__)
 
 
+# 批量操作允许处理的源状态；None 表示删除记录（除 verifying 外都可删）
+BATCH_ACTION_STATUSES = {
+    'pause': ('downloading', 'pending'),
+    'start': ('pending', 'paused'),
+    'retry': ('failed', 'verify_failed', 'cancelled'),
+    'delete_records': None,
+}
+
+
+class BatchBusyError(RuntimeError):
+    """已有一批批量操作在执行；调用方应提示忙碌而不是重复提交"""
+
+
 class TaskManager:
     """任务队列管理器"""
 
@@ -35,7 +48,12 @@ class TaskManager:
         self._running_tasks = set()  # 正在下载的任务ID集合
         self._scheduling_paused = False
         self._adding_tasks = 0
+        self._batch_operations = 0  # 正在执行的批量操作数（同一时间只允许一批）
+        self._batch_hold = 0  # 暂停/删除从 UI 预留名额起就挡住启动，避免 worker 启动间隙补位
+        self._batch_action = None
+        self._batch_executing = False
         self._activity_generation = 0
+        self._shutdown_started = False
 
         # 回调函数
         self.task_added_callback: Optional[Callable] = None
@@ -142,7 +160,8 @@ class TaskManager:
     def get_activity_state(self):
         """返回任务操作代数及是否仍有探测/启动/运行工作。"""
         with self._lock:
-            return self._activity_generation, bool(self._adding_tasks or self._running_tasks)
+            return self._activity_generation, bool(
+                self._adding_tasks or self._running_tasks or self._batch_operations)
 
     @property
     def last_add_error(self) -> Optional[str]:
@@ -219,7 +238,8 @@ class TaskManager:
 
         # 检查并发限制
         with self._lock:
-            if self._scheduling_paused or task_id in self._running_tasks:
+            if (self._scheduling_paused or self._shutdown_started or self._batch_hold
+                    or task_id in self._running_tasks):
                 return False
             self._activity_generation += 1
             if len(self._running_tasks) >= self.max_concurrent:
@@ -266,7 +286,8 @@ class TaskManager:
             return False
 
         with self._lock:
-            if self._scheduling_paused or task_id in self._running_tasks:
+            if (self._scheduling_paused or self._shutdown_started or self._batch_hold
+                    or task_id in self._running_tasks):
                 return False
             self._activity_generation += 1
             # 艹，恢复任务也得走并发门禁，不能偷偷绕过最大并发
@@ -417,11 +438,157 @@ class TaskManager:
                 skipped += 1
         return started, skipped
 
+    # ==================== 多选批量操作 ====================
+
+    def begin_batch_operation(self, action=None) -> bool:
+        """占用唯一的批量操作名额（UI 点击时先抢，防止 worker 启动前重复点击）
+
+        Returns:
+            True 表示抢到名额；False 表示已有一批在执行或程序正在退出
+        """
+        if action is not None and action not in BATCH_ACTION_STATUSES:
+            raise ValueError('不支持的批量操作')
+        with self._lock:
+            if self._batch_operations or self._shutdown_started:
+                return False
+            self._batch_operations = 1
+            self._batch_action = action
+            self._batch_executing = False
+            if action in ('pause', 'delete_records'):
+                self._batch_hold += 1
+            self._activity_generation += 1
+            return True
+
+    def end_batch_operation(self):
+        """释放批量名额；没有暂缓/退出时按正常队列补位一次"""
+        with self._lock:
+            if not self._batch_operations:
+                return
+            if self._batch_action in ('pause', 'delete_records'):
+                self._batch_hold = max(0, self._batch_hold - 1)
+            self._batch_operations = 0
+            self._batch_action = None
+            self._batch_executing = False
+            should_schedule = (not self._batch_hold and not self._scheduling_paused
+                               and not self._shutdown_started)
+        if should_schedule:
+            try:
+                self._try_start_next_task()
+            except Exception:
+                # 批量结果已经确定，恢复补位失败不能把已成功的项整体报成失败。
+                logger.warning('批量操作后的队列补位失败')
+
+    @staticmethod
+    def _unique_batch_ids(task_ids) -> List[str]:
+        """保序去重，不把重复 ID 算成多次操作"""
+        unique = []
+        seen = set()
+        for raw in task_ids or ():
+            task_id = str(raw or '')
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            unique.append(task_id)
+        return unique
+
+    def _ordered_batch_ids(self, task_ids) -> List[str]:
+        """按当前 list_order 排序；缺失 ID 保序排在最后，仍会计入结果"""
+        unique = self._unique_batch_ids(task_ids)
+        positions = {task['task_id']: index for index, task in enumerate(self.db.get_all_tasks())}
+        fallback = len(positions)
+        indexed = [(positions.get(task_id, fallback), index, task_id)
+                   for index, task_id in enumerate(unique)]
+        indexed.sort(key=lambda item: (item[0], item[1]))
+        return [task_id for _position, _index, task_id in indexed]
+
+    def batch_operate(self, task_ids, action: str, reserved: bool = False) -> Dict:
+        """对选中任务执行一批相同动作，复用单任务接口
+
+        Args:
+            task_ids: 选中任务 ID（乱序允许，内部去重并按 list_order 重排）
+            action: pause / start / retry / delete_records
+            reserved: UI 已通过 begin_batch_operation 抢到名额时为 True
+        Returns:
+            {action, total, succeeded, skipped, failed}；每个去重 ID 恰好落入一类
+        Raises:
+            ValueError: 未知动作
+            BatchBusyError: 已有另一批批量操作在执行
+        """
+        if action not in BATCH_ACTION_STATUSES:
+            raise ValueError(f'不支持的批量操作: {action}')
+        if not reserved and not self.begin_batch_operation(action):
+            raise BatchBusyError('已有批量操作正在执行或下载器正在退出')
+
+        with self._lock:
+            if (not self._batch_operations or self._batch_executing
+                    or self._batch_action not in (None, action)):
+                raise BatchBusyError('没有可用的批量预留名额')
+            if self._batch_action is None:
+                self._batch_action = action
+                if action in ('pause', 'delete_records'):
+                    self._batch_hold += 1
+            self._batch_executing = True
+        try:
+            ordered = self._ordered_batch_ids(task_ids)
+            result = {'action': action, 'total': len(ordered),
+                      'succeeded': [], 'skipped': [], 'failed': []}
+            allowed = BATCH_ACTION_STATUSES[action]
+
+            for index, task_id in enumerate(ordered):
+                if self._shutdown_started:
+                    # 退出后所有动作都停止后续逐项提交，不与退出清理竞争。
+                    for rest in ordered[index:]:
+                        result['skipped'].append({'task_id': rest, 'reason': 'shutdown'})
+                    break
+
+                task = self.db.get_task(task_id)
+                if not task:
+                    result['skipped'].append({'task_id': task_id, 'reason': 'missing'})
+                    continue
+                status = task.get('status')
+
+                if action == 'delete_records':
+                    if status == 'verifying':
+                        result['skipped'].append({'task_id': task_id, 'reason': 'verifying'})
+                        continue
+                    try:
+                        ok = self.delete_task(task_id)
+                    except Exception:
+                        logger.warning('批量删除记录失败: %s', task_id)
+                        result['failed'].append({'task_id': task_id, 'reason': 'error'})
+                        continue
+                else:
+                    if status not in allowed:
+                        result['skipped'].append({'task_id': task_id, 'reason': 'status'})
+                        continue
+                    try:
+                        if action == 'pause':
+                            ok = self.pause_task(task_id)
+                        else:
+                            # 开始/重试必须走 start_task 的并发门禁与校验失败重置逻辑
+                            ok = self.start_task(task_id)
+                    except Exception:
+                        logger.warning('批量%s任务失败: %s', action, task_id)
+                        result['failed'].append({'task_id': task_id, 'reason': 'error'})
+                        continue
+
+                if ok:
+                    result['succeeded'].append(task_id)
+                else:
+                    result['failed'].append({'task_id': task_id, 'reason': 'error'})
+
+            return result
+        finally:
+            # 无论成功、异常还是退出，都必须释放忙碌并恢复正常调度判定
+            self.end_batch_operation()
+
     def _try_start_next_task(self):
         """尝试启动下一个等待中的任务"""
         while True:
             with self._lock:
-                if self._scheduling_paused or len(self._running_tasks) >= self.max_concurrent:
+                # 只有暂停/删除持有 hold；开始/重试不会被自己的门禁挡住。
+                if (self._scheduling_paused or self._shutdown_started or self._batch_hold
+                        or len(self._running_tasks) >= self.max_concurrent):
                     return
             pending_tasks = self.get_pending_tasks()
             if not pending_tasks or not self.start_task(pending_tasks[0]['task_id']):
@@ -483,6 +650,8 @@ class TaskManager:
         """
         with self._lock:
             self._scheduling_paused = True
+            # 退出后批量循环不再提交后续项，也不恢复调度
+            self._shutdown_started = True
         # 艹，退出时必须“自动暂停并保留进度”，不能把用户任务一刀切成cancelled
         downloading_tasks = self.db.get_all_tasks(status='downloading')
         for task in downloading_tasks:

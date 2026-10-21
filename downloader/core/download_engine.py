@@ -19,7 +19,8 @@ from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
                                         validate_filename, publish_download, parse_content_disposition,
-                                        check_free_space, format_size)
+                                        check_free_space, format_size,
+                                        resolve_download_directory)
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
@@ -320,7 +321,14 @@ class DownloadEngine:
                     candidate = None
             if candidate:
                 filename = candidate
-        save_path = os.path.join(save_path or self.config.download_dir, filename)
+        # 目录决策必须在最终文件名之后：显式目录原样使用，未指定才按类型分类
+        if save_path:
+            target_dir = save_path
+        else:
+            target_dir = resolve_download_directory(
+                self.config.download_dir, filename,
+                bool(getattr(self.config, 'auto_classify_downloads', False)))
+        save_path = os.path.join(target_dir, filename)
 
         if total_size == 0 and not unknown_size_mode:
             reason = metadata.get('reason') or 'no_length'
@@ -484,6 +492,11 @@ class DownloadEngine:
         if os.path.basename(filename) != filename or not filename.lower().endswith('.mp4'):
             raise ValueError('无效的视频文件名')
         task_id = str(uuid.uuid4())
+        # directory=None 表示默认分类目录；已解析的显式目录原样使用，不二次分类
+        if not directory:
+            directory = resolve_download_directory(
+                self.config.download_dir, filename,
+                bool(getattr(self.config, 'auto_classify_downloads', False)))
         if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
                 total_size=0, support_range=False, thread_count=1, download_type=kind, video_height=height,
                 browser_context=protect(context) if context else None, reserve_path=True):

@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 # 失败任务一次性重试前，超过这个数量先弹确认，避免误触打成一片
 RETRY_FAILED_CONFIRM_THRESHOLD = 10
 
+# 批量操作栏：动作 -> (按钮文案, 宽度)；删除记录只删记录，文件保留
+BATCH_ACTIONS = (
+    ('pause', '⏸ 暂停', 64),
+    ('start', '▶ 开始/继续', 96),
+    ('retry', '↻ 重试', 64),
+    ('delete_records', '🗑 删除记录', 96),
+)
+BATCH_ACTION_LABELS = {
+    'pause': '暂停', 'start': '开始/继续', 'retry': '重试', 'delete_records': '删除记录',
+}
+
 
 # 侧栏原生控件的配色（与 CustomTkinter 默认主题的 CTkFrame/CTkLabel 对齐）。
 # 分类项数以十计且每个主窗口都会重建，用原生 Label 才能避开 CTk 控件的 canvas/字体开销。
@@ -55,6 +66,8 @@ class MainWindow(ctk.CTk):
         self._shutdown_activity = None
         self._loading_tasks = False
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
+        self._selected_task_ids = set()  # 多选集合：仅内存，重启清空
+        self._batch_busy = False  # 一批多选操作执行期间禁用再次提交、勾选与全局操作
         self._status_flash = None  # (文本, 截止时间) 状态栏临时提示：如“设置已保存”
         self._last_status_stats = ({'total': 0, 'downloading': 0, 'pending': 0, 'paused': 0,
                                     'completed': 0, 'failed': 0, 'cancelled': 0}, 0.0)
@@ -206,6 +219,7 @@ class MainWindow(ctk.CTk):
 
     def _exit_app(self):
         """退出程序（停止下载并释放资源）"""
+        self._exiting = True
         try:
             if hasattr(self, 'browser_bridge'):
                 self.browser_bridge.close()
@@ -249,6 +263,9 @@ class MainWindow(ctk.CTk):
         # 重试失败按钮：断网/平台限流后批量恢复，不用一个个点
         retry_failed_btn = ctk.CTkButton(toolbar, text="↻ 重试失败", command=self._on_retry_failed, width=100)
         retry_failed_btn.pack(side="left", padx=5)
+
+        # 批量操作期间这些全局操作也属于冲突入口，一起禁用/恢复
+        self._toolbar_global_buttons = [pause_all_btn, resume_all_btn, retry_failed_btn]
 
         # 设置按钮
         settings_btn = ctk.CTkButton(toolbar, text="⚙ 设置", command=self._on_settings, width=100)
@@ -295,6 +312,30 @@ class MainWindow(ctk.CTk):
 
         self.filter_hint_label = ctk.CTkLabel(filter_frame, text="", font=("Arial", 11), text_color="gray")
         self.filter_hint_label.pack(side="right", padx=5)
+
+        # 多选批量操作栏：固定单行紧凑布局，不随选中数量变化跳动
+        self.batch_bar = ctk.CTkFrame(right_frame, fg_color="transparent")
+        self.batch_bar.pack(fill="x", pady=(0, 5))
+
+        self.batch_select_all_btn = ctk.CTkButton(
+            self.batch_bar, text="全选当前列表", width=96, command=self._on_batch_select_all)
+        self.batch_select_all_btn.pack(side="left", padx=(0, 6))
+
+        self.selection_label = ctk.CTkLabel(self.batch_bar, text="已选 0", width=64)
+        self.selection_label.pack(side="left", padx=(0, 6))
+
+        self.batch_action_buttons = {}
+        for action, text, width in BATCH_ACTIONS:
+            button = ctk.CTkButton(self.batch_bar, text=text, width=width,
+                                   command=lambda a=action: self._on_batch_action(a))
+            button.pack(side="left", padx=(0, 4))
+            self.batch_action_buttons[action] = button
+
+        self.batch_clear_btn = ctk.CTkButton(
+            self.batch_bar, text="清空", width=56, command=self._on_batch_clear_selection)
+        self.batch_clear_btn.pack(side="left", padx=(0, 4))
+
+        self._refresh_selection_ui()
 
         # 任务列表区域（使用Scrollable Frame）
         self.task_list_frame = ctk.CTkScrollableFrame(right_frame, label_text="下载任务列表")
@@ -566,16 +607,22 @@ class MainWindow(ctk.CTk):
 
     def _on_pause_all(self):
         """暂停全部任务"""
+        if self._task_actions_blocked():
+            return
         count = self.task_manager.pause_all()
         messagebox.showinfo("提示", f"已暂停 {count} 个任务")
 
     def _on_resume_all(self):
         """继续全部任务"""
+        if self._task_actions_blocked():
+            return
         count = self.task_manager.resume_all()
         messagebox.showinfo("提示", f"已继续 {count} 个任务")
 
     def _on_retry_failed(self):
         """重试所有失败任务；数量多时先确认，避免误触"""
+        if self._task_actions_blocked():
+            return
         failed_tasks = self.task_manager.db.get_all_tasks(status='failed')
         if not failed_tasks:
             self._flash_status("没有失败的任务")
@@ -631,6 +678,8 @@ class MainWindow(ctk.CTk):
         # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
         if 'download_dir' in settings:
             config.download_dir = settings['download_dir']
+        if 'auto_classify_downloads' in settings:
+            config.auto_classify_downloads = settings['auto_classify_downloads']
         if 'temp_dir' in settings:
             old_temp_dir = config.temp_dir
             config.temp_dir = settings['temp_dir']
@@ -734,9 +783,18 @@ class MainWindow(ctk.CTk):
         task_frame = ctk.CTkFrame(self.task_list_frame)
         task_frame.pack(fill="x", pady=5)
 
-        # 文件名标签
-        filename_label = ctk.CTkLabel(task_frame, text=task['filename'], font=("Arial", 14, "bold"))
-        filename_label.pack(anchor="w", padx=10, pady=5)
+        # 文件名行：左侧勾选框只切选择，不触发双击详情/下载
+        filename_row = ctk.CTkFrame(task_frame, fg_color="transparent")
+        filename_row.pack(fill="x", padx=10, pady=5)
+
+        select_var = ctk.BooleanVar(value=False)
+        select_box = ctk.CTkCheckBox(
+            filename_row, text="", width=24, variable=select_var,
+            command=lambda: self._on_task_select_toggle(task_id))
+        select_box.pack(side="left", padx=(0, 6))
+
+        filename_label = ctk.CTkLabel(filename_row, text=task['filename'], font=("Arial", 14, "bold"))
+        filename_label.pack(side="left", anchor="w")
 
         # 进度条和信息行
         info_frame = ctk.CTkFrame(task_frame, fg_color="transparent")
@@ -814,7 +872,10 @@ class MainWindow(ctk.CTk):
             'status_label': status_label,
             'action_btn': action_btn,
             'cancel_btn': cancel_btn,
+            'delete_btn': delete_btn,
             'location_btn': location_btn,
+            'select_box': select_box,
+            'select_var': select_var,
             # 过滤用的缓存，避免每次输入都查库
             'filename': task.get('filename') or '',
             'filename_label': filename_label,
@@ -827,6 +888,7 @@ class MainWindow(ctk.CTk):
             'visible': True,
         }
 
+        self._refresh_task_controls(task_id)
         self._apply_task_filter()
         self._refresh_sidebar()
 
@@ -960,6 +1022,178 @@ class MainWindow(ctk.CTk):
         else:
             logger.error("忽略站点写入配置失败: %s", host)
 
+    # ==================== 多选与批量操作 ====================
+
+    def _on_task_select_toggle(self, task_id: str):
+        """勾选框只改选择集合，不联网、不改任务状态"""
+        widgets = self.task_widgets.get(task_id)
+        if widgets is None:
+            return
+        if self._batch_busy:
+            # 忙碌时勾选框已禁用，兜底把视觉状态还原成真实选择
+            widgets['select_var'].set(task_id in self._selected_task_ids)
+            return
+        if widgets['select_var'].get():
+            self._selected_task_ids.add(task_id)
+        else:
+            self._selected_task_ids.discard(task_id)
+        self._refresh_selection_ui()
+
+    def _on_batch_select_all(self):
+        """全选当前分类/搜索/隐藏已完成交集，包含滚动视口外的匹配卡片"""
+        if self._batch_busy:
+            return
+        for task_id, widgets in self.task_widgets.items():
+            if widgets.get('visible', True):
+                self._selected_task_ids.add(task_id)
+                widgets['select_var'].set(True)
+        self._refresh_selection_ui()
+
+    def _on_batch_clear_selection(self):
+        """清空选择，不动任务状态"""
+        if self._batch_busy:
+            return
+        for task_id in list(self._selected_task_ids):
+            widgets = self.task_widgets.get(task_id)
+            if widgets is not None:
+                widgets['select_var'].set(False)
+        self._selected_task_ids.clear()
+        self._refresh_selection_ui()
+
+    def _prune_selection(self):
+        """筛掉或已删除的任务不能保留不可见选择；切回筛选也不恢复"""
+        stale = self._selected_task_ids - {
+            task_id for task_id, widgets in self.task_widgets.items()
+            if widgets.get('visible', True)
+        }
+        if not stale:
+            return
+        for task_id in stale:
+            self._selected_task_ids.discard(task_id)
+            widgets = self.task_widgets.get(task_id)
+            if widgets is not None:
+                widgets['select_var'].set(False)
+
+    def _refresh_selection_ui(self):
+        """同步选中计数与按钮可用性（无选择时动作禁用，选择入口仍可用）"""
+        if getattr(self, 'selection_label', None) is None:
+            return
+        count = len(self._selected_task_ids)
+        self.selection_label.configure(text=f"已选 {count}")
+        actions_state = 'disabled' if (not count or self._batch_busy) else 'normal'
+        for button in self.batch_action_buttons.values():
+            button.configure(state=actions_state)
+        self.batch_select_all_btn.configure(state='disabled' if self._batch_busy else 'normal')
+        self.batch_clear_btn.configure(
+            state='disabled' if (not count or self._batch_busy) else 'normal')
+
+    def _task_actions_blocked(self):
+        """同时保护按钮、右键旧菜单命令和其他直接调用入口。"""
+        if getattr(self, '_exiting', False):
+            return True
+        if self._batch_busy:
+            self._flash_status('已有批量操作正在执行')
+            return True
+        return False
+
+    def _refresh_task_controls(self, task_id):
+        widgets = self.task_widgets[task_id]
+        busy = self._batch_busy
+        self._configure_action_button(task_id, widgets.get('status'), widgets['action_btn'])
+        if busy:
+            widgets['action_btn'].configure(state='disabled')
+        widgets['cancel_btn'].configure(
+            state='disabled' if busy or widgets.get('status') == 'completed' else 'normal')
+        widgets['delete_btn'].configure(state='disabled' if busy else 'normal')
+        widgets['select_box'].configure(state='disabled' if busy else 'normal')
+
+    def _set_batch_busy(self, busy: bool):
+        """批量执行期间禁用再次提交、勾选与冲突的单任务/全局操作"""
+        self._batch_busy = bool(busy)
+        if not self.winfo_exists():
+            return
+        state = 'disabled' if busy else 'normal'
+        for button in self._toolbar_global_buttons:
+            try:
+                button.configure(state=state)
+            except Exception:
+                pass
+        for task_id in self.task_widgets:
+            self._refresh_task_controls(task_id)
+        self._refresh_selection_ui()
+
+    def _on_batch_action(self, action: str):
+        """按当前列表顺序复制 ID 快照，后台执行；提交时范围不再随筛选/新增变化"""
+        if self._task_actions_blocked() or action not in BATCH_ACTION_LABELS:
+            return
+        # task_widgets 的顺序就是列表顺序，快照只在 Tk 主线程读一次
+        task_ids = [task_id for task_id in self.task_widgets if task_id in self._selected_task_ids]
+        if not task_ids:
+            return
+
+        if action == 'delete_records':
+            names = [self.task_widgets[task_id].get('filename') or '' for task_id in task_ids[:3]]
+            lines = [f"确定删除选中的 {len(task_ids)} 条下载记录吗？"]
+            lines.extend(f"  • {name}" for name in names)
+            if len(task_ids) > len(names):
+                lines.append(f"  … 其余 {len(task_ids) - len(names)} 条未列出")
+            lines.append("下载好的文件会保留，不做删除。")
+            if not messagebox.askyesno("删除记录", "\n".join(lines)):
+                return
+
+        # UI 点击立即占忙碌名额，worker 启动前连点也不会重复提交
+        if not self.task_manager.begin_batch_operation(action):
+            self._flash_status("已有批量操作正在执行")
+            return
+        self._set_batch_busy(True)
+
+        def worker():
+            try:
+                result = self.task_manager.batch_operate(task_ids, action, reserved=True)
+            except Exception:
+                logger.warning("批量操作失败: %s", action)
+                result = {'action': action, 'total': len(task_ids), 'succeeded': [],
+                          'skipped': [], 'failed': [{'task_id': task_id, 'reason': 'error'}
+                                                    for task_id in task_ids]}
+            self._ui_events.put((self._on_batch_result, (result,)))
+
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            self.task_manager.end_batch_operation()
+            self._on_batch_result({'action': action, 'succeeded': [], 'skipped': [],
+                                   'failed': [{'task_id': task_id, 'reason': 'worker'}
+                                              for task_id in task_ids]})
+
+    def _on_batch_result(self, result: Dict):
+        """批量结果回 Tk：汇总成功/跳过/失败，单项失败不阻断其余"""
+        if getattr(self, '_exiting', False):
+            return
+        action = result.get('action')
+        succeeded = result.get('succeeded') or []
+        if action == 'delete_records':
+            for task_id in succeeded:
+                self._remove_task_ui(task_id)
+        self._set_batch_busy(False)
+        self._apply_task_filter()
+        self._refresh_sidebar()
+        self._flash_status(
+            f"{BATCH_ACTION_LABELS.get(action, action)}：成功 {len(succeeded)}，"
+            f"跳过 {len(result.get('skipped') or [])}，失败 {len(result.get('failed') or [])}")
+        if self._shutdown_pending and self.task_manager.engine.config.after_download['shutdown']:
+            self._schedule_shutdown_if_idle()
+
+    def _remove_task_ui(self, task_id: str):
+        """成功删记录后清理卡片、详情窗、速度历史与选择（不动实际文件）"""
+        window = self._detail_windows.pop(task_id, None)
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        self._speed_history.pop(task_id, None)
+        self._selected_task_ids.discard(task_id)
+        widgets = self.task_widgets.pop(task_id, None)
+        if widgets is not None:
+            widgets['frame'].destroy()
+
     def _configure_action_button(self, task_id: str, status: str, action_btn: ctk.CTkButton):
         """根据任务状态配置操作按钮"""
         if status == 'downloading':
@@ -980,6 +1214,8 @@ class MainWindow(ctk.CTk):
 
     def _on_start_task(self, task_id: str):
         """开始/继续任务"""
+        if self._task_actions_blocked():
+            return
         task = self.task_manager.get_task(task_id)
         if not task:
             return
@@ -992,15 +1228,21 @@ class MainWindow(ctk.CTk):
 
     def _on_pause_task(self, task_id: str):
         """暂停任务"""
+        if self._task_actions_blocked():
+            return
         self.task_manager.pause_task(task_id)
 
     def _on_cancel_task(self, task_id: str):
         """取消任务"""
+        if self._task_actions_blocked():
+            return
         if messagebox.askyesno("确认", "确定要取消该任务吗？"):
             self.task_manager.cancel_task(task_id)
 
     def _on_delete_task(self, task_id: str):
         """删除任务"""
+        if self._task_actions_blocked():
+            return
         # 获取任务信息
         task = self.task_manager.get_task(task_id)
         if not task:
@@ -1039,18 +1281,11 @@ class MainWindow(ctk.CTk):
                 messagebox.showerror("错误", "删除任务失败，可能仍有后台线程占用文件。请稍后重试。")
                 return
 
-            # 关掉详情窗并清掉速度历史（历史仅内存，随任务一起消失）
-            window = self._detail_windows.pop(task_id, None)
-            if window is not None and window.winfo_exists():
-                window.destroy()
-            self._speed_history.pop(task_id, None)
-
-            # 移除UI组件
-            if task_id in self.task_widgets:
-                self.task_widgets[task_id]['frame'].destroy()
-                del self.task_widgets[task_id]
-                self._apply_task_filter()
-                self._refresh_sidebar()
+            # 关掉详情窗、清速度历史、移除卡片与选择（单任务删文件流程不变）
+            self._remove_task_ui(task_id)
+            self._apply_task_filter()
+            self._refresh_sidebar()
+            self._refresh_selection_ui()
 
     def _on_open_location(self, task_id: str):
         """打开文件位置（Windows资源管理器定位文件）"""
@@ -1136,6 +1371,9 @@ class MainWindow(ctk.CTk):
                          state="normal" if index > 0 else "disabled")
         menu.add_separator()
         menu.add_command(label="🗑 删除任务", command=lambda: self._on_delete_task(task_id))
+        if self._batch_busy:
+            for index in (0, 6, 7, 9):
+                menu.entryconfigure(index, state='disabled')
         return menu
 
     def _show_task_menu(self, event, task_id: str):
@@ -1148,6 +1386,8 @@ class MainWindow(ctk.CTk):
 
     def _on_move_task(self, task_id: str, direction: str):
         """上移/置顶：先写库，再按新顺序重排卡片"""
+        if self._task_actions_blocked():
+            return
         if direction == 'top':
             moved = self.task_manager.move_task_to_top(task_id)
         else:
@@ -1193,7 +1433,7 @@ class MainWindow(ctk.CTk):
 
     def _has_active_tasks(self) -> bool:
         """是否还有在跑的任务（下载中/等待/校验中）"""
-        return (self._batch_add_pending > 0 or self.task_manager.get_activity_state()[1] or any(
+        return (self._batch_busy or self._batch_add_pending > 0 or self.task_manager.get_activity_state()[1] or any(
             task.get('status') in ('downloading', 'pending', 'verifying')
             for task in self.task_manager.get_all_tasks()
         ))
@@ -1291,12 +1531,8 @@ class MainWindow(ctk.CTk):
         if status != 'downloading':
             widgets['speed_label'].configure(text=format_speed(0))
             widgets['eta_label'].configure(text="剩余 --")
-        if 'cancel_btn' in widgets:
-            widgets['cancel_btn'].configure(state='disabled' if status == 'completed' else 'normal')
-
-        # 更新按钮
-        action_btn = widgets['action_btn']
-        self._configure_action_button(task_id, status, action_btn)
+        # 状态回调和批量期间的新卡片同样遵守忙碌状态，不能重新启用冲突操作。
+        self._refresh_task_controls(task_id)
 
         # 同步详情窗（暂停/完成后曲线自然冻结）
         self._push_detail_status(task_id, status)
@@ -1404,6 +1640,9 @@ class MainWindow(ctk.CTk):
                 changed = True
             widgets['visible'] = matched
 
+        # 筛选后不再可见的选择立即清除；切回原筛选也不恢复
+        self._prune_selection()
+
         # 只在显隐变化时重排，避免每敲一个搜索字符都把整个列表拆了重装
         if changed:
             self._relayout_task_widgets()
@@ -1416,6 +1655,7 @@ class MainWindow(ctk.CTk):
             self.empty_label.pack_forget()
 
         self.filter_hint_label.configure(text=f"显示 {visible} / {len(self.task_widgets)}")
+        self._refresh_selection_ui()
 
     def _task_matches_filter(self, widgets: Dict, keyword: str, hide_completed: bool) -> bool:
         """单条任务的过滤判定：分类 + 搜索 + 隐藏已完成"""

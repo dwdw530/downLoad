@@ -34,6 +34,7 @@ class ConfigManager:
 
     DEFAULT_CONFIG = {
         "download_dir": os.path.join(os.path.expanduser("~"), "Downloads", "daw下载器"),  # 用户下载目录
+        "auto_classify_downloads": False,  # 按文件类型自动建立子目录（默认关，只影响新任务）
         "temp_dir": "temp",  # 临时文件目录
         "thread_count": 8,  # 默认线程数
         "max_concurrent_downloads": 3,  # 同时下载任务数
@@ -142,6 +143,15 @@ class ConfigManager:
     @download_dir.setter
     def download_dir(self, value: str):
         self._config["download_dir"] = value
+
+    @property
+    def auto_classify_downloads(self) -> bool:
+        """是否按文件类型自动建立子目录（旧配置缺字段时默认关闭）"""
+        return bool(self._config.get("auto_classify_downloads", False))
+
+    @auto_classify_downloads.setter
+    def auto_classify_downloads(self, value: bool):
+        self._config["auto_classify_downloads"] = bool(value)
 
     @property
     def temp_dir(self) -> str:

@@ -56,6 +56,28 @@ def guess_file_category(filename: str) -> str:
     return 'other'
 
 
+def resolve_download_directory(base_dir: str, filename: str, auto_classify: bool = False) -> str:
+    """按文件类型决定最终保存目录（纯函数，不建目录、不发请求、不查库）
+
+    老王说：分类目录只从固定表里取，别拿 URL 或文件名片段去拼路径！
+
+    Args:
+        base_dir: 默认下载根目录
+        filename: 最终有效文件名（显式名/CD/重定向/原地址取名后的结果）
+        auto_classify: 是否按类型建立子目录
+    Returns:
+        关闭时原样返回根目录；开启时返回 根目录/中文分类标签
+    """
+    base = base_dir or ''
+    if not auto_classify:
+        return base
+    category = guess_file_category(filename)
+    label = FILE_CATEGORY_LABELS.get(category) or FILE_CATEGORY_LABELS['other']
+    if not base:
+        return label
+    return os.path.join(base, label)
+
+
 # 空间预检余量：5% + 最多 64 MiB（小文件不会因为固定 64 MiB 余量被无故拦住）
 FREE_SPACE_MARGIN_RATIO = 1.05
 FREE_SPACE_MARGIN_MAX_BYTES = 64 * 1024 * 1024

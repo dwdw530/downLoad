@@ -315,7 +315,8 @@ class SafetyLogicTests(unittest.TestCase):
         manager.get_activity_state.return_value = (10, False)
         manager.get_all_tasks.return_value = [{'status': 'completed'}]
         manager.engine.config.after_download = {'shutdown': True}
-        ui = SimpleNamespace(task_manager=manager, _batch_add_pending=0, _shutdown_activity=10)
+        ui = SimpleNamespace(task_manager=manager, _batch_add_pending=0, _batch_busy=False,
+                             _shutdown_activity=10)
         ui._has_active_tasks = lambda: MainWindow._has_active_tasks(ui)
         ui._shutdown_still_valid = lambda: MainWindow._shutdown_still_valid(ui)
         return ui
@@ -330,10 +331,13 @@ class SafetyLogicTests(unittest.TestCase):
             popen.assert_not_called()
 
     def test_shutdown_rechecks_batch_probe_and_setting(self):
-        for reason in ('batch', 'probe', 'setting'):
+        for reason in ('batch', 'batch_action', 'probe', 'setting'):
             ui = self.shutdown_ui()
             if reason == 'batch':
                 ui._batch_add_pending = 1
+            elif reason == 'batch_action':
+                # manager 已释放名额、结果尚未回 Tk 时仍不能执行关机。
+                ui._batch_busy = True
             elif reason == 'probe':
                 ui.task_manager.get_activity_state.return_value = (10, True)
             else:
