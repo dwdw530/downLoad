@@ -208,10 +208,11 @@ class EngineAdditionTests(unittest.TestCase):
         self.engine = DownloadEngine(DatabaseManager(str(self.root / 'db.sqlite3')), self.config)
 
     def test_failure_reasons(self):
+        # /no-length 已按未知大小方案 A 放行，改到 test_unknown_size_download.py；
+        # 403、404、503 等失败断言保留不动。
         cases = {
             '/not-found': ('http_4xx', '404'),
             '/login': ('html_page', '403'),
-            '/no-length': ('no_length', '未提供文件大小'),
             '/broken': ('http_5xx', '503'),
         }
         for path, (reason, fragment) in cases.items():

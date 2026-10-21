@@ -140,12 +140,19 @@ class DownloadEngine:
             url: 下载链接
             request_context: 浏览器上下文（可选）
             metadata: 可选输出字典；会写入 reason/status/error/etag/last_modified/filename/final_url
+                      成功时另写 probe_ok=True 与 length_kind（known/unknown/empty）
         Returns:
-            (是否支持Range, 文件大小)；拿不到大小时 size 为 0，原因看 metadata['reason']
+            (是否支持Range, 文件大小)；拿不到大小时 size 为 0，原因看 metadata['reason']。
+            200 且完全缺少 Content-Length 时自身入口算探测成功（length_kind=unknown），
+            浏览器上下文仍按原 no_length 失败。
         """
         if metadata is not None:
+            # 每次调用先重置：probe_ok 与 length_kind 只反映本次探测结果，
+            # 不能把上一次成功留下的标记串到这次失败里。
             metadata.setdefault('reason', None)
             metadata.setdefault('status', None)
+            metadata['probe_ok'] = False
+            metadata['length_kind'] = None
 
         def mark(reason: str, status: int = None, detail: str = None):
             """把失败原因交给调用方，界面才能说清为什么加不进去"""
@@ -198,13 +205,48 @@ class DownloadEngine:
                 if response.status_code == 206:
                     match = re.fullmatch(r'bytes 0-0/(\d+)', response.headers.get('Content-Range', ''))
                     if match and int(match[1]) > 0:
+                        if metadata is not None:
+                            metadata['probe_ok'] = True
+                            metadata['length_kind'] = 'known'
                         return True, int(match[1])
                     mark('range_protocol')
                     return False, 0
                 if response.status_code == 200:
-                    size = max(0, int(response.headers.get('Content-Length', 0)))
-                    if size <= 0:
+                    # 真正缺少 Content-Length 才算“长度未知”：空字符串/纯空白的头是非法值，
+                    # 不能当作“没有这个头”放行，否则畸形的 Content-Length 也能混进新模式。
+                    if 'Content-Length' not in response.headers:
+                        if request_context is None:
+                            if metadata is not None:
+                                metadata['probe_ok'] = True
+                                metadata['length_kind'] = 'unknown'
+                            return False, 0
                         mark('no_length')
+                        return False, 0
+                    raw_length = (response.headers.get('Content-Length') or '').strip()
+                    if raw_length == '':
+                        mark('no_length')
+                        return False, 0
+                    try:
+                        size = int(raw_length)
+                    except ValueError:
+                        # 头解析不了不等于“缺少头”，保持旧的通用失败分类
+                        mark('unknown')
+                        return False, 0
+                    if size < 0:
+                        mark('no_length')
+                        return False, 0
+                    if size == 0:
+                        # 方案 A：显式零长度与未知长度同口径，自身入口放行，浏览器仍拒绝。
+                        if request_context is None:
+                            if metadata is not None:
+                                metadata['probe_ok'] = True
+                                metadata['length_kind'] = 'empty'
+                            return False, 0
+                        mark('no_length')
+                        return False, 0
+                    if metadata is not None:
+                        metadata['probe_ok'] = True
+                        metadata['length_kind'] = 'known'
                     return False, size
                 mark('unknown', response.status_code)
                 return False, 0
@@ -262,6 +304,12 @@ class DownloadEngine:
         metadata = {}
         support_range, total_size = self.check_url_support_range(url, request_context, metadata=metadata)
 
+        # 未知大小/零字节（方案 A）：只对下载器自身入口（无浏览器上下文）且探测明确
+        # 属于新成功类别的响应放行；浏览器右键入口保持原有拒绝行为。
+        unknown_size_mode = bool(metadata.get('probe_ok')
+                                 and metadata.get('length_kind') in ('unknown', 'empty')
+                                 and request_context is None)
+
         # 文件名优先级：服务器 CD > 重定向后的真实地址 > 原始地址（显式指定的最优先）
         if not explicit_filename:
             candidate = metadata.get('filename')
@@ -274,7 +322,7 @@ class DownloadEngine:
                 filename = candidate
         save_path = os.path.join(save_path or self.config.download_dir, filename)
 
-        if total_size == 0:
+        if total_size == 0 and not unknown_size_mode:
             reason = metadata.get('reason') or 'no_length'
             detail = metadata.get('error') or ADD_ERROR_DETAILS.get(reason)
             self._set_add_error(reason, detail)
@@ -534,7 +582,13 @@ class DownloadEngine:
         ranges, size = self.check_url_support_range(task['url'], context, metadata=metadata)
         if not self._is_current_task_run(task['task_id'], run_id):
             raise InterruptedError('资源探测期间任务已停止')
-        if size <= 0:
+        # 未知大小（方案 A）：仅自身入口的新成功类别允许零哨兵；其余零/负大小仍失败。
+        unknown_ok = (bool(metadata.get('probe_ok')
+                           and metadata.get('length_kind') in ('unknown', 'empty')
+                           and context is None
+                           and task.get('download_type', 'file') == 'file'
+                           and not task.get('browser_context')))
+        if size <= 0 and not unknown_ok:
             raise ValueError('无法重新确认下载资源，请稍后重试')
         old_etag = task.get('resource_etag')
         old_modified = task.get('resource_last_modified')
@@ -542,6 +596,7 @@ class DownloadEngine:
                         bool(old_modified and old_modified == metadata.get('last_modified')))
         # 无资源验证器时只发完整请求，不能把多次请求的内容拼在一起。
         support_range = bool(ranges and (metadata.get('etag') or metadata.get('last_modified')))
+        # 未知大小/显式零长度重探测：非 Range 单线程；count 计算不能拿哨兵 0 去 min。
         count = max(1, min(task['thread_count'], size)) if support_range else 1
         reset = (not resume or not same_version or size != task['total_size']
                  or support_range != bool(task['support_range']) or count != task['thread_count'])
@@ -749,6 +804,14 @@ class DownloadEngine:
         task_id = task['task_id']
         temp_file = os.path.join(self.config.temp_dir, f"{task_id}.tmp")
 
+        # 未知大小模式：普通文件 + 无浏览器上下文 + 非 Range + 零哨兵才开启；
+        # 其余单线程路径（含降级、有大小、浏览器任务）不进入新模式。
+        unknown_size = (task.get('download_type', 'file') == 'file'
+                        and not task.get('browser_context') and not task.get('_request_context')
+                        and not task.get('support_range')
+                        and int(task.get('thread_count') or 1) == 1
+                        and int(task.get('total_size') or 0) == 0)
+
         # 艹，非Range服务端根本不支持断点续传，恢复必须从0重下，不能继续append脏数据
         can_resume = bool(resume and task.get('support_range'))
         # 艹，这里不提前删临时文件，避免旧线程尚未释放句柄导致WinError 32；
@@ -773,6 +836,7 @@ class DownloadEngine:
                              (unprotect(task['browser_context']) if task.get('browser_context') else None)),
             total_size=task['total_size'], etag=task.get('resource_etag'),
             last_modified=task.get('resource_last_modified'),
+            unknown_size=unknown_size,
         )
 
         # 艹，单线程也得走实时进度链路，不然UI速度和进度全是死的
@@ -832,7 +896,8 @@ class DownloadEngine:
                     return
                 if not success:
                     raise RuntimeError(downloader.error_message() or '下载失败')
-                self._verify_and_finish(task_id, temp_file, run_id=run_id)
+                self._verify_and_finish(task_id, temp_file, run_id=run_id,
+                                        eof_confirmed=unknown_size)
             except Exception as e:
                 if (self._is_current_task_run(task_id, run_id)
                         and not self._is_task_cancelled(task_id) and not self._is_task_paused(task_id)):
@@ -952,10 +1017,15 @@ class DownloadEngine:
         return (self._is_current_task_run(task_id, run_id) and task is not None
                 and task['status'] not in ('paused', 'cancelled') and task_id not in self.cancelled_tasks)
 
-    def _verify_and_finish(self, task_id: str, save_path: str, run_id=None):
+    def _verify_and_finish(self, task_id: str, save_path: str, run_id=None,
+                           eof_confirmed: bool = False):
         """
         校验文件并完成任务
         老王说：校验这步很重要，下载了个假文件还不自知那才叫蠢！
+
+        eof_confirmed：未知大小模式的 EOF 证明。仅普通 file、无浏览器上下文、
+        非 Range、单线程且下载前为零哨兵的任务才允许跳过旧的大小比对，
+        并把真实大小回填数据库；所有旧调用默认 False，保持原检查不变。
         """
         task = self.db.get_task(task_id)
         if not task:
@@ -965,7 +1035,30 @@ class DownloadEngine:
         if not self._can_finish(task_id, run_id):
             return
 
-        if os.path.getsize(save_path) != task['total_size']:
+        if eof_confirmed:
+            # 资格必须在共享校验函数里再次核对，不能只信调用方传来的布尔值。
+            eligible = (task.get('download_type', 'file') == 'file'
+                        and not task.get('browser_context')
+                        and not task.get('support_range')
+                        and int(task.get('thread_count') or 1) == 1
+                        # 必须还是零哨兵：已知大小的任务拿这个标记也不能绕过原大小比对
+                        and int(task.get('total_size') or 0) == 0)
+            if eligible:
+                try:
+                    actual_size = os.path.getsize(save_path)
+                except OSError as error:
+                    self.db.update_task_status(task_id, 'failed', f'无法读取下载结果: {error}')
+                    if self.status_callback:
+                        self.status_callback(task_id, 'failed', '无法读取下载结果')
+                    return
+                # 回填真实大小；后续读取要拿新值，不能带旧字典里的零哨兵继续算。
+                self.db.update_task_size(task_id, actual_size)
+                task = self.db.get_task(task_id)
+            else:
+                # 不合格的 eof_confirmed 视为侵入，退回旧检查（旧分支对异常大小必失败）。
+                eof_confirmed = False
+
+        if not eof_confirmed and os.path.getsize(save_path) != task['total_size']:
             self.db.update_task_status(task_id, 'failed', '文件大小与预期不一致')
             if self.status_callback:
                 self.status_callback(task_id, 'failed', '文件大小与预期不一致')

@@ -134,7 +134,8 @@ class ChunkDownloader:
                  proxies: dict = None,
                  use_range: bool = True, request_context=None,
                  total_size=None, etag=None, last_modified=None,
-                 limiter: Optional[SpeedLimiter] = None):
+                 limiter: Optional[SpeedLimiter] = None,
+                 unknown_size: bool = False):
         """
         初始化分块下载器
         Args:
@@ -151,6 +152,7 @@ class ChunkDownloader:
             proxies: 代理配置，格式 {"http": "...", "https": "..."} 或 None
             use_range: 是否使用Range请求头
             limiter: 共享限速器（多任务合计限速）；不传则按 speed_limit 自建一个
+            unknown_size: 未知大小模式：仅限非 Range、单线程整流下载，完成判定为响应流正常结束
         """
         self.chunk_id = chunk_id
         self.task_id = task_id
@@ -167,6 +169,13 @@ class ChunkDownloader:
         self.total_size = total_size
         self.etag = etag
         self.last_modified = last_modified
+
+        # 未知大小模式：只允许「非 Range + 起点 0 + 零哨兵」组合，错误组合拒绝，
+        # 不能退回可疑分块路径；expected_size 一律视为 None（流自然结束才算完成）。
+        self.unknown_size = bool(unknown_size)
+        if self.unknown_size and (self.use_range or self.start_byte != 0
+                                  or self.end_byte != -1 or self.total_size not in (0, None)):
+            raise ValueError('未知大小模式只允许非Range单线程整流下载')
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -230,7 +239,7 @@ class ChunkDownloader:
         if temp_dir and not os.path.exists(temp_dir):
             os.makedirs(temp_dir, exist_ok=True)
 
-        expected_size = self.end_byte - self.start_byte + 1
+        expected_size = None if self.unknown_size else self.end_byte - self.start_byte + 1
         # 重新下载和非Range请求都必须丢弃旧内容。
         if os.path.exists(self.temp_file) and (not resume or not self.use_range):
             with open(self.temp_file, 'wb'):
@@ -253,14 +262,16 @@ class ChunkDownloader:
                 self.downloaded_bytes = 0
 
             # 超长临时文件不能当作完整分块；非Range重试也必须从头写入。
-            if self.downloaded_bytes > expected_size or (not self.use_range and self.downloaded_bytes):
+            if ((expected_size is not None and self.downloaded_bytes > expected_size)
+                    or (not self.use_range and self.downloaded_bytes)):
                 with open(self.temp_file, 'wb'):
                     pass
                 self.downloaded_bytes = 0
 
             actual_start = self.start_byte + self.downloaded_bytes
 
-            if self.downloaded_bytes == expected_size:
+            # 本地快捷成功只属于固定大小分块；未知大小哪怕有残片也必须真实发请求。
+            if expected_size is not None and self.downloaded_bytes == expected_size:
                 self._report_progress(force=True)
                 return True
 
@@ -360,7 +371,29 @@ class ChunkDownloader:
                         or (self.total_size is not None and content_range[3] != str(self.total_size))):
                     raise ChunkDownloadError('服务器返回的Content-Range与请求不一致', 'protocol')
 
-            expected_size = self.end_byte - self.start_byte + 1
+            expected_size = None if self.unknown_size else self.end_byte - self.start_byte + 1
+            # 未知大小：本次响应带正 Length 时严格核对实际读取量，不借未知模式接受短流。
+            response_length = None
+            if self.unknown_size:
+                # 冲突分帧信息（Transfer-Encoding: chunked 与 Content-Length 同时存在）：
+                # urllib3 会忽略 Length 按 chunked 读，字节数恰好相等时会被误判成功，直接拒绝。
+                encoding = (response.headers.get('Transfer-Encoding') or '').lower()
+                has_length = 'Content-Length' in response.headers
+                if has_length and 'chunked' in encoding:
+                    raise ChunkDownloadError(
+                        '服务器同时返回 Transfer-Encoding 与 Content-Length，无法确认文件边界', 'protocol')
+                if has_length:
+                    raw_length = (response.headers.get('Content-Length') or '').strip()
+                    # 头存在但值为空/纯空白是非法值，不能当作“没有长度”放过
+                    if raw_length == '':
+                        raise ChunkDownloadError('服务器返回非法的Content-Length头', 'protocol')
+                    try:
+                        response_length = int(raw_length)
+                    except ValueError:
+                        raise ChunkDownloadError('服务器返回非法的Content-Length头', 'protocol')
+                    if response_length < 0:
+                        raise ChunkDownloadError('服务器返回非法的Content-Length头', 'protocol')
+                    # 显式 0 也允许：方案 A 下真实空响应按正常 EOF 完成，不拒绝。
             mode = 'ab' if self.downloaded_bytes > 0 else 'wb'
             with open(self.temp_file, mode) as f:
                 for data in response.iter_content(chunk_size=8192):
@@ -368,7 +401,12 @@ class ChunkDownloader:
                         self._report_progress(force=True)
                         return False
                     if data:
-                        if self.downloaded_bytes + len(data) > expected_size:
+                        if self.unknown_size:
+                            if (response_length is not None
+                                    and self.downloaded_bytes + len(data) > response_length):
+                                raise ChunkDownloadError('服务器返回的数据超过Content-Length',
+                                                         'protocol' if self.use_range else 'fatal')
+                        elif self.downloaded_bytes + len(data) > expected_size:
                             raise ChunkDownloadError(
                                 '服务器返回的数据超过预期分块大小',
                                 'protocol' if self.use_range else 'fatal')
@@ -380,7 +418,11 @@ class ChunkDownloader:
                         self.downloaded_bytes += len(data)
                         self._report_progress()
 
-            if self.downloaded_bytes != expected_size:
+            if self.unknown_size:
+                # 未知大小只有响应流正常结束才算完成；按本次响应的实际 Length 严格核对。
+                if response_length is not None and self.downloaded_bytes != response_length:
+                    raise ChunkDownloadError('连接中断，数据未接收完整', 'transient')
+            elif self.downloaded_bytes != expected_size:
                 # 连接中途断了，缺的字节下次按偏移续传，属于临时性失败
                 raise ChunkDownloadError('连接中断，数据未接收完整', 'transient')
             # 收尾必须补报一次，保证数据库拿到最终字节数
