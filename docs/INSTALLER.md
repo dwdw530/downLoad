@@ -67,6 +67,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 便携包：`daw-downloader-v0.9.0-windows-x64.zip` 213,901,403 字节 / `990f8f7d8ca7779e643b6395e84104229a90387377032058f8f56b9e69c57436`（27 项载荷，CRC 通过）；扩展包 `daw-browser-extension-v0.6.2.zip` 30,514 字节 / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`（与 v0.8.1 相同）；`SHA256SUMS.txt` 205 字节 / `7c0296b3ac091c93d0fbb295c6924a48ced47476b02389b6acfbf40b29253f8e`。
 - 验收：`py310_env` 全量 415 项通过；`scripts/smoke_exe.py` 3 组通过（产物 `downloader-exe-smoke-efhuc4d6`）；`scripts/smoke_installer.py` 七组 PASS，报告 `output/installer-smoke/run-xb6fous1/result.json`。
 - 构建与安装验收前后 `dist/data`、`dist/temp` 未被测试写入，原浏览器注册已恢复。
+- 发布：提交 `143aa60`（`master` 与 `master:main` 同指向），annotated 标签 `v0.9.0`，Release id `419135900`；五附件远端大小与 `digest` 与本地逐项一致，`latest` 指向 v0.9.0，13 个历史 Release 附件数与发布时间未变。
 
 ## 2026-10-21 v0.8.1 构建与验收
 
