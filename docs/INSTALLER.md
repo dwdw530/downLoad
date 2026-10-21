@@ -69,6 +69,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 正式 EXE 原三组通过；实际新功能五任务通过，包含无长度、chunked、两种空响应和实际两次请求的断流重试；包内核心模块与源码一致。
 - 安装包七组通过，报告 `output/installer-smoke/run-_be0bpz_/result.json`；覆盖中文向导、含空格路径、28 项安装白名单载荷、安装后下载、占用保护、覆盖升级、卸载 / 重装保留数据、浏览器注册恢复。
 - 构建 / 验收前后原用户配置、数据库与断点五个文件 SHA256 一致。
+- 发布提交 `f3d84a7`，annotated 标签 v0.10.0 指向该提交；发布期间合并远端 README 的两次修改后同步 main/master，未覆盖远端文案。GitHub Release id **419427059**，五附件的远端 size / digest 全部与本地一致；latest 指向 v0.10.0，15 个历史 Release 保留不变。
 
 ## 2026-10-21 v0.9.0 构建与验收
 
