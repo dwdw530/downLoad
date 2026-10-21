@@ -4,7 +4,7 @@
 
 > **仅支持 64 位 Windows。** 程序依赖 Windows 的 DPAPI 加密、Chrome 原生消息注册表和 NSIS 安装包，代码中没有跨平台分支；在 Linux/macOS 上需要自行改造才能运行。
 
-正式入口：`dist/daw下载器.exe`（原名“老王下载器”）。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
+正式入口：`dist/daw下载器.exe`。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
 Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.9.0/daw-downloader-v0.9.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
