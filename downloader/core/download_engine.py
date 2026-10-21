@@ -14,11 +14,12 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional, Callable
-from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError
+from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError, SpeedLimiter
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
-                                        validate_filename, publish_download)
+                                        validate_filename, publish_download, parse_content_disposition,
+                                        check_free_space, format_size)
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
 
@@ -30,6 +31,28 @@ logger = logging.getLogger(__name__)
 CHUNK_RETRY_ROUNDS = 3
 CHUNK_RETRY_DEADLINE = 300
 CHUNK_RETRY_BACKOFF = (1, 3, 10)
+
+# 孤儿临时文件：{task_id}.partN / {task_id}.tmp（顶层固定命名，不用递归）
+ORPHAN_TEMP_PATTERN = re.compile(
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(?:part\d+|tmp)')
+ORPHAN_TEMP_MIN_AGE_DAYS = 7
+
+# 添加任务失败原因的默认文案（引擎只产出代码与具体说明，界面直接展示）
+ADD_ERROR_DETAILS = {
+    'network': '网络连接失败，请检查网络或代理设置',
+    'dns': '域名解析失败，请检查网络或代理设置',
+    'timeout': '连接超时，请检查网络或代理设置',
+    'http_4xx': '服务器拒绝了请求，链接可能已失效或需要登录',
+    'http_5xx': '服务器暂时出错，请稍后重试',
+    'html_page': '服务器返回的是网页而不是文件，可能需要先登录',
+    'no_length': '服务器未提供文件大小，当前版本暂不支持这类链接',
+    'encoding_not_supported': '服务器返回压缩内容，暂不支持按范围下载',
+    'range_protocol': '服务器未按分块方式返回数据',
+    'invalid_filename': '链接里的文件名不合法',
+    'invalid_url': '链接格式不正确',
+    'disk_space': '磁盘空间不足',
+    'unknown': '无法获取文件大小或链接不可用',
+}
 
 
 class DownloadEngine:
@@ -50,6 +73,11 @@ class DownloadEngine:
         self.task_run_ids = {}  # {task_id: run_id}，用于隔离旧下载会话，防止暂停/恢复串状态
         # {task_id: {chunk_id: 已下载字节}}：进度监控只读内存，不再每秒查分块表
         self.chunk_progress = {}
+
+        # 全局限速：所有普通文件分块共享一个令牌桶，speed_limit 是“总量”而不是每任务
+        self.speed_limiter = SpeedLimiter(self.config.speed_limit)
+        # 添加任务失败原因按线程隔离：UI 后台线程与 BrowserBridge 互不影响
+        self._add_state = threading.local()
 
         # 回调函数
         self.progress_callback: Optional[Callable] = None
@@ -110,9 +138,24 @@ class DownloadEngine:
         检查URL是否支持Range请求（分块下载）
         Args:
             url: 下载链接
+            request_context: 浏览器上下文（可选）
+            metadata: 可选输出字典；会写入 reason/status/error/etag/last_modified/filename/final_url
         Returns:
-            (是否支持Range, 文件大小)
+            (是否支持Range, 文件大小)；拿不到大小时 size 为 0，原因看 metadata['reason']
         """
+        if metadata is not None:
+            metadata.setdefault('reason', None)
+            metadata.setdefault('status', None)
+
+        def mark(reason: str, status: int = None, detail: str = None):
+            """把失败原因交给调用方，界面才能说清为什么加不进去"""
+            if metadata is None:
+                return
+            metadata['reason'] = reason
+            if status is not None:
+                metadata['status'] = status
+            metadata['error'] = detail or ADD_ERROR_DETAILS.get(reason, ADD_ERROR_DETAILS['unknown'])
+
         try:
             # 一次流式GET同时确定Range支持和真实大小，也兼容禁用HEAD的站点。
             headers = {'User-Agent': self.config.user_agent,
@@ -121,24 +164,65 @@ class DownloadEngine:
             with get(url, headers=headers, stream=True,
                               timeout=self.config.timeout, allow_redirects=True,
                               proxies=self.config.proxies) as response:
-                response.raise_for_status()
                 if metadata is not None:
+                    # 重定向后的地址往往才带着真实文件名
+                    metadata['final_url'] = response.url
+                    content_type = (response.headers.get('Content-Type') or '').lower()
+                    # 登录页/错误页可能也带 attachment 头，别把网页名字当成文件名
+                    if 'text/html' not in content_type:
+                        metadata['filename'] = parse_content_disposition(
+                            response.headers.get('Content-Disposition'))
                     etag = response.headers.get('ETag', '')
                     metadata['etag'] = etag if etag.startswith('"') and etag.endswith('"') else None
                     metadata['last_modified'] = response.headers.get('Last-Modified') or None
+
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError:
+                    status = response.status_code
+                    is_html = 'text/html' in (response.headers.get('Content-Type') or '').lower()
+                    # 401/403 拿到网页，基本就是登录页；404 的 HTML 错误页不算登录墙
+                    if is_html and status in (401, 403):
+                        reason = 'html_page'
+                        detail = (f'服务器返回 HTTP {status}（返回的是网页，可能需要先在浏览器登录）')
+                    else:
+                        reason = 'http_5xx' if status and status >= 500 else 'http_4xx'
+                        detail = f'服务器返回 HTTP {status}'
+                    mark(reason, status, detail)
+                    logger.error("检查URL失败: HTTP %s", status)
+                    return False, 0
+
                 if response.headers.get('Content-Encoding', 'identity').lower() != 'identity':
+                    mark('encoding_not_supported')
                     return False, 0
                 if response.status_code == 206:
                     match = re.fullmatch(r'bytes 0-0/(\d+)', response.headers.get('Content-Range', ''))
                     if match and int(match[1]) > 0:
                         return True, int(match[1])
+                    mark('range_protocol')
                     return False, 0
                 if response.status_code == 200:
-                    return False, max(0, int(response.headers.get('Content-Length', 0)))
+                    size = max(0, int(response.headers.get('Content-Length', 0)))
+                    if size <= 0:
+                        mark('no_length')
+                    return False, size
+                mark('unknown', response.status_code)
                 return False, 0
+        except requests.Timeout:
+            mark('timeout')
+            logger.error("检查URL失败: 请求超时")
+            return False, 0
+        except requests.ConnectionError as error:
+            text = str(error).lower()
+            reason = 'dns' if ('name or service not known' in text or 'getaddrinfo' in text
+                               or 'nodename nor servname' in text) else 'network'
+            mark(reason)
+            logger.error("检查URL失败: 连接失败")
+            return False, 0
         except Exception as e:
             detail = type(e).__name__ if request_context else str(e)
             logger.error("检查URL失败: %s", detail)
+            mark('unknown')
             return False, 0
 
     def create_download_task(self, url: str, filename: Optional[str] = None,
@@ -161,22 +245,50 @@ class DownloadEngine:
         request_context = normalize_context(url, request_context)
         # 生成任务ID
         task_id = str(uuid.uuid4())
+        # 每次添加先清掉本线程上一次的失败原因，避免旧原因串到这次结果上
+        self._set_add_error(None)
 
         # 解码后再次校验，不能把 URL 中编码的路径分隔符带入保存路径。
+        # 非法文件名必须在发请求前就拒掉，不能为了一个坑链接白探一次。
         try:
-            filename = validate_filename(filename) if filename else get_filename_from_url(url)
+            explicit_filename = bool(filename)
+            filename = validate_filename(filename) if explicit_filename else get_filename_from_url(url)
         except ValueError as error:
+            self._set_add_error('invalid_filename', str(error))
             if self.status_callback:
                 self.status_callback(task_id, 'failed', str(error))
             return None
-        save_path = os.path.join(save_path or self.config.download_dir, filename)
 
         metadata = {}
         support_range, total_size = self.check_url_support_range(url, request_context, metadata=metadata)
 
+        # 文件名优先级：服务器 CD > 重定向后的真实地址 > 原始地址（显式指定的最优先）
+        if not explicit_filename:
+            candidate = metadata.get('filename')
+            if not candidate and metadata.get('final_url'):
+                try:
+                    candidate = get_filename_from_url(metadata['final_url'])
+                except ValueError:
+                    candidate = None
+            if candidate:
+                filename = candidate
+        save_path = os.path.join(save_path or self.config.download_dir, filename)
+
         if total_size == 0:
+            reason = metadata.get('reason') or 'no_length'
+            detail = metadata.get('error') or ADD_ERROR_DETAILS.get(reason)
+            self._set_add_error(reason, detail)
             if self.status_callback:
-                self.status_callback(task_id, 'failed', '无法获取文件大小')
+                self.status_callback(task_id, 'failed', detail)
+            return None
+
+        # 磁盘空间预检：同卷时分块和合并副本同时存在，峰值是两倍
+        ok, space_detail = check_free_space(self._space_requirements(total_size, save_path))
+        if not ok:
+            self._set_add_error('disk_space', space_detail)
+            logger.warning('创建任务前空间不足: %s', space_detail)
+            if self.status_callback:
+                self.status_callback(task_id, 'failed', space_detail)
             return None
 
         # 确定线程数
@@ -212,6 +324,36 @@ class DownloadEngine:
             return None
 
         return task_id
+
+    def _space_requirements(self, total_size: int, save_path: str) -> list:
+        """创建任务前需要多少空间
+
+        分块在临时目录、合并副本在目标目录，两边各需一份；
+        同盘时由 check_free_space 自动合并需求（加起来就是两倍）。
+        """
+        target_dir = os.path.dirname(os.path.abspath(save_path))
+        temp_dir = os.path.abspath(self.config.temp_dir)
+        return [(temp_dir, total_size, '临时目录'), (target_dir, total_size, '下载目录')]
+
+    def set_speed_limit(self, bytes_per_second: int):
+        """设置全局限速（所有普通文件任务合计），运行中立即生效"""
+        self.speed_limiter.set_limit(bytes_per_second)
+        self.config.speed_limit = max(0, int(bytes_per_second or 0))
+
+    def _set_add_error(self, reason: Optional[str], detail: Optional[str] = None):
+        """记录本线程最近一次添加任务失败的原因"""
+        self._add_state.last_error = reason
+        self._add_state.last_detail = detail
+
+    @property
+    def last_add_error(self) -> Optional[str]:
+        """本线程最近一次添加任务失败的原因代码（add_task 返回 None 时读）"""
+        return getattr(self._add_state, 'last_error', None)
+
+    @property
+    def last_add_detail(self) -> Optional[str]:
+        """本线程最近一次添加任务失败的具体说明（可能带状态码/缺口字节）"""
+        return getattr(self._add_state, 'last_detail', None)
 
     def _build_chunks(self, task_id: str, total_size: int, thread_count: int) -> list[tuple[int, int, int, str]]:
         """构建分块区间（不写数据库）"""
@@ -438,17 +580,17 @@ class DownloadEngine:
         return True
 
     def _build_chunk_downloaders(self, task: dict, chunk_rows: list) -> list:
-        """按分块行构建下载器；限速按本轮参与的分块数均分"""
+        """按分块行构建下载器；所有分块共享引擎级限速器（总量限速）"""
         task_id = task['task_id']
-        chunk_speed_limit = (max(1, self.config.speed_limit // len(chunk_rows))
-                            if self.config.speed_limit and chunk_rows else 0)
+        # 配置可能被设置页或外部直接改过，构建前对齐一次；值没变时 set_limit 是空操作
+        self.speed_limiter.set_limit(self.config.speed_limit)
         downloaders = []
         for chunk in chunk_rows:
             downloader = ChunkDownloader(
                 chunk_id=chunk['chunk_id'], task_id=task_id, url=task['url'],
                 start_byte=chunk['start_byte'], end_byte=chunk['end_byte'], temp_file=chunk['temp_file'],
                 timeout=self.config.timeout, retry_times=self.config.retry_times,
-                user_agent=self.config.user_agent, speed_limit=chunk_speed_limit,
+                user_agent=self.config.user_agent, limiter=self.speed_limiter,
                 proxies=self.config.proxies, use_range=True, request_context=task.get('_request_context'),
                 total_size=task['total_size'], etag=task.get('resource_etag'),
                 last_modified=task.get('resource_last_modified'),
@@ -613,6 +755,7 @@ class DownloadEngine:
         # 真正重置在ChunkDownloader内部按非Range规则以wb模式执行。
 
         # 创建单线程下载器
+        self.speed_limiter.set_limit(self.config.speed_limit)
         downloader = ChunkDownloader(
             chunk_id=0,
             task_id=task_id,
@@ -623,7 +766,7 @@ class DownloadEngine:
             timeout=self.config.timeout,
             retry_times=self.config.retry_times,
             user_agent=self.config.user_agent,
-            speed_limit=self.config.speed_limit,
+            limiter=self.speed_limiter,
             proxies=self.config.proxies,  # 代理支持
             use_range=bool(task.get('support_range')),
             request_context=(task.get('_request_context') or
@@ -706,6 +849,55 @@ class DownloadEngine:
         thread_pool.submit(download_and_finish)
         return True
 
+    def sweep_orphan_temp(self, min_age_days: int = ORPHAN_TEMP_MIN_AGE_DAYS) -> tuple:
+        """清理无主的分块临时文件（崩溃/强杀残留）。
+
+        只有同时满足才删：顶层目录、严格 UUID 命名、库里没有任何任务引用、
+        且 mtime 早于保留天数。视频子目录（temp/<kind>/<task_id>/）本轮不碰，
+        避免把 yt-dlp 的中间文件误删。
+        Returns:
+            (删除个数, 回收字节)
+        """
+        temp_dir = os.path.abspath(self.config.temp_dir)
+        if not os.path.isdir(temp_dir):
+            return 0, 0
+        try:
+            task_ids = {task['task_id'] for task in self.db.get_all_tasks()}
+            referenced = {os.path.normcase(os.path.abspath(path))
+                          for path in self.db.get_referenced_temp_files() if path}
+            entries = list(os.scandir(temp_dir))
+        except Exception as error:
+            logger.debug('临时目录不可用，跳过清扫: %s', error)
+            return 0, 0
+
+        deadline = time.time() - max(0, int(min_age_days)) * 86400
+        removed = 0
+        freed = 0
+        for entry in entries:
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                match = ORPHAN_TEMP_PATTERN.match(entry.name)
+                if not match or match.group(1) in task_ids:
+                    continue
+                path = os.path.abspath(entry.path)
+                if os.path.normcase(path) in referenced:
+                    continue
+                stat_result = entry.stat(follow_symlinks=False)
+                if stat_result.st_mtime > deadline:
+                    continue
+                os.remove(path)
+            except OSError as error:
+                logger.debug('跳过无法清理的临时文件: %s', error)
+                continue
+            removed += 1
+            freed += int(stat_result.st_size)
+
+        if removed:
+            # 日志不记路径，只记数量和回收量
+            logger.info('临时文件清扫：删除 %s 个，回收 %s', removed, format_size(freed))
+        return removed, freed
+
     def _merge_and_finish(self, task_id: str, save_path: str, chunks: list, run_id=None):
         """直接合并到目标目录临时文件，校验后同卷改名；暂停/失败保留原分块。"""
         run_id = self.task_run_ids.get(task_id, 0) if run_id is None else run_id
@@ -715,6 +907,21 @@ class DownloadEngine:
         directory = os.path.dirname(os.path.abspath(save_path))
         os.makedirs(directory, exist_ok=True)
         chunk_files = [chunk['temp_file'] for chunk in sorted(chunks, key=lambda x: x['chunk_index'])]
+
+        # 合并要往目标目录先写一份完整副本，空间不够就停下保留分块（可恢复，不判死）
+        task = self.db.get_task(task_id) or {}
+        total_size = int(task.get('total_size') or 0)
+        if total_size > 0:
+            ok, detail = check_free_space([(directory, total_size, '下载目录')])
+            if not ok:
+                message = f'{detail}，已完成的分块已保留，腾出空间后可继续'
+                logger.warning('合并前空间不足: task=%s, %s', task_id, detail)
+                self.chunk_progress.pop(task_id, None)
+                self.db.update_task_status(task_id, 'paused', message)
+                if self.status_callback:
+                    self.status_callback(task_id, 'paused', message)
+                return
+
         # 随机且排他创建，不占用正式文件名，也不覆盖目录中已有的临时文件。
         with tempfile.NamedTemporaryFile(prefix=f'.daw-merge-{task_id}-', suffix='.tmp',
                                          dir=directory, delete=False) as output:

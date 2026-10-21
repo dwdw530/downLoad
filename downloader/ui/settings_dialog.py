@@ -142,8 +142,8 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         self.concurrent_slider.configure(command=self._on_concurrent_slider_change)
 
-        # 速度限制设置
-        speed_limit_label = ctk.CTkLabel(tab, text="速度限制(KB/s):", font=("Arial", 12))
+        # 速度限制设置（全局限速：所有任务合计，不是每个任务各一份）
+        speed_limit_label = ctk.CTkLabel(tab, text="总速度上限(KB/s):", font=("Arial", 12))
         speed_limit_label.grid(row=4, column=0, sticky="w", pady=8)
 
         speed_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -152,7 +152,8 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.speed_limit_entry = ctk.CTkEntry(speed_frame, width=120, placeholder_text="0=不限速")
         self.speed_limit_entry.pack(side="left", padx=5)
 
-        speed_hint_label = ctk.CTkLabel(speed_frame, text="(0表示不限速)", font=("Arial", 10), text_color="gray")
+        speed_hint_label = ctk.CTkLabel(speed_frame, text="(所有任务合计，0 表示不限速)",
+                                        font=("Arial", 10), text_color="gray")
         speed_hint_label.pack(side="left")
 
         # 超时设置
@@ -384,7 +385,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             # 速度限制验证：KB转字节存储
             speed_limit_str = self.speed_limit_entry.get().strip()
             if speed_limit_str and not speed_limit_str.isdigit():
-                messagebox.showerror("错误", "速度限制必须是数字！", parent=self)
+                messagebox.showerror("错误", "总速度上限必须是数字！", parent=self)
                 return
             speed_limit_kb = int(speed_limit_str) if speed_limit_str else 0
             speed_limit_bytes = speed_limit_kb * 1024  # KB转字节

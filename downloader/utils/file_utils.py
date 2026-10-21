@@ -7,6 +7,7 @@ import errno
 import logging
 import re
 import os
+import shutil
 import hashlib
 import tempfile
 import threading
@@ -53,6 +54,11 @@ def guess_file_category(filename: str) -> str:
         if suffix in suffixes:
             return category
     return 'other'
+
+
+# 空间预检余量：5% + 最多 64 MiB（小文件不会因为固定 64 MiB 余量被无故拦住）
+FREE_SPACE_MARGIN_RATIO = 1.05
+FREE_SPACE_MARGIN_MAX_BYTES = 64 * 1024 * 1024
 
 
 def format_size(size_bytes: int) -> str:
@@ -156,6 +162,57 @@ def get_filename_from_url(url: str) -> str:
     return validate_filename(filename)
 
 
+def parse_content_disposition(value: str) -> Optional[str]:
+    """从 Content-Disposition 里取文件名，优先 RFC 5987 的 filename*。
+
+    老王说：服务器说叫什么才叫什么，但路径和保留名一个都别想带进来！
+
+    只返回单个路径段（已过 validate_filename）；拿不到可用名字返回 None。
+    """
+    if not value:
+        return None
+    header = str(value)
+
+    extended = re.search(r"filename\*\s*=\s*([^;]+)", header, re.IGNORECASE)
+    if extended:
+        raw = extended.group(1).strip().strip('"')
+        # 形如 UTF-8''%E4%B8%AD%E6%96%87.zip
+        parts = raw.split("'", 2)
+        if len(parts) == 3 and parts[2]:
+            charset = parts[0] or 'utf-8'
+            try:
+                decoded = unquote(parts[2], encoding=charset, errors='strict')
+            except (LookupError, UnicodeDecodeError):
+                decoded = ''
+            name = _single_path_segment(decoded)
+            if name:
+                return name
+
+    plain = re.search(r'filename\s*=\s*(?:"([^"]*)"|([^;]+))', header, re.IGNORECASE)
+    if plain:
+        raw = plain.group(1) if plain.group(1) is not None else plain.group(2).strip()
+        return _single_path_segment(raw)
+    return None
+
+
+def _single_path_segment(value: str) -> Optional[str]:
+    """把服务器给的名字收敛成一个安全文件名；不合法返回 None"""
+    if not value:
+        return None
+    # 反斜杠也是分隔符，先统一，再只留最后一段
+    name = os.path.basename(str(value).replace('\\', '/')).strip().strip('"')
+    if not name:
+        return None
+    if len(name) > 120:
+        base, suffix = os.path.splitext(name)
+        suffix = suffix[:16]
+        name = (base[:max(1, 120 - len(suffix))] or 'download') + suffix
+    try:
+        return validate_filename(name)
+    except ValueError:
+        return None
+
+
 def validate_filename(filename: str) -> str:
     """拒绝解码后的路径、Windows 设备名与 ADS，文件名只能是单个路径段。"""
     if (not filename or filename in ('.', '..') or filename != filename.rstrip(' .')
@@ -231,6 +288,63 @@ def publish_download(source: str, destination: str, is_current=lambda: True) -> 
     finally:
         if staged and os.path.exists(staged):
             os.remove(staged)
+
+
+def _existing_ancestor(path: str) -> str:
+    """找到最近一个已存在的上级目录（新建任务时目标目录可能还不存在）"""
+    current = os.path.abspath(path or '.')
+    while not os.path.exists(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def check_free_space(requirements) -> tuple:
+    """检查多个路径所在卷的剩余空间。
+
+    老王说：大文件下到 90% 才发现盘满了，那叫耍流氓！
+
+    Args:
+        requirements: [(目录, 需求字节, 标签), ...]
+    Returns:
+        (True, None) 或 (False, 给用户看的说明)
+    同一盘符的需求会合并（分块和合并副本同盘时叠加）；
+    拿不到容量的路径（网络盘、权限不足、盘符消失）按“未知”放行，不阻断下载。
+    """
+    needed = {}
+    labels = {}
+    probes = {}
+    for path, need_bytes, label in requirements or ():
+        try:
+            need_bytes = int(need_bytes or 0)
+        except (TypeError, ValueError):
+            continue
+        if need_bytes <= 0 or not path:
+            continue
+        absolute = _existing_ancestor(path)
+        key = os.path.splitdrive(absolute)[0].lower() or absolute
+        needed[key] = needed.get(key, 0) + need_bytes
+        probes.setdefault(key, absolute)
+        names = labels.setdefault(key, [])
+        if label and label not in names:
+            names.append(label)
+
+    for key, need_bytes in needed.items():
+        label = '与'.join(labels.get(key) or ['下载'])
+        try:
+            free = shutil.disk_usage(probes[key]).free
+        except OSError as error:
+            # 网络盘、权限、盘符变化都读不到容量，不能因为新检查把下载拦死
+            logger.debug('无法读取剩余空间，跳过检查: %s, err=%s', label, error)
+            continue
+        margin = min(FREE_SPACE_MARGIN_MAX_BYTES, max(1024, int(need_bytes * 0.05)))
+        required = int(need_bytes * FREE_SPACE_MARGIN_RATIO) + margin
+        if free < required:
+            return False, (f'{label}空间不足：需要 {format_size(required)}，'
+                           f'剩余 {format_size(free)}，还差 {format_size(required - free)}')
+    return True, None
 
 
 def ensure_dir(directory: str):

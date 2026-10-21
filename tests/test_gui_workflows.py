@@ -67,6 +67,16 @@ class GuiFeatures(FeatureFixture):
             self.app.update()
             time.sleep(0.01)
 
+    def wait_tasks(self, count=1, timeout=15):
+        """等后台添加线程把任务落库（添加已改为后台执行，不再同步建任务）"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            tasks = self.db.get_all_tasks()
+            if len(tasks) >= count:
+                return tasks
+            self.pump(0.1)
+        return self.db.get_all_tasks()
+
     def dialog_action(self, action, dialog_type, fill):
         errors = []
         def respond():
@@ -107,7 +117,7 @@ class GuiFeatures(FeatureFixture):
             dialog.hash_type_var.set('sha256')
             dialog._on_confirm()
         self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
-        task_id = self.db.get_all_tasks()[0]['task_id']
+        task_id = self.wait_tasks()[0]['task_id']
         task = self.wait_task(task_id)
         self.pump()
         self.assertEqual(task['hash_verified'], 1)
@@ -425,8 +435,9 @@ class GuiFeatures(FeatureFixture):
         with patch.object(self.manager, '_try_start_next_task') as schedule:
             self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
             self.pump(0.3)
+            tasks = self.wait_tasks()
         schedule.assert_not_called()
-        task = self.db.get_all_tasks()[0]
+        task = tasks[0]
         self.assertEqual(task['status'], 'paused')
         self.assertEqual(self.app.task_widgets[task['task_id']]['action_btn'].cget('text'), '▶ 继续')
 
@@ -435,7 +446,7 @@ class GuiFeatures(FeatureFixture):
             dialog.url_text.insert('1.0', self.base_url + '/range')
             dialog._on_confirm(False)
         self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
-        task = self.db.get_all_tasks()[0]
+        task = self.wait_tasks()[0]
         self.assertIn(task['status'], ('pending', 'downloading', 'verifying', 'completed'))
         self.assertNotEqual(task['status'], 'paused')
 
@@ -463,7 +474,9 @@ class GuiFeatures(FeatureFixture):
             dialog.url_text.insert('1.0', f"{self.base_url}/range\n{self.base_url}/range")
             dialog._on_confirm()
         self.dialog_action(self.app._on_add_task, AddTaskDialog, fill)
-        self.pump(0.3)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and self.mocks[2].call_args is None:
+            self.pump(0.1)
         self.assertEqual(len(self.db.get_all_tasks()), 1)
         self.assertIn('已跳过 1 条重复链接', self.mocks[2].call_args.args[1])
 
@@ -927,6 +940,40 @@ class TransientUiTests(GuiFeatures):
         self.assertTrue(top <= bar._pos[1] <= bottom - bar._height)
         reloaded = ConfigManager(self.config.config_path)
         self.assertEqual(reloaded.ui_float_bar_pos, expected)
+
+    def test_float_bar_uses_layered_alpha_rendering(self):
+        """图形走分层窗口贴图：真 alpha，不能再退回 Canvas 多边形/色键（那会出毛边）"""
+        self.app._set_float_bar_visible(True)
+        self.pump(0.3)
+        bar = self.app.float_bar
+        self.assertIsNotNone(bar._image)
+        self.assertEqual(bar._image.size, (bar._width, bar._height))
+        alphas = {pixel[3] for pixel in bar._image.getdata()}
+        self.assertIn(0, alphas)
+        self.assertIn(255, alphas)
+        self.assertGreater(len(alphas), 8)
+        # 旧实现的痕迹：不再有色键窗口属性
+        self.assertFalse(hasattr(bar, 'canvas'))
+        bar._hovered = True
+        bar._draw()
+        self.pump(0.1)
+        self.assertIsNotNone(bar._image)
+
+    def test_float_bar_menu_font_matches_previous_style(self):
+        """右键菜单字号/菜单项不能顺手改：全部文字放大过的坑已经有过了"""
+        self.app._set_float_bar_visible(True)
+        self.pump(0.3)
+        bar = self.app.float_bar
+        menu = bar._menu
+        # 原生 Tk 字号：负值才是像素，正值是磅（写错会让菜单字变大）
+        raw_size = int(str(menu.cget('font')).split()[-1])
+        self.assertLess(raw_size, 0, '菜单字号必须用像素负值')
+        self.assertEqual(raw_size, -max(10, round(12 * bar._scale)))
+
+        labels = ['---' if menu.type(index) == 'separator' else menu.entrycget(index, 'label')
+                  for index in range(menu.index('end') + 1)]
+        self.assertEqual(labels, ['显示主窗口', '---', '迷你模式', '---', '暂停全部',
+                                  '继续全部', '---', '设置…', '隐藏悬浮条', '---', '退出程序'])
 
     def test_hide_by_user_turns_off_setting(self):
         self.app._set_float_bar_visible(True)

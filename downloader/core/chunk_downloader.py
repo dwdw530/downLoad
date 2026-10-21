@@ -8,6 +8,7 @@ import os
 import re
 import requests
 from downloader.browser.security import browser_get
+import threading
 import time
 from typing import Callable, Optional
 
@@ -48,23 +49,61 @@ class ChunkDownloadError(Exception):
 
 
 class SpeedLimiter:
+    """速度限制器（共享限速，按虚拟时间轴排队）
+
+    老王说：限速得按全局算，每个任务各限一份等于没限！
+
+    多个分块/多个任务共享同一个实例：每次预扣占一段“导线时间”，
+    后到的排在前一个后面。这样多个线程同时开工也不会叠加突破上限，
+    且令牌计算全在锁内、sleep 放锁外，不会一条线程捂着锁把别人拖死。
     """
-    速度限制器（令牌桶算法）
-    老王说：限速这事儿得用令牌桶，简单又好使！
-    """
+
+    # 单次预扣最多占 1/8 秒额度：低限速时也能及时响应暂停
+    SLICE_DIVISOR = 8
+    # 限速下限 1 KB/s：界面上误填 1（KB/s=1024）以下不至于把下载卡死
+    MIN_LIMIT = 1024
 
     def __init__(self, bytes_per_second: int = 0):
         """
         Args:
             bytes_per_second: 每秒允许的字节数，0表示不限速
         """
-        self.bytes_per_second = bytes_per_second
-        self._last_time = time.monotonic()
-        self._tokens = 0  # 当前可用令牌（字节数）
+        self.bytes_per_second = self._normalize(bytes_per_second)
+        self._lock = threading.Lock()
+        # 虚拟时钟：下一个可以开始写数据的时刻（不会预借未来的额度）
+        self._deadline = time.monotonic()
+
+    @classmethod
+    def _normalize(cls, value) -> int:
+        """统一限速值：负数/非法值归 0，小而正的值抬到下限"""
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(cls.MIN_LIMIT, value) if value > 0 else 0
 
     def set_limit(self, bytes_per_second: int):
-        """动态设置限速"""
-        self.bytes_per_second = bytes_per_second
+        """动态设置限速；值没变时什么都不做"""
+        limit = self._normalize(bytes_per_second)
+        with self._lock:
+            if limit == self.bytes_per_second:
+                return
+            self.bytes_per_second = limit
+            # 换了限速就重新起算，不能沿用旧限速下的积压
+            self._deadline = time.monotonic()
+
+    def _reserve(self, count: int) -> float:
+        """锁内排队：返回这段数据的发送时长（需要等待的秒数）"""
+        with self._lock:
+            rate = self.bytes_per_second
+            if rate <= 0:
+                return 0.0
+            now = time.monotonic()
+            # 闲置时时间轴已经过去，不能反过来预借未来额度（否则多线程会叠加超速）
+            start = self._deadline if self._deadline > now else now
+            finish = start + count / rate
+            self._deadline = finish
+            return max(0.0, finish - now)
 
     def acquire(self, bytes_count: int):
         """
@@ -72,27 +111,16 @@ class SpeedLimiter:
         Args:
             bytes_count: 需要的字节数
         """
-        if self.bytes_per_second <= 0:
-            return  # 不限速，直接返回
-
-        now = time.monotonic()
-        elapsed = now - self._last_time
-        self._last_time = now
-
-        # 补充令牌（按时间比例）
-        self._tokens += elapsed * self.bytes_per_second
-        # 令牌上限为1秒的量，防止积攒太多导致突发流量
-        self._tokens = min(self._tokens, self.bytes_per_second)
-
-        # 如果令牌不够，等待
-        if bytes_count > self._tokens:
-            wait_time = (bytes_count - self._tokens) / self.bytes_per_second
-            time.sleep(wait_time)
-            # 等待产生的额度已经用于本次写入，不能再次计入下一次请求。
-            self._last_time = time.monotonic()
-            self._tokens = 0
-        else:
-            self._tokens -= bytes_count
+        remaining = max(0, int(bytes_count or 0))
+        while remaining > 0:
+            rate = self.bytes_per_second
+            if rate <= 0:
+                return  # 不限速，直接返回
+            step = max(1, min(remaining, rate // self.SLICE_DIVISOR))
+            wait = self._reserve(step)
+            if wait > 0:
+                time.sleep(wait)
+            remaining -= step
 
 
 class ChunkDownloader:
@@ -105,7 +133,8 @@ class ChunkDownloader:
                  speed_limit: int = 0,
                  proxies: dict = None,
                  use_range: bool = True, request_context=None,
-                 total_size=None, etag=None, last_modified=None):
+                 total_size=None, etag=None, last_modified=None,
+                 limiter: Optional[SpeedLimiter] = None):
         """
         初始化分块下载器
         Args:
@@ -121,6 +150,7 @@ class ChunkDownloader:
             speed_limit: 速度限制（字节/秒），0表示不限速
             proxies: 代理配置，格式 {"http": "...", "https": "..."} 或 None
             use_range: 是否使用Range请求头
+            limiter: 共享限速器（多任务合计限速）；不传则按 speed_limit 自建一个
         """
         self.chunk_id = chunk_id
         self.task_id = task_id
@@ -145,8 +175,8 @@ class ChunkDownloader:
         self._reported_bytes = 0  # 上次回调给外部（数据库/UI）的字节数
         self._reported_at = 0.0  # 上次回调时间
 
-        # 速度限制器
-        self.speed_limiter = SpeedLimiter(speed_limit)
+        # 速度限制器：有共享实例就复用，保证多任务合计不超限
+        self.speed_limiter = limiter if limiter is not None else SpeedLimiter(speed_limit)
 
         # 进度回调函数
         self.progress_callback: Optional[Callable] = None

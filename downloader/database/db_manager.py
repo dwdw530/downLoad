@@ -309,6 +309,44 @@ class DatabaseManager:
                 if conn:
                     conn.close()
 
+    def get_status_counts(self) -> Dict[str, int]:
+        """按状态聚合任务数（状态栏每秒调用，不能拉全表）"""
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                rows = conn.execute('SELECT status, COUNT(*) FROM download_tasks GROUP BY status')
+                return {str(status): int(count) for status, count in rows}
+            finally:
+                if conn:
+                    conn.close()
+
+    def get_total_speed(self) -> float:
+        """下载中任务的速度合计（状态栏总速度，不拉任务行）"""
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                row = conn.execute("SELECT COALESCE(SUM(speed), 0) FROM download_tasks "
+                                   "WHERE status = 'downloading'").fetchone()
+                return float(row[0] or 0)
+            finally:
+                if conn:
+                    conn.close()
+
+    def get_referenced_temp_files(self) -> List[str]:
+        """所有分块引用的临时文件路径（孤儿清扫用来排除活断点）"""
+        with self._lock:
+            conn = None
+            try:
+                conn = self._get_connection()
+                rows = conn.execute('SELECT temp_file FROM download_chunks '
+                                    'WHERE temp_file IS NOT NULL').fetchall()
+                return [str(row[0]) for row in rows]
+            finally:
+                if conn:
+                    conn.close()
+
     def update_task_status(self, task_id: str, status: str, error_message: Optional[str] = None) -> bool:
         """更新任务状态"""
         with self._lock:

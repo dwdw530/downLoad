@@ -27,6 +27,9 @@ from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT
 
 logger = logging.getLogger(__name__)
 
+# 失败任务一次性重试前，超过这个数量先弹确认，避免误触打成一片
+RETRY_FAILED_CONFIRM_THRESHOLD = 10
+
 
 # 侧栏原生控件的配色（与 CustomTkinter 默认主题的 CTkFrame/CTkLabel 对齐）。
 # 分类项数以十计且每个主窗口都会重建，用原生 Label 才能避开 CTk 控件的 canvas/字体开销。
@@ -53,6 +56,8 @@ class MainWindow(ctk.CTk):
         self._loading_tasks = False
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
         self._status_flash = None  # (文本, 截止时间) 状态栏临时提示：如“设置已保存”
+        self._last_status_stats = ({'total': 0, 'downloading': 0, 'pending': 0, 'paused': 0,
+                                    'completed': 0, 'failed': 0, 'cancelled': 0}, 0.0)
         self._speed_history = {}  # {task_id: deque(maxlen=180)} 速度曲线采样，仅内存不落盘
         self._detail_windows = {}  # {task_id: TaskDetailWindow} 打开中的详情窗
         self._clipboard_dialog = None  # 剪贴板提示浮窗（同时只开一个）
@@ -97,6 +102,9 @@ class MainWindow(ctk.CTk):
 
         # 加载现有任务
         self._load_existing_tasks()
+
+        # 崩溃/强杀残留的分块临时文件：启动后清一次，不阻塞窗口显示
+        self.after(0, self._sweep_orphan_temp)
 
         # 由主线程处理下载回调，避免暂停时与工作线程互相等待。
         self.after(50, self._drain_ui_events)
@@ -237,6 +245,10 @@ class MainWindow(ctk.CTk):
         # 继续全部按钮
         resume_all_btn = ctk.CTkButton(toolbar, text="▶ 继续全部", command=self._on_resume_all, width=100)
         resume_all_btn.pack(side="left", padx=5)
+
+        # 重试失败按钮：断网/平台限流后批量恢复，不用一个个点
+        retry_failed_btn = ctk.CTkButton(toolbar, text="↻ 重试失败", command=self._on_retry_failed, width=100)
+        retry_failed_btn.pack(side="left", padx=5)
 
         # 设置按钮
         settings_btn = ctk.CTkButton(toolbar, text="⚙ 设置", command=self._on_settings, width=100)
@@ -470,24 +482,7 @@ class MainWindow(ctk.CTk):
         if not urls:
             return
 
-        if len(urls) == 1:
-            # 单链接保持原同步流程，行为和原来完全一致
-            task_id = self.task_manager.add_task(
-                url=urls[0],
-                save_path=dialog.save_dir,
-                expected_hash=dialog.expected_hash,
-                hash_type=dialog.hash_type,
-                start_later=dialog.start_later,
-            )
-            if task_id:
-                message = "任务添加成功！"
-                if skipped:
-                    message += f"\n已跳过 {skipped} 条重复链接"
-                messagebox.showinfo("成功", message)
-            else:
-                messagebox.showerror("错误", "任务添加失败！")
-            return
-
+        # 单链接也走后台：每条链接都要发探测请求，同步跑会把界面卡死
         self._add_tasks_in_background(urls, dialog, skipped)
 
     @staticmethod
@@ -517,7 +512,7 @@ class MainWindow(ctk.CTk):
             failures = []
             try:
                 for url in urls:
-                    reason = "无法获取文件大小或链接不可用"
+                    reason = ""
                     try:
                         task_id = self.task_manager.add_task(
                             url=url,
@@ -532,6 +527,10 @@ class MainWindow(ctk.CTk):
                     if task_id:
                         success += 1
                     else:
+                        # 引擎会把这次失败的分类原因写进线程本地槽位，比兜底文案具体得多
+                        reason = reason or (self.task_manager.last_add_detail
+                                            or self.task_manager.last_add_error
+                                            or "无法获取文件大小或链接不可用")
                         failures.append(f"{url}（{reason}）")
             finally:
                 self._batch_add_pending -= len(urls)
@@ -542,7 +541,13 @@ class MainWindow(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_add_summary(self, success: int, failures, skipped: int):
-        """批量添加结果汇总（成功失败都只弹一个框）"""
+        """批量添加结果汇总；单条成功只在状态栏提示，不再弹框打断"""
+        if success == 1 and not failures and not skipped:
+            self._flash_status("任务添加成功")
+            if self._shutdown_pending and self.task_manager.engine.config.after_download['shutdown']:
+                self._schedule_shutdown_if_idle()
+            return
+
         lines = [f"成功添加 {success} 个任务"]
         if skipped:
             lines.append(f"已跳过 {skipped} 条重复链接")
@@ -568,6 +573,34 @@ class MainWindow(ctk.CTk):
         """继续全部任务"""
         count = self.task_manager.resume_all()
         messagebox.showinfo("提示", f"已继续 {count} 个任务")
+
+    def _on_retry_failed(self):
+        """重试所有失败任务；数量多时先确认，避免误触"""
+        failed_tasks = self.task_manager.db.get_all_tasks(status='failed')
+        if not failed_tasks:
+            self._flash_status("没有失败的任务")
+            return
+        if len(failed_tasks) >= RETRY_FAILED_CONFIRM_THRESHOLD:
+            if not messagebox.askyesno("确认", f"将重试 {len(failed_tasks)} 个失败任务，继续？"):
+                return
+
+        def worker():
+            # 每条重试都要重新探测资源，同步跑会把界面卡死
+            try:
+                started, skipped = self.task_manager.retry_failed()
+            except Exception as error:
+                logger.warning("批量重试失败任务出错: %s", error)
+                started, skipped = 0, len(failed_tasks)
+            self._ui_events.put((self._show_retry_failed_result, (started, skipped)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_retry_failed_result(self, started: int, skipped: int):
+        """批量重试结果：状态栏提示，不弹框打断"""
+        message = f"已重试 {started} 个任务"
+        if skipped:
+            message += f"，{skipped} 个未能启动"
+        self._flash_status(message)
 
     def _on_settings(self):
         """打开设置对话框"""
@@ -611,11 +644,8 @@ class MainWindow(ctk.CTk):
         if 'timeout' in settings:
             config.set('timeout', settings['timeout'])
         if 'speed_limit' in settings:
-            config.speed_limit = settings['speed_limit']
-            for downloaders in list(self.task_manager.engine.active_downloaders.values()):
-                limit = max(1, config.speed_limit // len(downloaders)) if config.speed_limit and downloaders else 0
-                for downloader in downloaders:
-                    downloader.speed_limiter.set_limit(limit)
+            # 全局限速：所有普通文件任务共用一个令牌桶，运行中立即生效
+            self.task_manager.engine.set_speed_limit(settings['speed_limit'])
 
         proxy_cfg = settings.get('proxy')
         if isinstance(proxy_cfg, dict):
@@ -654,6 +684,17 @@ class MainWindow(ctk.CTk):
         from downloader.ui.history_dialog import HistoryDialog
         dialog = HistoryDialog(self, self.task_manager.db)
         self.wait_window(dialog)
+
+    def _sweep_orphan_temp(self):
+        """启动时清理崩溃/强杀残留的无主分块临时文件"""
+        try:
+            removed, _freed = self.task_manager.engine.sweep_orphan_temp()
+        except Exception as error:
+            # 清扫是锦上添花，出错不能影响程序启动
+            logger.warning("临时文件清扫失败: %s", error)
+            return
+        if removed:
+            self._flash_status(f"已清理 {removed} 个残留临时文件")
 
     def _load_existing_tasks(self):
         """加载现有任务"""
@@ -1324,9 +1365,15 @@ class MainWindow(ctk.CTk):
                 self.after(1000, update_status_bar)
                 return
             self._status_flash = None
-            stats = self.task_manager.get_statistics()
-            downloading_tasks = self.task_manager.get_downloading_tasks()
-            total_speed = sum(task['speed'] for task in downloading_tasks)
+            try:
+                stats = self.task_manager.get_statistics()
+                total_speed = self.task_manager.get_total_speed()
+            except Exception as error:
+                # 磁盘忙/库被短暂锁住时别每秒抛异常，沿上一次数字显示
+                logger.warning("读取任务统计失败: %s", error)
+                stats, total_speed = self._last_status_stats
+            else:
+                self._last_status_stats = (stats, total_speed)
             status_text = f"总速度: {format_speed(total_speed)} | 下载中: {stats['downloading']} | 等待: {stats['pending']}"
             if self._batch_add_pending:
                 status_text += f" | 正在添加 {self._batch_add_pending} 个任务…"

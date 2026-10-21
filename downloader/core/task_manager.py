@@ -144,6 +144,16 @@ class TaskManager:
         with self._lock:
             return self._activity_generation, bool(self._adding_tasks or self._running_tasks)
 
+    @property
+    def last_add_error(self) -> Optional[str]:
+        """当前线程最近一次添加任务失败的原因代码"""
+        return self.engine.last_add_error
+
+    @property
+    def last_add_detail(self) -> Optional[str]:
+        """当前线程最近一次添加任务失败的具体说明"""
+        return self.engine.last_add_detail
+
     def add_task(self, url: str, filename: Optional[str] = None,
                  save_path: Optional[str] = None,
                  expected_hash: Optional[str] = None,
@@ -390,6 +400,23 @@ class TaskManager:
                 count += 1
         return count
 
+    def retry_failed(self) -> tuple:
+        """重试所有失败任务（不碰暂停/等待中的任务）
+
+        老王说：断网一晚上攒几十个失败，不能让人一个个点！
+        Returns:
+            (成功启动数, 未能启动数)；并发门禁由 start_task 自己处理
+        """
+        failed_tasks = self.db.get_all_tasks(status='failed')
+        started = 0
+        skipped = 0
+        for task in failed_tasks:
+            if self.start_task(task['task_id']):
+                started += 1
+            else:
+                skipped += 1
+        return started, skipped
+
     def _try_start_next_task(self):
         """尝试启动下一个等待中的任务"""
         while True:
@@ -427,7 +454,7 @@ class TaskManager:
 
     def get_statistics(self) -> Dict:
         """
-        获取统计信息
+        获取统计信息（SQL 聚合，不再把全部任务拉进内存）
         Returns:
             {
                 'total': 总任务数,
@@ -438,23 +465,15 @@ class TaskManager:
                 'failed': 失败
             }
         """
-        all_tasks = self.get_all_tasks()
-        stats = {
-            'total': len(all_tasks),
-            'downloading': 0,
-            'pending': 0,
-            'paused': 0,
-            'completed': 0,
-            'failed': 0,
-            'cancelled': 0
-        }
-
-        for task in all_tasks:
-            status = task['status']
-            if status in stats:
-                stats[status] += 1
-
+        counts = self.db.get_status_counts()
+        stats = {'total': sum(counts.values())}
+        for status in ('downloading', 'pending', 'paused', 'completed', 'failed', 'cancelled'):
+            stats[status] = counts.get(status, 0)
         return stats
+
+    def get_total_speed(self) -> float:
+        """下载中任务的速度合计（状态栏总速度）"""
+        return self.db.get_total_speed()
 
     def shutdown(self):
         """

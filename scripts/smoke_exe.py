@@ -309,7 +309,7 @@ def main():
         user32.SetForegroundWindow(original_foreground)
 
 
-def click_toolbar(hwnd, index, expected_buttons=5, design_width=900, bottom=False):
+def click_toolbar(hwnd, index, expected_buttons=6, design_width=900, bottom=False):
     # Restore our own test window before measuring controls; minimized coordinates are -32000.
     user32.ShowWindow(hwnd, 9)
     time.sleep(0.2)
@@ -370,7 +370,8 @@ def run_download_checks(exe, window, db, task_ids, workspace, restart):
     (workspace / 'result.json').write_text(json.dumps({'tasks': db.get_all_tasks(), 'history': db.get_history()},
                                                      ensure_ascii=False, indent=2), encoding='utf-8')
     print('PASS: native buttons, pause/resume, restart recovery, queue, Range/non-Range files, SHA256 and history', flush=True)
-    click_toolbar(window['hwnd'], 3)
+    # 工具栏从左到右：添加、暂停全部、继续全部、重试失败、历史、设置（右侧按钮 pack 越早越靠右）
+    click_toolbar(window['hwnd'], 4)
     history = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '下载历史'), None))
     time.sleep(0.5)
     click_toolbar(history['hwnd'], 1, expected_buttons=3, design_width=700, bottom=True)

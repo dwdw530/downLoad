@@ -2,13 +2,13 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.8.1/daw-downloader-v0.8.1-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.8.1/daw-downloader-v0.8.1-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.8.1)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.9.0/daw-downloader-v0.9.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.9.0/daw-downloader-v0.9.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.9.0)
 
-本版为界面细节调整：左侧分类树字号放大、保存设置改为状态栏提示、悬浮条新增迷你模式并整体收窄；浏览器扩展保持 **0.6.2** 未改动：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.8.1/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.8.1.md)。升级桌面端后重启下载器即可，无需重新加载扩展。
+本版为下载健壮性与全局限速：添加任务改后台探测并给出具体失败原因、文件名优先取服务器给的名字、下载前与合并前检查磁盘空间、限速改为所有任务合计的总量上限、新增「重试失败」按钮、状态栏改数据库聚合、启动清理残留临时文件；悬浮条改为真逐像素透明。浏览器扩展保持 **0.6.2** 未改动：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.9.0/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.9.0.md)。升级桌面端后重启下载器即可，无需重新加载扩展。
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.8.1-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.9.0-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -25,7 +25,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.8.1 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.9.0 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -33,10 +33,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.8.1
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.9.0
 ```
 
-输出为 `dist/daw-downloader-v0.8.1-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 的默认版本同步为 v0.8.1；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.9.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 的默认版本同步为 v0.9.0；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -49,7 +49,7 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 在尚未安装本安装版的 Windows 测试用户下运行：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.8.1-windows-x64-setup.exe
+conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.9.0-windows-x64-setup.exe
 ```
 
 脚本操作真实中文安装向导，选择包含中文和空格的隔离路径，验证文件、快捷方式、注册表卸载入口和浏览器连接。随后直接通过安装后的 BrowserBridge 冷启动安装后的 EXE，复用现有带测试授权信息的视频下载、字节一致性、去重、单实例及正常退出检查；再验证文件占用拦截、覆盖升级、卸载保留数据、重装及浏览器注册归属。已有安装版或同名快捷方式时拒绝测试，结束后恢复原浏览器注册。
@@ -57,6 +57,12 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 验收输出保存在 `output/installer-smoke/`，包含安装路径页截图、完成页截图、应用测试日志和 `result.json`。应用验收在一次性安装目录内使用 `smoke_browser_bridge.py --app-dir`；该参数遇到已有 `data` 目录会拒绝运行，不能用于已有用户数据的目录。普通 EXE 的鼠标操作回归仍使用 `scripts/smoke_exe.py`，需要未锁定的交互桌面。
 
 静默安装支持 `/S`、`/NODESKTOP`、`/NOBRIDGE`；自选路径使用最后一个参数 `/D=完整路径`。静默卸载使用 `Uninstall.exe /S`，同样保留用户数据。
+
+## 2026-10-21 v0.9.0 构建与验收
+
+- 桌面版 v0.9.0、扩展 0.6.2（未改动），下载健壮性与全局限速一批改动 + 悬浮条真逐像素透明，[更新日志](releases/v0.9.0.md)。
+- 构建：`conda run --no-capture-output -n py310_env python -B scripts/build_exe.py`，随后 `python -B scripts/build_installer.py v0.9.0`（注意顺序：`build_exe.py` 会清理 `dist`，必须在重建 EXE 之后再打安装包）。
+- 详情见下方发布记录。
 
 ## 2026-10-21 v0.8.1 构建与验收
 

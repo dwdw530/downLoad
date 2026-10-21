@@ -151,7 +151,7 @@ def assert_preserved(files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--installer', type=Path, default=ROOT / 'dist' / 'daw-downloader-v0.8.1-windows-x64-setup.exe')
+    parser.add_argument('--installer', type=Path, default=ROOT / 'dist' / 'daw-downloader-v0.9.0-windows-x64-setup.exe')
     args = parser.parse_args()
     installer = args.installer.resolve()
     desktop = shell_folder(0x10) / 'daw下载器.lnk'
