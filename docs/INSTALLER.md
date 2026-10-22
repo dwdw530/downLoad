@@ -65,6 +65,8 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 安装包：`daw-downloader-v0.11.1-windows-x64-setup.exe`，155,870,471 字节；SHA256 `ce85a756ab5877f61ed06a32ebc7c0cbabee61cc9fe0e95d84bab955d0225fb1`。
 - 最终源码 564 项（728.305 秒）、扩展 43 项、正式 EXE 三组和安装包七组验收通过；报告 `output/installer-smoke/run-ckav_9ai/result.json`。全量中的字号测试隔离到子进程，未改产品逻辑；EXE 冒烟改按状态栏反馈和数据库状态验收，不再等待成功弹窗。
 - 构建及安装验收前后真实数据/断点与 28 个运行源码指纹保持，原浏览器注册已恢复；历史安装包与 Release 保留。
+- 已于 2026-10-22 15:47:26 +08:00 正式发布 v0.11.1（Release id 420434179），源码提交 `933d778`、main/master 和 annotated 标签已同步；五附件 size/digest 一致，latest 指向本版，17 个历史 Release 未变。
+- 五个公开下载链接的 HTTP 200/Content-Length 与两个校验文本实际 GET 已核对；大型二进制完整性依据官方远端 SHA256 digest，未重复全量下载。
 
 ## 2026-10-21 v0.11.0 构建与验收
 
