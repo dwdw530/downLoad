@@ -3,7 +3,7 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-10-22 15:50 +08:00（v0.11.1 正式发布完成）
+- 更新时间：2026-10-22 17:05 +08:00（运行数据取消跟踪与进度文档本地提交）
 - 状态：已完成（本轮 v0.11.1 原 dist、EXE/安装包、提交与 GitHub 发布）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
@@ -19,6 +19,9 @@
 - 源码提交 `933d778f2c48a96df57681b929fb1603425e5dcf`、main/master 与新 annotated 标签 v0.11.1 已原子推送，标签解引用一致。Release `420434179` 于 2026-10-22 15:47:26 +08:00 发布，五附件 size/digest/state 与本地一致，latest 正确，历史 17 个 Release 全部保留。发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.11.1`；远端完整核验报告 `output/releases/v0.11.1/verification-remote.json`。
 - 本轮接续仅修测试子进程编码和旧字体基线的有效缩放换算；4 项字号及 19 项稳定性复验通过，运行源码/EXE 不变。原 564 项全量、EXE 三组和安装包七组日志已核实，不冒充本轮重跑。
 - 五个公开下载 URL 跟随重定向均为 HTTP 200，Content-Length 与附件相同；两个 SHA256 校验文本实际 GET 字节一致。大型二进制未重复全量下载，已核对官方远端 SHA256 digest。用户 data、断点和 output 均未提交或清理。
+
+- 发布记录收尾提交 `426f1063fd2849f81f4e2fbc913d1eddddef0502` 已同步 main/master，v0.11.1 标签保持源码提交 `933d778`。前一轮按用户要求更新原进度档及 Codex/Claude 共用本地记忆；随后用户要求工作区干净，本轮提交进度文档和忽略规则、不推送或重新发布。
+- 根 data 属本机运行数据，自动初始化已在隔离目录验证；用户要求工作区干净后已取消两文件跟踪、忽略 `/data/` 与 `/output/`。本机数据及 wal/shm 文件原样保留，详细核对见原功能分析档“干净工作区与运行数据取消跟踪”。
 
 ## 上下文摘要
 
@@ -133,7 +136,7 @@
 
 - Codex：`C:/Users/lenovo/.codex/projects/downLoad_project/memory/project-handoff.md` 和同目录 `memory_index.json`。
 - Claude Code：`C:/Users/lenovo/.claude/projects/D--vscode-workspace-downLoad-project/memory/project-handoff.md`、`memory_index.json`、`MEMORY.md`。
-- 两库安装包约定指向本档；版本、哈希、提交和临时验证输出只保留在进度/说明文档中。
+- 两库安装包约定和 v0.11.1 交付接续均指向本档；新增同名运行 data 边界索引，已纠正仅源码未打包/现行16至15磅等过期摘要，Claude 入口同步。具体提交、哈希和临时验证输出只保留在进度/说明文档中。
 
 ## 下一步行动
 
