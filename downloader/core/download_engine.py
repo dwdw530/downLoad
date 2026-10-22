@@ -12,6 +12,7 @@ import uuid
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional, Callable
 from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError, SpeedLimiter
@@ -72,6 +73,9 @@ class DownloadEngine:
         self.thread_pools = {}  # {task_id: ThreadPoolExecutor}
         self.cancelled_tasks = set()  # 艹，取消标记必须单独维护，不然后台线程会把状态回写炸掉
         self.task_run_ids = {}  # {task_id: run_id}，用于隔离旧下载会话，防止暂停/恢复串状态
+        self._lifecycle = threading.Condition(threading.RLock())
+        self._starting_tasks = {}  # 含网络探测阶段的在途启动/恢复，退出时也必须等待
+        self._shutdown_requested = False
         # {task_id: {chunk_id: 已下载字节}}：进度监控只读内存，不再每秒查分块表
         self.chunk_progress = {}
 
@@ -86,13 +90,42 @@ class DownloadEngine:
 
     def _next_task_run_id(self, task_id: str) -> int:
         """生成任务新的下载会话ID"""
-        next_run_id = int(self.task_run_ids.get(task_id, 0)) + 1
-        self.task_run_ids[task_id] = next_run_id
-        return next_run_id
+        with self._lifecycle:
+            next_run_id = int(self.task_run_ids.get(task_id, 0)) + 1
+            self.task_run_ids[task_id] = next_run_id
+            return next_run_id
 
     def _is_current_task_run(self, task_id: str, run_id: int) -> bool:
         """判断当前逻辑是否仍属于任务最新会话"""
-        return int(self.task_run_ids.get(task_id, 0)) == int(run_id)
+        return (not self._shutdown_requested
+                and int(self.task_run_ids.get(task_id, 0)) == int(run_id))
+
+    @contextmanager
+    def _starting_download(self, task_id, new_run=True):
+        """登记在途启动，网络等待不持锁，退出后拒绝新的登记。"""
+        with self._lifecycle:
+            if self._shutdown_requested:
+                run_id = None
+            else:
+                run_id = (self._next_task_run_id(task_id) if new_run
+                          else int(self.task_run_ids.get(task_id, 0)))
+                self._starting_tasks[task_id] = self._starting_tasks.get(task_id, 0) + 1
+        try:
+            yield run_id
+        finally:
+            if run_id is not None:
+                with self._lifecycle:
+                    remaining = self._starting_tasks[task_id] - 1
+                    if remaining:
+                        self._starting_tasks[task_id] = remaining
+                    else:
+                        del self._starting_tasks[task_id]
+                    self._lifecycle.notify_all()
+
+    def begin_shutdown(self):
+        """先封住启动入口与旧会话回调，再由 shutdown 等待和清理。"""
+        with self._lifecycle:
+            self._shutdown_requested = True
 
     def _get_task_status(self, task_id: str) -> Optional[str]:
         """读取任务当前状态（数据库真值）"""
@@ -545,6 +578,12 @@ class DownloadEngine:
         Returns:
             True表示启动成功，False表示失败
         """
+        with self._starting_download(task_id) as run_id:
+            if run_id is None:
+                return False
+            return self._start_download(task_id, resume, run_id)
+
+    def _start_download(self, task_id: str, resume: bool, run_id: int) -> bool:
         # 获取任务信息
         task = self.db.get_task(task_id)
         if not task:
@@ -553,17 +592,17 @@ class DownloadEngine:
 
         # 艹，启动前先清掉历史残留活跃线程，避免重复下载器互相踩状态
         if task_id in self.active_downloaders or task_id in self.thread_pools:
-            self._stop_active_task_workers(task_id, wait=True)
-
-        # 每次启动都生成新的会话ID，后续所有回调/收尾都必须绑定它
-        run_id = self._next_task_run_id(task_id)
+            self._stop_active_task_workers(task_id, invalidate_run=False, wait=True)
 
         # 旧任务或探测期间外部新建的同名文件也不能被覆盖。
         try:
             self.db.reserve_task_path(task_id)
             task = self.db.get_task(task_id)
             if task.get('download_type') in VIDEO_KINDS:
-                return self._start_youtube_download(task, run_id)
+                with self._lifecycle:
+                    if not self._is_current_task_run(task_id, run_id):
+                        return False
+                    return self._start_youtube_download(task, run_id)
 
             context = unprotect(task['browser_context']) if task.get('browser_context') else None
             task, resume = self._prepare_file_task(task, resume, context, run_id)
@@ -574,19 +613,16 @@ class DownloadEngine:
                 if self.status_callback:
                     self.status_callback(task_id, 'failed', str(error))
             return False
-        if not self._is_current_task_run(task_id, run_id):
-            return False
-
-        # 更新任务状态为downloading
-        self.cancelled_tasks.discard(task_id)
-        self.db.update_task_status(task_id, 'downloading')
-        if self.status_callback:
-            self.status_callback(task_id, 'downloading', '开始下载')
-
-        # 判断是否支持分块
-        if task['support_range'] and task['thread_count'] > 1:
-            return self._start_multithread_download(task, resume, run_id)
-        else:
+        # 最终检查与创建线程必须和关闭入口互斥，不能在检查之后被退出穿插。
+        with self._lifecycle:
+            if not self._is_current_task_run(task_id, run_id):
+                return False
+            self.cancelled_tasks.discard(task_id)
+            self.db.update_task_status(task_id, 'downloading')
+            if self.status_callback:
+                self.status_callback(task_id, 'downloading', '开始下载')
+            if task['support_range'] and task['thread_count'] > 1:
+                return self._start_multithread_download(task, resume, run_id)
             return self._start_singlethread_download(task, resume, run_id)
 
     def _prepare_file_task(self, task, resume, context, run_id):
@@ -1219,7 +1255,7 @@ class DownloadEngine:
                 downloader.pause()
         else:
             # 没有活跃下载器时仍允许标记为暂停（例如启动前切状态）
-            pass
+            self._next_task_run_id(task_id)
 
         self.db.update_task_status(task_id, 'paused')
         if self.status_callback:
@@ -1228,6 +1264,12 @@ class DownloadEngine:
 
     def resume_download(self, task_id: str) -> bool:
         """继续下载"""
+        with self._starting_download(task_id, new_run=False) as run_id:
+            if run_id is None:
+                return False
+            return self._resume_download(task_id, run_id)
+
+    def _resume_download(self, task_id: str, run_id: int) -> bool:
         task = self.db.get_task(task_id)
         if not task:
             return False
@@ -1235,12 +1277,15 @@ class DownloadEngine:
         if task['status'] == 'paused':
             # 艹，非分块任务优先复用当前下载器继续，保证暂停后进度不归零
             if not task.get('support_range') and task_id in self.active_downloaders:
-                self.db.update_task_status(task_id, 'downloading')
-                for downloader in self.active_downloaders[task_id]:
-                    downloader.resume()
-                if self.status_callback:
-                    self.status_callback(task_id, 'downloading', '继续下载')
-                return True
+                with self._lifecycle:
+                    if not self._is_current_task_run(task_id, run_id):
+                        return False
+                    self.db.update_task_status(task_id, 'downloading')
+                    for downloader in self.active_downloaders[task_id]:
+                        downloader.resume()
+                    if self.status_callback:
+                        self.status_callback(task_id, 'downloading', '继续下载')
+                    return True
 
             # 分块任务或无活跃下载器，走重建续传
             self._stop_active_task_workers(task_id, wait=True)
@@ -1268,6 +1313,9 @@ class DownloadEngine:
 
         老王说：不把线程池停干净，窗口关了进程还赖着不走，那真是祖宗十八代都要被骂！
         """
+        self.begin_shutdown()
+        with self._lifecycle:
+            self._lifecycle.wait_for(lambda: not self._starting_tasks)
         # 艹，退出时必须等线程池收敛，确保不会把“旧线程回写”带到下次启动
         task_ids = set(self.active_downloaders.keys()) | set(self.thread_pools.keys())
         for task_id in list(task_ids):

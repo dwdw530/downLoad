@@ -342,10 +342,9 @@ def dismiss_info(exe):
 def run_download_checks(exe, window, db, task_ids, workspace, restart):
     first, second = task_ids
     click_toolbar(window['hwnd'], 2)
-    dismiss_info(exe)
+    # v0.11.1 的后台开始/暂停成功后只显示状态栏，不再弹“提示”。
     wait_for(lambda: db.get_task(first)['status'] == 'downloading' and db.get_task(first)['downloaded_size'] > 0)
     click_toolbar(window['hwnd'], 1)
-    dismiss_info(exe)
     wait_for(lambda: all(db.get_task(task_id)['status'] == 'paused' for task_id in task_ids))
     time.sleep(1.1)  # Allow the one-second status bar refresh before the screenshot.
     before_restart = db.get_task(first)['downloaded_size']
@@ -356,8 +355,8 @@ def run_download_checks(exe, window, db, task_ids, workspace, restart):
     assert db.get_task(first)['downloaded_size'] >= before_restart
     assert db.get_task(second)['status'] == 'paused'
     click_toolbar(window['hwnd'], 2)
-    dismiss_info(exe)
     wait_for(lambda: all(db.get_task(task_id)['status'] == 'completed' for task_id in task_ids), timeout=25)
+    assert not any(w['title'] in ('提示', '错误', '操作失败') for w in app_windows(exe)), 'Unexpected task operation dialog'
     for task_id in task_ids:
         task = db.get_task(task_id)
         assert Path(task['save_path']).read_bytes() == PAYLOAD

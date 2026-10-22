@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from typing import Any, Dict
 
 from downloader.utils.url_utils import normalize_host
@@ -103,14 +104,31 @@ class ConfigManager:
             self.save()
 
     def save(self):
-        """保存配置到文件"""
+        """原子保存配置，写入失败时保留旧文件。"""
+        temp_path = None
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            directory = os.path.dirname(os.path.abspath(self.config_path))
+            with tempfile.NamedTemporaryFile(
+                    mode='w', encoding='utf-8', prefix='.config-', suffix='.tmp',
+                    dir=directory, delete=False) as f:
+                temp_path = f.name
                 json.dump(self._config, f, indent=4, ensure_ascii=False)
+                f.write('\n')
+                f.flush()
+                os.fsync(f.fileno())
+            # 临时文件与正式配置同目录，Windows 下关闭句柄后再原子替换。
+            os.replace(temp_path, self.config_path)
+            temp_path = None
             return True
         except Exception as e:
             logger.error("保存配置文件失败: %s", e)
             return False
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    logger.warning('清理未保存的配置临时文件失败')
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""

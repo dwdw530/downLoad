@@ -22,7 +22,7 @@ from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
-from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT
+from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT, scale_sidebar_font
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ class MainWindow(ctk.CTk):
         self._batch_add_pending = 0  # 后台批量添加中的链接数（只用于状态栏提示）
         self._selected_task_ids = set()  # 多选集合：仅内存，重启清空
         self._batch_busy = False  # 一批多选操作执行期间禁用再次提交、勾选与全局操作
+        self._exiting = False
         self._status_flash = None  # (文本, 截止时间) 状态栏临时提示：如“设置已保存”
         self._last_status_stats = ({'total': 0, 'downloading': 0, 'pending': 0, 'paused': 0,
                                     'completed': 0, 'failed': 0, 'cancelled': 0}, 0.0)
@@ -391,10 +392,12 @@ class MainWindow(ctk.CTk):
         return dict(SIDEBAR_PALETTE['dark' if dark else 'light'])
 
     def _create_sidebar_heading(self, text: str):
-        """侧栏分组标题（原生 Label 用磅值，字号与分类项同档）"""
+        """侧栏标题与分类项同为 13 逻辑像素，只保留加粗。"""
         colors = self._sidebar_colors_cache
         label = tkinter.Label(self.sidebar_frame, text=text, anchor="w", padx=10, pady=3,
-                              bg=colors['bg'], fg=colors['muted'], font=SIDEBAR_HEADING_FONT)
+                              bg=colors['bg'], fg=colors['muted'],
+                              font=scale_sidebar_font(SIDEBAR_HEADING_FONT,
+                                                      ctk.ScalingTracker.get_widget_scaling(self)))
         label.pack(fill="x", pady=(10, 1))
         self._sidebar_heading_labels.append(label)
         return label
@@ -404,7 +407,8 @@ class MainWindow(ctk.CTk):
         colors = self._sidebar_colors_cache
         item = tkinter.Label(parent, text=text, anchor="w", padx=12, pady=6,
                              bg=colors['bg'], fg=colors['fg'], cursor="hand2",
-                             font=SIDEBAR_ITEM_FONT)
+                             font=scale_sidebar_font(SIDEBAR_ITEM_FONT,
+                                                     ctk.ScalingTracker.get_widget_scaling(self)))
         item.pack(fill="x")
         item.bind("<Button-1>", lambda _event, k=key: self._on_category_select(k))
         item.bind("<Enter>", lambda _event, widget=item: self._on_category_hover(widget, True))
@@ -605,19 +609,55 @@ class MainWindow(ctk.CTk):
         if self._shutdown_pending and self.task_manager.engine.config.after_download['shutdown']:
             self._schedule_shutdown_if_idle()
 
-    def _on_pause_all(self):
-        """暂停全部任务"""
+    def _run_task_action(self, action, operation, success_message):
+        """复用批量忙碌保护；网络探测/线程等待放后台，结果只经队列回 Tk。"""
         if self._task_actions_blocked():
             return
-        count = self.task_manager.pause_all()
-        messagebox.showinfo("提示", f"已暂停 {count} 个任务")
+        if not self.task_manager.begin_batch_operation(action):
+            self._flash_status('已有任务操作正在执行或下载器正在退出')
+            return
+        self._set_batch_busy(True)
+
+        def worker():
+            message, failed = '', False
+            try:
+                result = operation()
+                failed = result is False
+                if not failed:
+                    message = success_message.format(count=result)
+            except Exception:
+                # 不把可能带 Cookie/签名地址的原始异常写进日志或弹框。
+                logger.warning('后台任务操作失败: %s', action)
+                failed = True
+            finally:
+                self.task_manager.end_batch_operation()
+            self._ui_events.put((self._finish_task_action, (message, failed)))
+
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            # 无 worker 时不能在 Tk 线程同步补位并探测网络。
+            self.task_manager.end_batch_operation(schedule=False)
+            self._finish_task_action('', True)
+
+    def _finish_task_action(self, message, failed):
+        if self._exiting:
+            return
+        self._set_batch_busy(False)
+        if failed:
+            messagebox.showerror('操作失败', '任务操作未成功，请检查任务状态或日志后重试。')
+        else:
+            self._flash_status(message)
+        if self._shutdown_pending and self.task_manager.engine.config.after_download['shutdown']:
+            self._schedule_shutdown_if_idle()
+
+    def _on_pause_all(self):
+        """暂停全部任务，不在 Tk 线程等待下载器收敛。"""
+        self._run_task_action('pause', self.task_manager.pause_all, '已暂停 {count} 个任务')
 
     def _on_resume_all(self):
         """继续全部任务"""
-        if self._task_actions_blocked():
-            return
-        count = self.task_manager.resume_all()
-        messagebox.showinfo("提示", f"已继续 {count} 个任务")
+        self._run_task_action('start', self.task_manager.resume_all, '已提交继续 {count} 个任务')
 
     def _on_retry_failed(self):
         """重试所有失败任务；数量多时先确认，避免误触"""
@@ -1160,7 +1200,7 @@ class MainWindow(ctk.CTk):
         try:
             threading.Thread(target=worker, daemon=True).start()
         except Exception:
-            self.task_manager.end_batch_operation()
+            self.task_manager.end_batch_operation(schedule=False)
             self._on_batch_result({'action': action, 'succeeded': [], 'skipped': [],
                                    'failed': [{'task_id': task_id, 'reason': 'worker'}
                                               for task_id in task_ids]})
@@ -1214,23 +1254,18 @@ class MainWindow(ctk.CTk):
 
     def _on_start_task(self, task_id: str):
         """开始/继续任务"""
-        if self._task_actions_blocked():
-            return
-        task = self.task_manager.get_task(task_id)
-        if not task:
-            return
-        if task['status'] == 'paused':
-            accepted = self.task_manager.resume_task(task_id)
-        else:
-            accepted = self.task_manager.start_task(task_id)
-        if not accepted:
-            messagebox.showerror('无法启动', '任务未能启动，请检查任务状态或日志后重试。')
+        def start():
+            task = self.task_manager.get_task(task_id)
+            if not task:
+                return False
+            if task['status'] == 'paused':
+                return self.task_manager.resume_task(task_id)
+            return self.task_manager.start_task(task_id)
+        self._run_task_action('start', start, '任务已提交，下载中或等待可用槽位')
 
     def _on_pause_task(self, task_id: str):
         """暂停任务"""
-        if self._task_actions_blocked():
-            return
-        self.task_manager.pause_task(task_id)
+        self._run_task_action('pause', lambda: self.task_manager.pause_task(task_id), '任务已暂停')
 
     def _on_cancel_task(self, task_id: str):
         """取消任务"""
@@ -1499,14 +1534,17 @@ class MainWindow(ctk.CTk):
 
     def _drain_ui_events(self):
         """只在Tk主线程更新控件，工作线程只负责入队。"""
+        if self._exiting:
+            return
         try:
-            while True:
+            while not self._exiting:
                 callback, args = self._ui_events.get_nowait()
                 callback(*args)
         except Empty:
             pass
         finally:
-            self.after(50, self._drain_ui_events)
+            if not self._exiting:
+                self.after(50, self._drain_ui_events)
 
     def _update_task_status(self, task_id: str, status: str, message: str = None):
         """更新任务状态UI"""

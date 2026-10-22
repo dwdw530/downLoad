@@ -45,6 +45,7 @@ class TaskManager:
         self.max_concurrent = max_concurrent
 
         self._lock = threading.Lock()
+        self._activity_condition = threading.Condition(self._lock)
         self._running_tasks = set()  # 正在下载的任务ID集合
         self._scheduling_paused = False
         self._adding_tasks = 0
@@ -149,13 +150,17 @@ class TaskManager:
     def _adding_task(self):
         """后台探测也属于未完成工作，关机确认不能只看已落库的任务。"""
         with self._lock:
-            self._adding_tasks += 1
-            self._activity_generation += 1
+            accepted = not self._shutdown_started
+            if accepted:
+                self._adding_tasks += 1
+                self._activity_generation += 1
         try:
-            yield
+            yield accepted
         finally:
-            with self._lock:
-                self._adding_tasks -= 1
+            if accepted:
+                with self._activity_condition:
+                    self._adding_tasks -= 1
+                    self._activity_condition.notify_all()
 
     def get_activity_state(self):
         """返回任务操作代数及是否仍有探测/启动/运行工作。"""
@@ -190,12 +195,17 @@ class TaskManager:
         Returns:
             任务ID，失败返回None
         """
-        with self._adding_task():
+        with self._adding_task() as accepted:
+            if not accepted:
+                return None
             kwargs = {'request_context': request_context} if request_context is not None else {}
             task_id = self.engine.create_download_task(url, filename, save_path, expected_hash, hash_type,
                                                       start_later=start_later, **kwargs)
             if not task_id:
                 return None
+            if self._shutdown_started:
+                self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
+                return task_id
             if self.task_added_callback:
                 self.task_added_callback(task_id)
             if not start_later:
@@ -203,10 +213,15 @@ class TaskManager:
             return task_id
 
     def add_youtube_task(self, url, filename, save_path, height=720, kind='youtube', request_context=None):
-        with self._adding_task():
+        with self._adding_task() as accepted:
+            if not accepted:
+                return None
             task_id = self.engine.create_youtube_task(url, filename, save_path, height, kind,
                                                    request_context=request_context)
             if task_id:
+                if self._shutdown_started:
+                    self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
+                    return task_id
                 if self.task_added_callback:
                     self.task_added_callback(task_id)
                 self._try_start_next_task()
@@ -403,7 +418,7 @@ class TaskManager:
             return count
         finally:
             with self._lock:
-                self._scheduling_paused = previous_scheduling_paused
+                self._scheduling_paused = previous_scheduling_paused or self._shutdown_started
 
     def resume_all(self) -> int:
         """
@@ -459,7 +474,7 @@ class TaskManager:
             self._activity_generation += 1
             return True
 
-    def end_batch_operation(self):
+    def end_batch_operation(self, schedule=True):
         """释放批量名额；没有暂缓/退出时按正常队列补位一次"""
         with self._lock:
             if not self._batch_operations:
@@ -469,7 +484,7 @@ class TaskManager:
             self._batch_operations = 0
             self._batch_action = None
             self._batch_executing = False
-            should_schedule = (not self._batch_hold and not self._scheduling_paused
+            should_schedule = (schedule and not self._batch_hold and not self._scheduling_paused
                                and not self._shutdown_started)
         if should_schedule:
             try:
@@ -652,15 +667,27 @@ class TaskManager:
             self._scheduling_paused = True
             # 退出后批量循环不再提交后续项，也不恢复调度
             self._shutdown_started = True
+            # 关闭入口前先固定在途任务；探测恰好返回时会释放运行名额，
+            # 不能等网络收敛之后再拍快照，否则漏掉仍为 pending 的任务。
+            runtime_task_ids = set(self._running_tasks)
+        self.engine.begin_shutdown()
+        # 后台添加的探测也要收敛，避免退出后才落库或触碰已销毁的窗口。
+        with self._activity_condition:
+            self._activity_condition.wait_for(lambda: not self._adding_tasks)
+            runtime_task_ids.update(self._running_tasks)
         # 艹，退出时必须“自动暂停并保留进度”，不能把用户任务一刀切成cancelled
-        downloading_tasks = self.db.get_all_tasks(status='downloading')
+        downloading_tasks = [task for task in self.db.get_all_tasks()
+                             if task['status'] in ('downloading', 'verifying')
+                             or task['task_id'] in runtime_task_ids]
         for task in downloading_tasks:
             task_id = task['task_id']
             try:
                 paused = self.engine.pause_download(task_id)
                 if not paused:
                     # 兜底：即使下载器实例丢了，也要把状态拍平为paused，防止重启后僵尸状态
-                    self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
+                    current = self.db.get_task(task_id)
+                    if current and current['status'] in ('pending', 'downloading', 'verifying'):
+                        self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')
             except Exception as e:
                 logger.error("退出暂停任务失败: %s, err=%s", task_id, e)
                 self.db.update_task_status(task_id, 'paused', '程序退出自动暂停（异常兜底）')

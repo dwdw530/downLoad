@@ -6,9 +6,9 @@
 
 正式入口：`dist/daw下载器.exe`。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.11.0/daw-downloader-v0.11.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.11.1/daw-downloader-v0.11.1-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
-当前桌面版 **v0.11.0**、浏览器扩展 **0.6.2**（内容不变）。本版新增**多选批量操作与按类型自动分目录**：勾选当前筛选列表后批量暂停、开始/继续、重试或删除记录；自动分类默认关闭，仅影响新任务，手动保存目录优先。左侧字号收为分类项 16 磅、标题 15 磅加粗，其他字号不变。原未知大小/空文件下载、断点与非覆盖保存保留。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.11.0/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.11.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
+当前桌面版 **v0.11.1**、浏览器扩展 **0.6.2**（内容不变）。本版修复**配置保存失败丢失旧配置、探测中退出后仍启动下载、任务操作阻塞界面**，单任务开始/继续、暂停及全局暂停/继续改后台执行。仅左侧分类项与标题改为 **13 逻辑像素，标题只加粗**，其他字体/边距/全局缩放不动。v0.11.0 的多选批量、默认关闭的自动分目录，以及未知大小/空文件、断点和非覆盖保存保留。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.11.1/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.11.1.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
 
@@ -221,6 +221,8 @@ python main.py
 - 出队及「继续全部」均按 `list_order`（未手动调整时等于创建时间升序），右键「上移/置顶」改写该字段；并发已满时手动重试进入等待队列
 
 ## 回归验证
+
+2026-10-22 v0.11.1：配置原子保存、在途探测退出保护、后台任务操作及左侧 13 逻辑像素字号。最终 Python/GUI 全量 **564 项通过（728.305 秒）**、扩展 **43 项通过**，正式 EXE 三组与安装包七组验收通过；包内修复模块与源码一致，用户数据和断点保留。详见 [v0.11.1 更新日志](docs/releases/v0.11.1.md)。
 
 2026-10-21 v0.11.0：多选批量、默认关闭的六类自动分目录和左侧 16/15 磅字号。发布前最终源码全量 **537 项通过（714.945 秒）**、扩展 **43 项通过**；正式 EXE 三组、新功能打包版实测与安装包七组验收通过，详细说明见 [v0.11.0 更新日志](docs/releases/v0.11.0.md)。
 

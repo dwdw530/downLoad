@@ -1065,6 +1065,53 @@ class TransientUiTests(GuiFeatures):
 class BatchSelectionTests(GuiFeatures):
     """多选批量：选择范围、筛选清理、删除记录与重复提交保护"""
 
+    def _assert_slow_action_keeps_tk_alive(self, callback, operation):
+        entered, release = threading.Event(), threading.Event()
+        ticks, workers = [], []
+
+        def slow(*args):
+            workers.append(threading.get_ident())
+            entered.set()
+            release.wait(3)
+            return True
+
+        with patch.object(self.manager, operation, side_effect=slow) as call:
+            try:
+                callback()
+                self.assertTrue(entered.wait(1))
+                self.app.after(20, lambda: ticks.append(threading.get_ident()))
+                self.pump(0.1)
+                self.assertEqual(ticks, [threading.get_ident()])
+                self.assertNotEqual(workers, ticks)
+                self.assertTrue(self.app._batch_busy)
+                self.app._update_task_status('async-live', 'paused', '')
+                self.assertEqual(self.app.task_widgets['async-live']['action_btn'].cget('state'),
+                                 'disabled')
+                callback()
+                self.assertEqual(call.call_count, 1)
+            finally:
+                release.set()
+            self._wait_batch_idle()
+        self.assertFalse(self.manager.get_activity_state()[1])
+
+    def test_single_resume_probe_runs_off_tk_thread(self):
+        task_id = self._inject('async-live', 'async-resume.bin', 'paused')
+        self._assert_slow_action_keeps_tk_alive(
+            lambda: self.app._on_start_task(task_id), 'resume_task')
+
+    def test_single_pause_wait_runs_off_tk_thread(self):
+        task_id = self._inject('async-live', 'async-pause.bin', 'paused')
+        self._assert_slow_action_keeps_tk_alive(
+            lambda: self.app._on_pause_task(task_id), 'pause_task')
+
+    def test_pause_all_wait_runs_off_tk_thread(self):
+        self._inject('async-live', 'async-pause-all.bin', 'paused')
+        self._assert_slow_action_keeps_tk_alive(self.app._on_pause_all, 'pause_all')
+
+    def test_resume_all_probe_runs_off_tk_thread(self):
+        self._inject('async-live', 'async-resume-all.bin', 'paused')
+        self._assert_slow_action_keeps_tk_alive(self.app._on_resume_all, 'resume_all')
+
     def _inject(self, task_id, filename, status='pending'):
         path = self.root / 'out' / filename
         self.db.create_task_with_chunks(task_id, f'http://example.com/{filename}', filename,
