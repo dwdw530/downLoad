@@ -10,6 +10,9 @@ import requests
 from downloader.browser.security import browser_get
 import threading
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 
 
@@ -27,6 +30,97 @@ RETRY_BACKOFF_MAX = 30.0
 # 可重试的 HTTP 状态（服务端临时性问题，等一等通常能好）
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 507, 520, 521, 522, 524})
 
+# Retry-After 只在这两个状态上生效（RFC 6585 §4 允许 429 携带）
+RETRY_AFTER_STATUS = frozenset({429, 503})
+# 自动重试等待窗口（秒）：只约束新重试，不是整条下载的硬时限
+RETRY_WINDOW_SECONDS = 300.0
+# 恶意超长数字头不保留原文，直接按“远超预算”处理
+RETRY_AFTER_MAX_DIGITS = 20
+RETRY_AFTER_HUGE_SECONDS = 1e12
+
+RETRY_BUDGET_MESSAGE = '本次自动重试已结束，已保留下载数据，可稍后重试'
+RETRY_SERVER_WAIT_MESSAGE = '服务器要求等待时间超出本次重试上限，已保留下载数据，可稍后重试'
+
+
+def parse_retry_after(value, now=None) -> Optional[float]:
+    """解析 Retry-After，返回相对秒数；非法值返回 None。
+
+    支持非负整数（含 0）与合法 HTTP 日期。过去时间视为 0；
+    非法数字/日期/拼接值全部回退原指数退避。合法超大整数按“远超预算”返回，
+    不会被裁短成 1 秒后重发。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if re.fullmatch(r'[0-9]+', text):
+        # 长度保护看有效数字，不把合法的前导零（包括长串 0）误判为超长等待。
+        digits = text.lstrip('0') or '0'
+        if len(digits) > RETRY_AFTER_MAX_DIGITS:
+            return RETRY_AFTER_HUGE_SECONDS
+        try:
+            return float(int(digits))
+        except ValueError:
+            return None
+
+    if len(text) > 128:
+        return None
+    try:
+        target = parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if target is None:
+        return None
+    if target.tzinfo is None:
+        # HTTP 日期按 GMT/UTC 解释，不能用本机时区猜测。
+        target = target.replace(tzinfo=timezone.utc)
+    else:
+        target = target.astimezone(timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return max(0.0, (target - current).total_seconds())
+
+
+class RetryBudget:
+    """同一个 task run 内所有分块、内外层共享的自动重试窗口。
+
+    窗口从第一次 transient 开始，不按块/轮重置；不落库、不跨 run 共享。
+    只保存首次失败时间与截止时间，不引入全站限流或后台调度。
+    """
+
+    def __init__(self, window_seconds: float = RETRY_WINDOW_SECONDS, clock=None):
+        try:
+            window = float(window_seconds)
+        except (TypeError, ValueError):
+            window = RETRY_WINDOW_SECONDS
+        self.window_seconds = max(0.0, window)
+        self._clock = clock or time.monotonic
+        self._deadline = None
+        self._lock = threading.Lock()
+
+    @property
+    def deadline(self):
+        with self._lock:
+            return self._deadline
+
+    def note_transient(self):
+        """记录第一次 transient；后续调用不重置窗口。"""
+        with self._lock:
+            if self._deadline is None:
+                self._deadline = self._clock() + self.window_seconds
+            return self._deadline
+
+    def expired(self, at=None) -> bool:
+        deadline = self.deadline
+        if deadline is None:
+            return False
+        current = self._clock() if at is None else at
+        return current >= deadline
+
 
 def classify_status(status_code: int) -> str:
     """把 HTTP 状态码分成临时性/致命两类，决定要不要重试"""
@@ -42,10 +136,12 @@ class ChunkDownloadError(Exception):
     - protocol：服务器不守 Range 或返回内容不符合协议，需要降级单线程
     """
 
-    def __init__(self, message: str, kind: str = 'transient'):
+    def __init__(self, message: str, kind: str = 'transient', retry_not_before: float = 0.0):
         super().__init__(message)
         self.message = message
         self.kind = kind
+        # 服务器要求的绝对等待点（monotonic）；0 表示没有有效 Retry-After
+        self.retry_not_before = float(retry_not_before or 0.0)
 
 
 class SpeedLimiter:
@@ -135,7 +231,11 @@ class ChunkDownloader:
                  use_range: bool = True, request_context=None,
                  total_size=None, etag=None, last_modified=None,
                  limiter: Optional[SpeedLimiter] = None,
-                 unknown_size: bool = False):
+                 unknown_size: bool = False,
+                 retry_budget: Optional[RetryBudget] = None,
+                 retry_not_before: float = 0.0,
+                 clock=None,
+                 pre_start_hook: Optional[Callable] = None):
         """
         初始化分块下载器
         Args:
@@ -176,6 +276,15 @@ class ChunkDownloader:
         if self.unknown_size and (self.use_range or self.start_byte != 0
                                   or self.end_byte != -1 or self.total_size not in (0, None)):
             raise ValueError('未知大小模式只允许非Range单线程整流下载')
+
+        # 重试预算与跨轮 not-before：由引擎创建/传递，纯内部调度用。
+        self._clock = clock or time.monotonic
+        self.retry_budget = retry_budget
+        self.retry_not_before = float(retry_not_before or 0.0)
+        # 安全提交钩子：只在所有拒绝条件都已通过、即将发首个请求前调用。
+        # 降级单线程用它把旧块清理/进度重置推迟到真正开始整流时。
+        self._pre_start_hook = pre_start_hook
+        self._pending_reset = False
 
         self.downloaded_bytes = 0  # 已下载字节数
         self.is_paused = False  # 暂停标志
@@ -240,14 +349,32 @@ class ChunkDownloader:
             os.makedirs(temp_dir, exist_ok=True)
 
         expected_size = None if self.unknown_size else self.end_byte - self.start_byte + 1
-        # 重新下载和非Range请求都必须丢弃旧内容。
-        if os.path.exists(self.temp_file) and (not resume or not self.use_range):
-            with open(self.temp_file, 'wb'):
-                pass
-        self.downloaded_bytes = 0
+        # 被协调器停止（另一块 fatal）时不要先清空临时文件/字节：已完成块和
+        # 其他块的真实字节必须保留。先同步实际大小再退出。
+        if not self._wait_if_paused_or_cancelled():
+            self._sync_downloaded_from_temp()
+            return False
         self.last_error = None
         self._reported_bytes = 0
         self._reported_at = 0.0
+
+        # 重试门禁必须早于任何破坏性重置：拒绝启动时不能截断/清零现有断点。
+        # 降级单线程/重建下载器时也可能带着同一 run 的共享窗口与 not-before。
+        if self.retry_not_before > self._clock():
+            if not self._wait_for_retry_not_before():
+                self._sync_downloaded_from_temp()
+                return False
+        else:
+            blocked = self._retry_block_reason()
+            if blocked:
+                self.last_error = ChunkDownloadError(blocked, 'transient')
+                self._sync_downloaded_from_temp()
+                return False
+
+        # 重新下载和非Range请求都要丢弃旧内容，但截断必须推迟到“即将发请求”
+        # 的安全提交点：启动延迟/等待中暂停跨截止而被拒绝时，原 tmp 必须保留。
+        self._pending_reset = bool(os.path.exists(self.temp_file)
+                                   and (not resume or not self.use_range))
 
         attempts = max(1, int(self.retry_times or 1))
         for attempt in range(1, attempts + 1):
@@ -261,17 +388,18 @@ class ChunkDownloader:
             else:
                 self.downloaded_bytes = 0
 
-            # 超长临时文件不能当作完整分块；非Range重试也必须从头写入。
-            if ((expected_size is not None and self.downloaded_bytes > expected_size)
-                    or (not self.use_range and self.downloaded_bytes)):
-                with open(self.temp_file, 'wb'):
-                    pass
-                self.downloaded_bytes = 0
+            # 超长临时文件也只能在最终请求门禁通过后重置。等待/调度可能已经
+            # 跨过共享窗口，不能在此先截断，再以“已保留数据”的原因拒绝请求。
+            if expected_size is not None and self.downloaded_bytes > expected_size:
+                self._pending_reset = True
 
-            actual_start = self.start_byte + self.downloaded_bytes
+            actual_start = (self.start_byte if self._pending_reset
+                            else self.start_byte + self.downloaded_bytes)
 
             # 本地快捷成功只属于固定大小分块；未知大小哪怕有残片也必须真实发请求。
-            if expected_size is not None and self.downloaded_bytes == expected_size:
+            # 待重置的旧内容不能当成已完成分块。
+            if (not self._pending_reset and expected_size is not None
+                    and self.downloaded_bytes == expected_size):
                 self._report_progress(force=True)
                 return True
 
@@ -282,6 +410,10 @@ class ChunkDownloader:
                 return False
             except ChunkDownloadError as error:
                 self.last_error = error
+                if error.retry_not_before:
+                    self.retry_not_before = max(self.retry_not_before, error.retry_not_before)
+                if error.kind == 'transient':
+                    self._note_retry_budget()
                 detail = type(error).__name__ if self.request_context else error.message
                 logger.warning("分块%s下载失败（尝试%s/%s）: %s", self.chunk_id, attempt, attempts, detail)
                 if error.kind != 'transient' or attempt >= attempts:
@@ -292,23 +424,126 @@ class ChunkDownloader:
                 # 没归类的异常（连接重置、DNS 抖动等）按临时错误重试，别一次就判死
                 detail = type(error).__name__ if self.request_context else str(error)
                 self.last_error = ChunkDownloadError(detail, 'transient')
+                self._note_retry_budget()
                 logger.warning("分块%s下载异常（尝试%s/%s）: %s", self.chunk_id, attempt, attempts, detail)
                 if attempt >= attempts:
                     return False
                 if not self._wait_before_retry(attempt):
                     return False
 
-        return False
+    def _retry_block_reason(self) -> Optional[str]:
+        """共享重试窗口门禁：返回终止原因，None 表示可以自动重试。
 
-    def _wait_before_retry(self, attempt: int) -> bool:
-        """指数退避后重试；等待期间仍能响应暂停/取消"""
-        delay = min(RETRY_BACKOFF_MAX, RETRY_BACKOFF_BASE * (2 ** (attempt - 1)))
-        deadline = time.monotonic() + delay
-        while time.monotonic() < deadline:
+        只约束新自动请求的启动/等待，不是已发出响应的读取硬时限；
+        与 not-before 是否仍在未来无关：继承的窗口已过期也必须拒绝。
+        """
+        budget = self.retry_budget
+        if budget is None:
+            return None
+        deadline = budget.deadline
+        if deadline is None:
+            return None
+        if self.retry_not_before and self.retry_not_before >= deadline:
+            return RETRY_SERVER_WAIT_MESSAGE
+        if budget.expired():
+            return RETRY_BUDGET_MESSAGE
+        return None
+
+    def _wait_for_retry_not_before(self) -> bool:
+        """首次请求前等待尚未到期的绝对 not-before；预算不足则结束。"""
+        budget = self.retry_budget
+        deadline = budget.deadline if budget is not None else None
+        if deadline is not None and self.retry_not_before >= deadline:
+            self.last_error = ChunkDownloadError(RETRY_SERVER_WAIT_MESSAGE, 'transient')
+            return False
+        if deadline is not None and self._clock() >= deadline:
+            self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+            return False
+        while self._clock() < self.retry_not_before:
             if not self._wait_if_paused_or_cancelled():
                 return False
-            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+            if budget is not None and budget.expired():
+                self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+                return False
+            time.sleep(min(0.2, max(0.0, self.retry_not_before - self._clock())))
+        if budget is not None and budget.expired():
+            self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+            return False
         return self._wait_if_paused_or_cancelled()
+
+    def _note_retry_budget(self):
+        """第一次 transient 时启动共享窗口（同一 run 内不重置）。"""
+        budget = self.retry_budget
+        if budget is not None:
+            budget.note_transient()
+
+    def _sync_downloaded_from_temp(self):
+        """按临时文件真实大小同步字节；用于停止/取消时保留数据。"""
+        try:
+            self.downloaded_bytes = os.path.getsize(self.temp_file) if os.path.exists(self.temp_file) else 0
+        except OSError:
+            self.downloaded_bytes = 0
+
+    def _wait_before_retry(self, attempt: int) -> bool:
+        """指数退避与 Retry-After 取最大值（不相加）；等待期间可暂停/取消。"""
+        delay = min(RETRY_BACKOFF_MAX, RETRY_BACKOFF_BASE * (2 ** (attempt - 1)))
+        budget = self.retry_budget
+        deadline = budget.deadline if budget is not None else None
+        now = self._clock()
+        not_before = self.retry_not_before
+
+        # 服务端要求的等待已达到/超过窗口边界：不截短、不抢发，直接结束自动重试。
+        if deadline is not None and not_before >= deadline:
+            self.last_error = ChunkDownloadError(RETRY_SERVER_WAIT_MESSAGE, 'transient')
+            return False
+        if deadline is not None and now >= deadline:
+            self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+            return False
+
+        target = max(now + delay, not_before)
+        if deadline is not None and target >= deadline:
+            message = (RETRY_SERVER_WAIT_MESSAGE if not_before >= deadline
+                       else RETRY_BUDGET_MESSAGE)
+            self.last_error = ChunkDownloadError(message, 'transient')
+            return False
+
+        while self._clock() < target:
+            if not self._wait_if_paused_or_cancelled():
+                return False
+            if budget is not None and budget.expired():
+                self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+                return False
+            time.sleep(min(0.2, max(0.0, target - self._clock())))
+        if budget is not None and budget.expired():
+            self.last_error = ChunkDownloadError(RETRY_BUDGET_MESSAGE, 'transient')
+            return False
+        return self._wait_if_paused_or_cancelled()
+
+    def _http_error(self, response) -> ChunkDownloadError:
+        """普通响应与浏览器 HTTPError 共用状态分类，不保留敏感异常原文。"""
+        error = ChunkDownloadError(f'服务器返回 HTTP {response.status_code}',
+                                   classify_status(response.status_code))
+        if response.status_code in RETRY_AFTER_STATUS:
+            seconds = parse_retry_after(response.headers.get('Retry-After'))
+            if seconds is not None:
+                error.retry_not_before = self._clock() + seconds
+                logger.info('服务器要求等待 %.0f 秒: chunk=%s, task=%s, status=%s',
+                            seconds, self.chunk_id, self.task_id, response.status_code)
+        return error
+
+    @contextmanager
+    def _request_response(self, headers):
+        """保持浏览器安全请求路径，并接住它在 yield 前抛出的 HTTPError。"""
+        get = requests.get if self.request_context is None else lambda url, **kw: browser_get(url, self.request_context, **kw)
+        try:
+            with get(self.url, headers=headers, stream=True, timeout=self.timeout,
+                     proxies=self.proxies) as response:
+                yield response
+        except requests.HTTPError as error:
+            # Response 对 4xx/5xx 的 bool 为 False，不能用 if response 判断是否存在。
+            if error.response is None:
+                raise ChunkDownloadError('服务器请求失败', 'transient') from None
+            raise self._http_error(error.response) from None
 
     def _download_chunk(self, start: int) -> bool:
         """
@@ -323,7 +558,31 @@ class ChunkDownloader:
         # 艹，非Range请求不允许带历史偏移，必须从块起点重下，避免重复拼接
         if not self.use_range and start > self.start_byte:
             start = self.start_byte
-            self.downloaded_bytes = 0
+            self._pending_reset = True
+
+        # 艹，发请求前也要尊重暂停，不然会出现“明明暂停了还在重试打服务器”
+        if not self._wait_if_paused_or_cancelled():
+            return False
+
+        # 门禁紧邻实际新请求：等待跨过截止、暂停后调度延迟也在这里被拦住。
+        blocked = self._retry_block_reason()
+        if blocked:
+            self.last_error = ChunkDownloadError(blocked, 'transient')
+            raise self.last_error
+
+        # 安全提交点：至此所有拒绝条件都已通过，才允许删旧块/重置进度/截断 tmp。
+        # 钩子先执行（可能因为 run 已失效拒绝），只有它成功后才会截断本地文件。
+        if self._pending_reset or self._pre_start_hook is not None:
+            hook = self._pre_start_hook
+            if hook is not None:
+                hook()
+                self._pre_start_hook = None
+            if self._pending_reset:
+                with open(self.temp_file, 'wb'):
+                    pass
+                self.downloaded_bytes = 0
+                self._pending_reset = False
+                start = self.start_byte
 
         headers = {'User-Agent': self.user_agent, 'Accept-Encoding': 'identity'}
         if self.use_range:
@@ -335,26 +594,14 @@ class ChunkDownloader:
         elif self.last_modified:
             headers['If-Unmodified-Since'] = self.last_modified
 
-        # 艹，发请求前也要尊重暂停，不然会出现“明明暂停了还在重试打服务器”
-        if not self._wait_if_paused_or_cancelled():
-            return False
-
         # 发起请求
-        get = requests.get if self.request_context is None else lambda url, **kw: browser_get(url, self.request_context, **kw)
-        with get(
-            self.url,
-            headers=headers,
-            stream=True,
-            timeout=self.timeout,
-            proxies=self.proxies  # 代理支持
-        ) as response:
+        with self._request_response(headers) as response:
             expected_status = 206 if self.use_range else 200
             if response.status_code != expected_status:
                 if self.use_range and response.status_code == 200:
                     # 服务端不认 Range，多线程拿到的是整份文件，继续拼就是脏数据
                     raise ChunkDownloadError('服务器未按分块请求返回，无法多线程下载', 'protocol')
-                raise ChunkDownloadError(f'服务器返回 HTTP {response.status_code}',
-                                         classify_status(response.status_code))
+                raise self._http_error(response)
 
             if self.etag and response.headers.get('ETag', self.etag) != self.etag:
                 raise ChunkDownloadError('服务器文件版本已变化，请重新下载', 'fatal')

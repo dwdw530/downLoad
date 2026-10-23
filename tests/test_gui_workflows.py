@@ -387,6 +387,8 @@ class GuiFeatures(FeatureFixture):
         self.app._on_task_added(task_id)
         self.pump()
         total = len(PAYLOAD)
+        # 生产路径总是先落库再回调；这里同步模拟，避免用“库里还是 pending”的乱序事件。
+        self.db.update_task_status(task_id, 'downloading')
         self.app._on_task_status_changed(task_id, 'downloading', '')
         self.app._on_task_progress(task_id, 8192, total, 4096)
         self.pump()
@@ -394,6 +396,7 @@ class GuiFeatures(FeatureFixture):
         self.assertEqual(widgets['size_label'].cget('text'),
                          f"已下载 {format_size(8192)} / {format_size(total)}")
         self.assertEqual(widgets['eta_label'].cget('text'), '剩余 00:06')
+        self.db.update_task_status(task_id, 'paused')
         self.app._on_task_status_changed(task_id, 'paused', '')
         self.pump()
         self.assertEqual(widgets['eta_label'].cget('text'), '剩余 --')
@@ -487,6 +490,8 @@ class GuiFeatures(FeatureFixture):
         self.app._on_task_added(completed)
         self.app._on_task_added(pending)
         self.pump(0.3)
+        # 生产路径先落库再回调；这里同步模拟，避免用乱序事件验证旧行为
+        self.db.update_task_status(completed, 'completed')
         self.app._on_task_status_changed(completed, 'completed', '')
         self.pump(0.3)
         self.assertEqual(len(self.app.task_widgets), 2)
@@ -721,6 +726,7 @@ class TaskDetailWindowTests(GuiFeatures):
 
     def test_progress_feeds_history_and_detail_window(self):
         task_id = self._add_card()
+        self.db.update_task_status(task_id, 'downloading')
         with patch('downloader.ui.main_window.time.monotonic', return_value=100):
             self.app._update_task_status(task_id, 'downloading')
             self.app._update_task_progress(task_id, 100, 1000, 2048)
@@ -746,12 +752,15 @@ class TaskDetailWindowTests(GuiFeatures):
 
     def test_status_change_syncs_to_detail_window(self):
         task_id = self._add_card()
+        # 与生产顺序一致：先落库再回调（旧事件保护见 B03 专项用例）。
+        self.db.update_task_status(task_id, 'downloading')
         self.app._on_task_status_changed(task_id, 'downloading', '')
         self.pump(0.2)
         self.app._on_open_detail(task_id)
         self.pump(0.2)
         window = self.app._detail_windows[task_id]
         self.assertIn('下载中', window.stats_label.cget('text'))
+        self.db.update_task_status(task_id, 'paused')
         self.app._on_task_status_changed(task_id, 'paused', '')
         self.pump(0.2)
         self.assertIn('已暂停', window.stats_label.cget('text'))
@@ -759,6 +768,7 @@ class TaskDetailWindowTests(GuiFeatures):
 
     def test_delete_task_closes_detail_window_and_clears_history(self):
         task_id = self._add_card()
+        self.db.update_task_status(task_id, 'downloading')
         self.app._on_task_status_changed(task_id, 'downloading', '')
         self.app._on_task_progress(task_id, 100, 1000, 2048)
         self.pump(0.2)
@@ -1049,6 +1059,7 @@ class TransientUiTests(GuiFeatures):
 
     def test_retry_notice_shows_then_clears_when_bytes_flow(self):
         task_id = self._add_card('retry.bin')
+        self.db.update_task_status(task_id, 'downloading')
         label = self.app.task_widgets[task_id]['status_label']
         self.app._update_task_status(task_id, 'downloading', '正在重试 2 个分块（第 1 轮）')
         self.assertIn('正在重试 2 个分块', label.cget('text'))
@@ -1058,6 +1069,7 @@ class TransientUiTests(GuiFeatures):
 
     def test_ordinary_status_message_is_not_shown(self):
         task_id = self._add_card('plain.bin')
+        self.db.update_task_status(task_id, 'downloading')
         self.app._update_task_status(task_id, 'downloading', '开始下载')
         self.assertEqual('下载中', self.app.task_widgets[task_id]['status_label'].cget('text'))
 

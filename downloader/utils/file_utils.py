@@ -5,6 +5,7 @@
 """
 import errno
 import logging
+import math
 import re
 import os
 import shutil
@@ -83,6 +84,37 @@ FREE_SPACE_MARGIN_RATIO = 1.05
 FREE_SPACE_MARGIN_MAX_BYTES = 64 * 1024 * 1024
 
 
+def parse_byte_count(value):
+    """把字节值收敛成有效的非负整数；无效值返回 None。
+
+    老王说：'bad'、-0.5、NaN 这些都不能被 int() 截成 0 冒充空文件完成！
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if not math.isfinite(value) or value < 0 or not float(value).is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        # 只认纯十进制非负整数：拒绝 -1、+1、1.5、1e3、0x10、空白和拼接值
+        if not text or not text.isdigit():
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    try:
+        number = int(value)
+        if value != number:  # Decimal('-0.5') 等不能被截断成 0
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number >= 0 else None
+
+
 def format_size(size_bytes: int) -> str:
     """
     格式化文件大小
@@ -159,10 +191,19 @@ def format_progress_texts(downloaded_size: int, total_size: int, speed: float, s
     Returns:
         (大小文案, 剩余时间文案, 速度文案)
     """
-    total_text = format_size(total_size) if total_size > 0 else "未知"
-    size_text = f"已下载 {format_size(downloaded_size)} / {total_text}"
+    downloaded_count = parse_byte_count(downloaded_size)
+    total_count = parse_byte_count(total_size)
+    display_downloaded = downloaded_count if downloaded_count is not None else 0
+    total_text = format_size(total_count) if total_count is not None and total_count > 0 else "未知"
+    size_text = f"已下载 {format_size(display_downloaded)} / {total_text}"
+    # 真实空文件完成：0/0 是引擎确认的空文件，不能显示成“已下载 0 B / 未知”。
+    # 只有两个字节值都是有效非负整数且恰为 0 才认定；无效/矛盾值不冒充。
+    empty_completed = status == 'completed' and downloaded_count == 0 and total_count == 0
+    if empty_completed:
+        return '已完成 · 0 B', '剩余 --', format_speed(0)
     if status == 'downloading':
-        remaining = max(0, total_size - downloaded_size) if total_size > 0 else 0
+        remaining = (max(0, total_count - display_downloaded)
+                     if total_count is not None and total_count > 0 else 0)
         eta_text = f"剩余 {format_remaining(remaining, speed)}"
     else:
         eta_text = "剩余 --"

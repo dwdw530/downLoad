@@ -9,7 +9,8 @@ import customtkinter as ctk
 import tkinter as tk
 
 from downloader.ui.ctk_helpers import SafeToplevelMixin
-from downloader.utils.file_utils import format_progress_texts, format_speed
+from downloader.ui.task_presentation import describe_task_problem, format_task_progress
+from downloader.utils.file_utils import format_progress_texts, format_speed, parse_byte_count
 
 # 状态文案映射（任务卡片与详情窗共用，改这里两处一起变）
 STATUS_TEXT_MAP = {
@@ -36,6 +37,8 @@ GRID_COLOR = "#4a4a4a"
 TEXT_COLOR = "#9c9c9c"
 HIGHLIGHT_COLOR = "#c8c8c8"
 
+_UNSET = object()
+
 
 class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
     """
@@ -50,9 +53,12 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
 
         self.task_id = task['task_id']
         self._status = task.get('status') or 'pending'
-        self._downloaded = int(task.get('downloaded_size') or 0)
-        self._total = int(task.get('total_size') or 0)
+        # 字节值先过严格校验：无效值保持 None，不能先 int(...or 0) 再当成真实 0/0。
+        self._downloaded = parse_byte_count(task.get('downloaded_size'))
+        self._total = parse_byte_count(task.get('total_size'))
         self._speed = float(task.get('speed') or 0)
+        # 失败原因只作为识别输入；显示时一律走安全解释函数。
+        self._message = task.get('error_message') or ''
         # 直接引用主窗口的采样队列（只读），窗口关闭不影响主窗口继续记录
         self._history = history if history is not None else deque(maxlen=180)
         self._closed = False
@@ -90,27 +96,78 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
         self.percent_label = ctk.CTkLabel(progress_row, text="0%", width=60)
         self.percent_label.pack(side="left")
 
+        # 问题区域：安全原因 + 简短建议；没有问题时整块隐藏。
+        self.problem_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.problem_reason_label = ctk.CTkLabel(
+            self.problem_frame, text="", font=("Arial", 12, "bold"),
+            wraplength=520, anchor="w", justify="left")
+        self.problem_reason_label.pack(fill="x", padx=0, pady=(0, 2))
+        self.problem_advice_label = ctk.CTkLabel(
+            self.problem_frame, text="", font=("Arial", 12),
+            wraplength=520, anchor="w", justify="left")
+        self.problem_advice_label.pack(fill="x", padx=0)
+
         self.canvas = tk.Canvas(self, bg=CANVAS_BG, highlightthickness=0, height=260)
         self.canvas.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        self._refresh_problem()
 
     def update_progress(self, downloaded_size: int, total_size: int, speed: float):
         """主窗口进度事件推送（主线程调用）"""
         if self._closed or not self.winfo_exists():
             return
-        self._downloaded = int(downloaded_size or 0)
-        self._total = int(total_size or 0)
+        # 非下载/校验阶段不接受迟到进度：已完成/暂停/等待时 late 数据不得把
+        # 100/100 倒退成未知，也不得把 total 改成 0 冒充空文件。
+        if self._status not in ('downloading', 'verifying'):
+            return
+        new_downloaded = parse_byte_count(downloaded_size)
+        new_total = parse_byte_count(total_size)
+        if (new_downloaded is not None and self._downloaded is not None
+                and new_downloaded < self._downloaded):
+            return
+        self._downloaded = new_downloaded
+        self._total = new_total
         self._speed = float(speed or 0)
         self._refresh_stats()
         self._redraw()
 
-    def update_status(self, status: str):
-        """主窗口状态事件推送（暂停/完成后曲线自然冻结）"""
+    def update_status(self, status: str, message: str = None, downloaded_size=_UNSET,
+                      total_size=_UNSET, speed=None):
+        """主窗口状态事件推送（暂停/完成后曲线自然冻结）。
+
+        旧调用 update_status(status) 保持兼容；主窗口会额外推送权威字节值，
+        完成状态即使没有后续进度事件也能立即显示正确进度。
+        """
         if self._closed or not self.winfo_exists():
             return
         self._status = status
+        if message is not None:
+            self._message = message
+        elif status not in ('failed', 'verify_failed', 'paused'):
+            self._message = ''
+        # 未传参数才保留旧值；显式 None 是库内无效字节，必须清除旧的 0/0，
+        # 否则卡片显示未知、已打开的详情却会误报空文件完成。
+        if downloaded_size is not _UNSET:
+            self._downloaded = parse_byte_count(downloaded_size)
+        if total_size is not _UNSET:
+            self._total = parse_byte_count(total_size)
+        if speed is not None:
+            self._speed = float(speed or 0)
         if status != 'downloading':
             self._speed = 0.0
         self._refresh_stats()
+        self._refresh_problem()
+
+    def _refresh_problem(self):
+        """按当前状态和安全解释函数显示/隐藏问题区域。"""
+        reason, advice = describe_task_problem(self._status, self._message)
+        if reason or advice:
+            self.problem_reason_label.configure(text=reason)
+            self.problem_advice_label.configure(text=advice)
+            if not self.problem_frame.winfo_manager():
+                self.problem_frame.pack(fill="x", padx=14, pady=(0, 8),
+                                        before=self.canvas)
+        elif self.problem_frame.winfo_manager():
+            self.problem_frame.pack_forget()
 
     def _refresh_stats(self):
         """刷新统计文案与进度条"""
@@ -118,9 +175,10 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
             self._downloaded, self._total, self._speed, self._status)
         self.stats_label.configure(
             text=f"状态 {get_status_text(self._status)}    {size_text}    {eta_text}    {speed_text}")
-        progress = self._downloaded / self._total if self._total > 0 else 0
+        progress, percent_text = format_task_progress(
+            self._downloaded, self._total, self._status)
         self.progress_bar.set(progress)
-        self.percent_label.configure(text=f"{progress * 100:.1f}%")
+        self.percent_label.configure(text=percent_text)
 
     def _redraw(self):
         """按真实采样时间绘制曲线，不把进度回调次数当成秒数。"""

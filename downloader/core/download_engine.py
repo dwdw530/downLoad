@@ -15,7 +15,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional, Callable
-from downloader.core.chunk_downloader import ChunkDownloader, ChunkDownloadError, SpeedLimiter
+from downloader.core.chunk_downloader import (
+    ChunkDownloader, ChunkDownloadError, SpeedLimiter, RetryBudget,
+    RETRY_BUDGET_MESSAGE, RETRY_SERVER_WAIT_MESSAGE)
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
@@ -677,15 +679,21 @@ class DownloadEngine:
         # 多留一个工作线程给调度任务本身，否则分块并行度会少一路
         thread_pool = ThreadPoolExecutor(max_workers=max(1, int(task['thread_count'])) + 1)
         self.thread_pools[task_id] = thread_pool
+        # 同一 task run 的内外层共享重试窗口：第一次 transient 才启动，不按轮重置。
+        retry_budget = RetryBudget(CHUNK_RETRY_DEADLINE)
         threading.Thread(target=self._monitor_progress,
                          args=(task_id, task['total_size'], time.time(), run_id), daemon=True).start()
         # 不能用不受管理的 daemon 合并线程，否则暂停返回后它仍在写输出。
-        thread_pool.submit(self._run_chunk_rounds, task, chunks, resume, run_id, thread_pool)
+        thread_pool.submit(self._run_chunk_rounds, task, chunks, resume, run_id, thread_pool,
+                           retry_budget)
         return True
 
-    def _build_chunk_downloaders(self, task: dict, chunk_rows: list) -> list:
+    def _build_chunk_downloaders(self, task: dict, chunk_rows: list,
+                                 retry_budget: RetryBudget = None,
+                                 not_before: dict = None) -> list:
         """按分块行构建下载器；所有分块共享引擎级限速器（总量限速）"""
         task_id = task['task_id']
+        not_before = not_before or {}
         # 配置可能被设置页或外部直接改过，构建前对齐一次；值没变时 set_limit 是空操作
         self.speed_limiter.set_limit(self.config.speed_limit)
         downloaders = []
@@ -698,30 +706,35 @@ class DownloadEngine:
                 proxies=self.config.proxies, use_range=True, request_context=task.get('_request_context'),
                 total_size=task['total_size'], etag=task.get('resource_etag'),
                 last_modified=task.get('resource_last_modified'),
+                retry_budget=retry_budget,
+                retry_not_before=not_before.get(chunk['chunk_id'], 0.0),
             )
             downloader.set_progress_callback(
                 lambda chunk_id, size, tid=task_id: self._record_chunk_progress(tid, chunk_id, size))
             downloaders.append(downloader)
         return downloaders
 
-    def _run_chunk_rounds(self, task: dict, chunks: list, resume: bool, run_id: int, thread_pool):
+    def _run_chunk_rounds(self, task: dict, chunks: list, resume: bool, run_id: int, thread_pool,
+                          retry_budget: RetryBudget = None):
         """
         跑完所有分块，只重试失败的那几块。
 
-        失败分三类处理：
-        - protocol：服务端不守 Range，只能降级单线程（保留旧逻辑）
-        - fatal：403/404/ETag 变化，直接失败并保留已完成的分块
-        - transient：超时/断流/5xx，按轮次和总时长上限退避重试
+        失败优先级为 fatal > protocol > transient：
+        - fatal：403/404/ETag 变化，立即收敛同轮其他分块并失败，保留已完成分块和字节
+        - protocol：服务端不守 Range，降级单线程（fatal 同轮出现时不降级）
+        - transient：超时/断流/5xx/429，在共享重试窗口内退避重试，尊重 Retry-After
         """
         task_id = task['task_id']
         rows = {chunk['chunk_id']: chunk for chunk in chunks}
         pending = list(chunks)
-        deadline = time.monotonic() + CHUNK_RETRY_DEADLINE
         downloaders = []
+        not_before_map = {}
+        max_not_before = 0.0
 
         try:
             for round_index in range(CHUNK_RETRY_ROUNDS):
-                downloaders = self._build_chunk_downloaders(task, pending)
+                downloaders = self._build_chunk_downloaders(
+                    task, pending, retry_budget, not_before_map)
                 if not downloaders:
                     break
                 self.active_downloaders[task_id] = downloaders
@@ -730,6 +743,7 @@ class DownloadEngine:
                 futures = {thread_pool.submit(d.download, round_resume): d for d in downloaders}
 
                 failed = []
+                fatal_message = ''
                 for future in as_completed(futures):
                     if not self._can_finish(task_id, run_id):
                         return
@@ -744,8 +758,23 @@ class DownloadEngine:
                         return
                     self.db.update_chunk_progress(downloader.chunk_id, downloader.downloaded_bytes,
                                                   'completed' if success else 'failed')
+                    if downloader.retry_not_before:
+                        previous = not_before_map.get(downloader.chunk_id, 0.0)
+                        not_before_map[downloader.chunk_id] = max(previous, downloader.retry_not_before)
+                        max_not_before = max(max_not_before, downloader.retry_not_before)
                     if not success:
                         failed.append(downloader)
+                        if downloader.error_kind() == 'fatal' and not fatal_message:
+                            fatal_message = downloader.error_message() or '下载失败'
+                            # 只停同轮分块（复用 worker 停止标志），不把整条任务写成 cancelled；
+                            # as_completed 继续收敛其他 futures，保留它们真实已下载字节。
+                            for other in downloaders:
+                                other.cancel()
+
+                # fatal 优先：不补轮、不降级、不合并，已完成块和部分字节都保留
+                if fatal_message:
+                    self._fail_task(task_id, fatal_message)
+                    return
 
                 if not failed:
                     self._merge_and_finish(task_id, task['save_path'], chunks, run_id)
@@ -753,26 +782,51 @@ class DownloadEngine:
 
                 kinds = {downloader.error_kind() for downloader in failed}
                 if 'protocol' in kinds:
-                    if (not self._fallback_to_singlethread(task, run_id)
-                            and self._can_finish(task_id, run_id)):
+                    # 同 run 的降级也复用共享预算与仍有效的最大 not-before；
+                    # 拒绝启动必须在删除/清零旧块之前判定。
+                    blocked = self._retry_block_reason(retry_budget, max_not_before)
+                    if blocked:
+                        self._fail_task(task_id, blocked)
+                        return
+                    started = self._fallback_to_singlethread(
+                        task, run_id, retry_budget, max_not_before)
+                    if (not started and self._can_finish(task_id, run_id)
+                            and self._get_task_status(task_id) != 'failed'):
                         self._fail_task(task_id, '服务器不支持稳定的分块下载，单线程重试也失败了')
                     return
                 if 'transient' not in kinds:
-                    # 全是致命错误，再试也是浪费时间；已完成的分块和临时文件都保留
+                    # 没有可重试错误，再试也是浪费时间；已完成的分块和临时文件都保留
                     message = next((d.error_message() for d in failed if d.error_message()), '下载失败')
                     self._fail_task(task_id, message)
                     return
-                if round_index + 1 >= CHUNK_RETRY_ROUNDS or time.monotonic() >= deadline:
-                    self._fail_task(task_id, '部分分块下载失败，已完成的数据已保留，可稍后继续')
+                if round_index + 1 >= CHUNK_RETRY_ROUNDS:
+                    # 重试次数已用尽：说明自动重试结束，但不删除任何已有数据
+                    self._fail_task(task_id, RETRY_BUDGET_MESSAGE)
                     return
 
                 delay = CHUNK_RETRY_BACKOFF[min(round_index, len(CHUNK_RETRY_BACKOFF) - 1)]
+                now = time.monotonic()
+                # 外层退避与服务端 not-before 取最大值，不叠加；按绝对时间等待。
+                target = max(now + delay, max_not_before)
+                if retry_budget is not None:
+                    deadline = retry_budget.deadline
+                    if deadline is not None and (target >= deadline or retry_budget.expired(now)):
+                        message = (RETRY_SERVER_WAIT_MESSAGE if max_not_before >= deadline
+                                   else RETRY_BUDGET_MESSAGE)
+                        self._fail_task(task_id, message)
+                        return
+
                 logger.info('重试失败分块: task=%s, 轮次=%s, 数量=%s',
                             task_id, round_index + 1, len(failed))
                 if self.status_callback:
                     self.status_callback(task_id, 'downloading',
                                          f'正在重试 {len(failed)} 个分块（第 {round_index + 1} 轮）')
-                if not self._sleep_unless_stopped(task_id, run_id, delay):
+                if not self._sleep_until(task_id, run_id, target):
+                    return
+                # 等待跨过截止/暂停后的调度延迟：下一轮新请求前重新过门禁。
+                blocked = self._retry_block_reason(retry_budget, 0.0)
+                if blocked:
+                    self._fail_task(task_id, blocked)
                     return
                 # 只把失败的分块放回下一轮，已完成的一块都不重下
                 pending = [rows[d.chunk_id] for d in failed if d.chunk_id in rows]
@@ -796,45 +850,61 @@ class DownloadEngine:
         if self.status_callback:
             self.status_callback(task_id, 'failed', message)
 
+    def _retry_block_reason(self, retry_budget, retry_not_before: float = 0.0):
+        """coordination 层门禁：返回自动重试不能启动的原因，None 表示可以继续。
+
+        窗口由本 run 第一次 transient 开启；一旦过期，无论 not-before 是否还在未来、
+        是否还有剩余轮次，都不能再发新的自动请求。无 transient（无预算）时不拦截。
+        """
+        if retry_budget is None:
+            return None
+        deadline = retry_budget.deadline
+        if deadline is None:
+            return None
+        if retry_not_before and retry_not_before >= deadline:
+            return RETRY_SERVER_WAIT_MESSAGE
+        if retry_budget.expired():
+            return RETRY_BUDGET_MESSAGE
+        return None
+
     def _sleep_unless_stopped(self, task_id: str, run_id: int, delay: float) -> bool:
         """分段睡眠，期间一旦任务被暂停/取消就立刻返回 False"""
-        deadline = time.monotonic() + max(0.0, delay)
-        while time.monotonic() < deadline:
+        return self._sleep_until(task_id, run_id, time.monotonic() + max(0.0, delay))
+
+    def _sleep_until(self, task_id: str, run_id: int, target: float) -> bool:
+        """按单调时钟绝对时间分段等待；暂停/取消/退出立即返回 False。"""
+        while True:
             if not self._can_finish(task_id, run_id):
                 return False
-            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
-        return self._can_finish(task_id, run_id)
+            remaining = target - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(0.2, remaining))
 
-    def _fallback_to_singlethread(self, task: dict, run_id: int) -> bool:
+    def _fallback_to_singlethread(self, task: dict, run_id: int,
+                                  retry_budget: RetryBudget = None,
+                                  retry_not_before: float = 0.0) -> bool:
         """分块失败时自动降级到单线程重试"""
         task_id = task['task_id']
 
         if not self._is_current_task_run(task_id, run_id):
             return False
 
+        # 拒绝启动的判定必须先于任何删除/清零：失败时磁盘和数据要保持原样。
+        blocked = self._retry_block_reason(retry_budget, retry_not_before)
+        if blocked:
+            self._fail_task(task_id, blocked)
+            return False
+
         try:
             logger.warning("检测到分块下载失败，自动降级单线程重试: %s", task_id)
 
-            # 清理分块临时文件并重置分块状态，避免脏块影响后续重试
-            chunks = self.db.get_chunks(task_id)
-            for chunk in chunks:
-                temp_file = chunk.get('temp_file')
-                if temp_file and os.path.exists(temp_file):
-                    try:
-                        os.remove(temp_file)
-                    except Exception as e:
-                        logger.warning("删除分块临时文件失败: %s, %s", temp_file, e)
-                self.db.update_chunk_progress(chunk['chunk_id'], 0, 'pending')
-
-            # 降级后本任务不再走分块汇总，旧监控线程靠这张表退出
-            self.chunk_progress.pop(task_id, None)
-
-            # 切换任务为单线程模式，并把任务进度归零后重新开始
-            self.db.mark_task_singlethread(task_id)
-            self.db.update_task_progress(task_id, 0, 0)
-
+            # 只先切换单线程标记（不删块、不清进度）：让后续暂停/恢复走
+            # “复用现有下载器”的路径；真正的旧块清理推迟到整流启动的安全提交点。
             single_task = self.db.get_task(task_id)
             if not single_task:
+                return False
+            if not self.db.mark_task_singlethread(task_id):
                 return False
 
             if not self._is_current_task_run(task_id, run_id):
@@ -843,31 +913,79 @@ class DownloadEngine:
             if self.status_callback:
                 self.status_callback(task_id, 'downloading', '分块失败，已自动降级为单线程重试')
 
-            return self._start_singlethread_download(single_task, resume=False, run_id=run_id)
+            return self._start_singlethread_download(
+                single_task, resume=False, run_id=run_id,
+                retry_budget=retry_budget, retry_not_before=retry_not_before,
+                reset_on_start=True)
         except Exception as e:
             logger.error("自动降级单线程失败: %s", e)
             return False
 
-    def _start_singlethread_download(self, task: dict, resume: bool, run_id: int) -> bool:
-        """单线程下载（不支持分块的情况）"""
+    def _reset_chunks_for_singlethread(self, task_id: str):
+        """降级单线程的安全提交点：此时已确定要发首个非 Range 请求。
+
+        删除旧分块临时文件、重置分块与任务进度。拒绝启动时不得调用本方法。
+        """
+        chunks = self.db.get_chunks(task_id)
+        for chunk in chunks:
+            temp_file = chunk.get('temp_file')
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as e:
+                    logger.warning("删除分块临时文件失败: %s, %s", e)
+            self.db.update_chunk_progress(chunk['chunk_id'], 0, 'pending')
+        # 降级后本任务不再走分块汇总，旧监控线程靠这张表退出
+        self.chunk_progress.pop(task_id, None)
+        self.db.update_task_progress(task_id, 0, 0)
+
+    def _start_singlethread_download(self, task: dict, resume: bool, run_id: int,
+                                     retry_budget: RetryBudget = None,
+                                     retry_not_before: float = 0.0,
+                                     reset_on_start: bool = False) -> bool:
+        """单线程下载（不支持分块的情况）
+
+        reset_on_start：protocol 降级路径。旧块清理与进度重置不在启动前执行，
+        而是在 worker 通过全部门禁、即将发首个整流请求时由安全提交钩子执行；
+        所以启动延迟、等待中暂停跨截止而被拒绝时，旧块与原 tmp/进度都保留。
+        """
         task_id = task['task_id']
         temp_file = os.path.join(self.config.temp_dir, f"{task_id}.tmp")
 
+        # 创建下载器前先过同一共享窗口：拒绝启动时不刷新旧的临时进度。
+        blocked = self._retry_block_reason(retry_budget, retry_not_before)
+        if blocked:
+            self._fail_task(task_id, blocked)
+            return False
+
         # 未知大小模式：普通文件 + 无浏览器上下文 + 非 Range + 零哨兵才开启；
         # 其余单线程路径（含降级、有大小、浏览器任务）不进入新模式。
-        unknown_size = (task.get('download_type', 'file') == 'file'
+        unknown_size = (not reset_on_start
+                        and task.get('download_type', 'file') == 'file'
                         and not task.get('browser_context') and not task.get('_request_context')
                         and not task.get('support_range')
                         and int(task.get('thread_count') or 1) == 1
                         and int(task.get('total_size') or 0) == 0)
 
         # 艹，非Range服务端根本不支持断点续传，恢复必须从0重下，不能继续append脏数据
-        can_resume = bool(resume and task.get('support_range'))
+        can_resume = bool(resume and task.get('support_range') and not reset_on_start)
         # 艹，这里不提前删临时文件，避免旧线程尚未释放句柄导致WinError 32；
         # 真正重置在ChunkDownloader内部按非Range规则以wb模式执行。
 
+        def commit_singlethread_start():
+            """安全提交点：已通过全部门禁，确定要发首个整流请求。"""
+            if not self._is_current_task_run(task_id, run_id):
+                raise ChunkDownloadError('下载会话已停止，已保留下载数据', 'transient')
+            self._reset_chunks_for_singlethread(task_id)
+            progress_state['last_downloaded'] = 0
+            if self.progress_callback:
+                self.progress_callback(task_id, 0, task['total_size'], 0)
+
         # 创建单线程下载器
         self.speed_limiter.set_limit(self.config.speed_limit)
+        # 普通单线程使用自己的同类预算；降级路径传入同 run 的共享预算与 not-before。
+        if retry_budget is None:
+            retry_budget = RetryBudget(CHUNK_RETRY_DEADLINE)
         downloader = ChunkDownloader(
             chunk_id=0,
             task_id=task_id,
@@ -880,12 +998,15 @@ class DownloadEngine:
             user_agent=self.config.user_agent,
             limiter=self.speed_limiter,
             proxies=self.config.proxies,  # 代理支持
-            use_range=bool(task.get('support_range')),
+            use_range=(False if reset_on_start else bool(task.get('support_range'))),
             request_context=(task.get('_request_context') or
                              (unprotect(task['browser_context']) if task.get('browser_context') else None)),
             total_size=task['total_size'], etag=task.get('resource_etag'),
             last_modified=task.get('resource_last_modified'),
             unknown_size=unknown_size,
+            retry_budget=retry_budget,
+            retry_not_before=retry_not_before,
+            pre_start_hook=commit_singlethread_start if reset_on_start else None,
         )
 
         # 艹，单线程也得走实时进度链路，不然UI速度和进度全是死的
@@ -898,10 +1019,13 @@ class DownloadEngine:
         if can_resume and os.path.exists(temp_file):
             progress_state['last_downloaded'] = os.path.getsize(temp_file)
 
-        # 先把当前已下载量推给UI，断点续传时进度不会从0假装重新开始
-        self.db.update_task_progress(task_id, progress_state['last_downloaded'], 0)
-        if self.progress_callback:
-            self.progress_callback(task_id, progress_state['last_downloaded'], task['total_size'], 0)
+        # 先把当前已下载量推给UI，断点续传时进度不会从0假装重新开始。
+        # 降级路径必须等安全提交点再重置，所以这里不提前写库。
+        if not reset_on_start:
+            self.db.update_task_progress(task_id, progress_state['last_downloaded'], 0)
+            if self.progress_callback:
+                self.progress_callback(task_id, progress_state['last_downloaded'],
+                                       task['total_size'], 0)
 
         def on_single_progress(_chunk_id: int, downloaded_bytes: int):
             if not self._is_current_task_run(task_id, run_id):
@@ -950,9 +1074,9 @@ class DownloadEngine:
             except Exception as e:
                 if (self._is_current_task_run(task_id, run_id)
                         and not self._is_task_cancelled(task_id) and not self._is_task_paused(task_id)):
-                    self.db.update_task_status(task_id, 'failed', str(e))
-                    if self.status_callback:
-                        self.status_callback(task_id, 'failed', str(e))
+                    # 降级在门禁处拒绝启动时旧分块仍在，但失败后旧监控必须退出，
+                    # 否则它继续每秒写库/回调。复用公共失败收尾，不清除断点字节。
+                    self._fail_task(task_id, str(e))
             finally:
                 if self.active_downloaders.get(task_id) is downloaders_ref:
                     del self.active_downloaders[task_id]

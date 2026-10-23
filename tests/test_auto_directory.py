@@ -206,6 +206,10 @@ class AutoDirectoryEngineTests(unittest.TestCase):
         paths = [Path(self.db.get_task(task_id)['save_path']) for task_id in task_ids]
         self.assertEqual(len(set(paths)), 4)
         self.assertEqual({path.parent for path in paths}, {self.root / 'out' / '文档'})
+        # 本用例验证并发命名和精确字节，不验证队列抢跑：全部先暂停，避免首个
+        # 快任务完成时自动补位启动尚未手动启动的 pending，随后再次 start 返回 False。
+        for task_id in task_ids:
+            self.db.update_task_status(task_id, 'paused')
         for task_id in task_ids:
             self.assertTrue(self.manager.start_task(task_id))
         for task_id in task_ids:

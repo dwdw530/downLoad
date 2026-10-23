@@ -159,6 +159,116 @@ class BrowserFileDownloadTests(unittest.TestCase):
         self.assertIs(context['media'], False)
         self.assertIs(normalize_context(task['url'], context)['media'], False)
 
+    def _download_with_retry_response(self, status_code, retry_after='2', repeat=False):
+        """桥接到真实 browser_get；只对正式 GET 注入响应，探测始终正常。"""
+        formal = []
+        original = FileHandler.do_GET
+        suffix = '/private.pdf?sig=retry-fixture&part=1&part=2'
+        page = self.servers[0].page
+
+        def respond(handler):
+            if handler.path != suffix or handler.headers.get('Range') == 'bytes=0-0':
+                return original(handler)
+            headers = dict(handler.headers)
+            authorized = (handler.headers.get('Cookie') == 'session=file-fixture'
+                          and handler.headers.get('Referer') == page)
+            should_fail = repeat or not formal
+            formal.append({'at': time.monotonic(), 'headers': headers,
+                           'path': handler.path,
+                           'status': status_code if should_fail else 206})
+            if not authorized:
+                handler.send_error(403)
+                return
+            if should_fail:
+                handler.send_response(status_code)
+                handler.send_header('Retry-After', retry_after)
+                handler.send_header('Content-Length', '0')
+                handler.end_headers()
+                return
+            return original(handler)
+
+        return suffix, formal, patch.object(FileHandler, 'do_GET', respond)
+
+    def test_r13_browser_file_429_respects_wait_and_keeps_safe_context(self):
+        self.config.thread_count = 1
+        self.config.retry_times = 2
+        suffix, formal, response_patch = self._download_with_retry_response(429)
+        with response_patch:
+            task = self.completed(self.send(suffix))
+        self.assertEqual([request['status'] for request in formal], [429, 206])
+        interval = formal[1]['at'] - formal[0]['at']
+        self.assertGreaterEqual(interval, 1.9)
+        self.assertLess(interval, 2.9)
+        for request in formal:
+            self.assertEqual(request['path'], suffix)
+            self.assertEqual(request['headers']['Cookie'], 'session=file-fixture')
+            self.assertEqual(request['headers']['Referer'], self.servers[0].page)
+        self.assertNotIn('file-fixture', task['browser_context'])
+        self.assertIs(unprotect(task['browser_context'])['media'], False)
+
+    def test_r13_browser_file_503_respects_wait_across_chunk_rounds(self):
+        self.config.thread_count = 2
+        self.config.retry_times = 1
+        formal = []
+        original = FileHandler.do_GET
+
+        def respond(handler):
+            header = handler.headers.get('Range')
+            if (urlsplit(handler.path).path == '/private.pdf' and header != 'bytes=0-0'
+                    and header and header.startswith('bytes=0-')):
+                formal.append(time.monotonic())
+                if len(formal) == 1:
+                    handler.send_response(503)
+                    handler.send_header('Retry-After', '2')
+                    handler.send_header('Content-Length', '0')
+                    handler.end_headers()
+                    return
+            original(handler)
+
+        with patch.object(FileHandler, 'do_GET', respond):
+            task = self.completed(self.send('/private.pdf?sig=round-fixture'))
+        self.assertEqual(len(formal), 2)
+        self.assertGreaterEqual(formal[1] - formal[0], 1.9)
+        self.assertLess(formal[1] - formal[0], 2.9)
+        self.assertEqual(task['downloaded_size'], len(FILE_BYTES))
+
+    def test_r13_browser_fatal_403_is_not_retried_or_leaked(self):
+        self.config.thread_count = 1
+        self.config.retry_times = 3
+        suffix, formal, response_patch = self._download_with_retry_response(403, repeat=True)
+        with response_patch:
+            result = self.send(suffix)
+            self.assertTrue(result['ok'], result)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                task = self.db.get_task(result['task_id'])
+                if task['status'] == 'failed':
+                    break
+                time.sleep(0.02)
+        self.assertEqual(task['status'], 'failed')
+        self.assertEqual(len(formal), 1)
+        self.assertEqual(task['error_message'], '服务器返回 HTTP 403')
+        self.assertFalse(Path(task['save_path']).exists())
+        self.assertNotIn('retry-fixture', task['error_message'])
+
+    def test_r13_browser_long_wait_sends_no_second_request(self):
+        self.config.thread_count = 1
+        self.config.retry_times = 3
+        suffix, formal, response_patch = self._download_with_retry_response(503, '3600')
+        with response_patch:
+            result = self.send(suffix)
+            self.assertTrue(result['ok'], result)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                task = self.db.get_task(result['task_id'])
+                if task['status'] == 'failed':
+                    break
+                time.sleep(0.02)
+        self.assertEqual(task['status'], 'failed')
+        self.assertEqual(len(formal), 1)
+        self.assertIn('服务器要求等待时间超出', task['error_message'])
+        self.assertFalse(Path(task['save_path']).exists())
+
     def test_replay_and_simultaneous_replay_create_one_task(self):
         message = self.message()
         with ThreadPoolExecutor(max_workers=4) as pool:

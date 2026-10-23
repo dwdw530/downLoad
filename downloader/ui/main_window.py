@@ -16,10 +16,11 @@ from tkinter import messagebox, filedialog, PhotoImage, Menu
 from typing import Dict
 from downloader.core.task_manager import TaskManager
 from downloader.utils.file_utils import (format_speed, format_progress_texts, guess_file_category,
-                                        FILE_CATEGORY_LABELS)
+                                        FILE_CATEGORY_LABELS, parse_byte_count)
 from downloader.utils.url_utils import extract_clipboard_url, host_from_url, host_is_ignored
 from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
+from downloader.ui.task_presentation import describe_task_problem, format_task_progress
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT, scale_sidebar_font
@@ -372,8 +373,8 @@ class MainWindow(ctk.CTk):
         self._create_sidebar_heading("分类")
         self._create_sidebar_heading("状态")
         for key, text in (("all", "全部"), ("status:downloading", "下载中"),
-                          ("status:pending", "等待中"), ("status:completed", "已完成"),
-                          ("status:failed", "失败")):
+                          ("status:pending", "等待中"), ("status:paused", "已暂停"),
+                          ("status:completed", "已完成"), ("status:failed", "失败")):
             self._create_category_button(self.sidebar_frame, key, text)
 
         self._create_sidebar_heading("类型")
@@ -471,6 +472,8 @@ class MainWindow(ctk.CTk):
                 status_key = 'status:downloading'
             elif status == 'pending':
                 status_key = 'status:pending'
+            elif status == 'paused':
+                status_key = 'status:paused'
             elif status == 'completed':
                 status_key = 'status:completed'
             elif status in ('failed', 'verify_failed', 'cancelled'):
@@ -875,9 +878,16 @@ class MainWindow(ctk.CTk):
         status_label = ctk.CTkLabel(detail_frame, text=self._get_status_text(task['status']), width=80, anchor="w")
         status_label.pack(side="left", padx=5)
 
+        # 原因区域：独立一行，正常隐藏；不拼进固定宽度的状态标签
+        reason_label = ctk.CTkLabel(
+            task_frame, text="", font=("Arial", 12), anchor="w",
+            justify="left", wraplength=760)
+
         # 按钮区域
         button_frame = ctk.CTkFrame(task_frame, fg_color="transparent")
         button_frame.pack(fill="x", padx=10, pady=5)
+        reason_label.bind("<Configure>", lambda event, label=reason_label:
+                          label.configure(wraplength=max(160, event.width - 8)))
 
         # 操作按钮（统一走状态配置，避免初始化和回调逻辑打架）
         action_btn = ctk.CTkButton(button_frame, text="▶ 开始", width=80)
@@ -910,6 +920,8 @@ class MainWindow(ctk.CTk):
             'eta_label': eta_label,
             'speed_label': speed_label,
             'status_label': status_label,
+            'reason_label': reason_label,
+            'button_frame': button_frame,
             'action_btn': action_btn,
             'cancel_btn': cancel_btn,
             'delete_btn': delete_btn,
@@ -925,10 +937,22 @@ class MainWindow(ctk.CTk):
             'category': guess_file_category(task.get('filename') or ''),
             'host': host_from_url(task.get('url') or ''),
             'notice': '',
+            # 当前卡片展示的权威字节与原因缓存：状态事件/迟到事件用它保护终态。
+            # 无效字节保持 None，不能先归零后当成真实空文件完成。
+            'downloaded': parse_byte_count(task.get('downloaded_size')),
+            'total': parse_byte_count(task.get('total_size')),
+            'speed': float(task.get('speed') or 0),
+            'problem_message': task.get('error_message') or '',
+            'frozen': task.get('status') in ('completed', 'verify_failed', 'cancelled'),
             'visible': True,
         }
 
         self._refresh_task_controls(task_id)
+        # 首屏就用库里的字节值渲染，未知大小/空文件完成不等下一次进度事件
+        self._render_task_progress(
+            task_id, task.get('downloaded_size'), task.get('total_size'),
+            float(task.get('speed') or 0), push_detail=False)
+        self._apply_task_problem(task_id, task['status'], task.get('error_message') or '')
         self._apply_task_filter()
         self._refresh_sidebar()
 
@@ -958,6 +982,12 @@ class MainWindow(ctk.CTk):
             return
         # 卡片缓存的状态比库里新鲜（状态回调先改缓存），详情窗首屏用它
         task['status'] = widgets.get('status') or task.get('status')
+        # 详情首屏与卡片使用同一份权威字节/原因，不等新回调；
+        # 无效值以 None 传递，不能先归零后再显示“已完成 · 0 B”。
+        task['downloaded_size'] = widgets.get('downloaded')
+        task['total_size'] = widgets.get('total')
+        if widgets.get('problem_message'):
+            task['error_message'] = widgets.get('problem_message')
         history = self._speed_history.get(task_id)
         if history is None:
             history = deque(maxlen=180)
@@ -974,13 +1004,14 @@ class MainWindow(ctk.CTk):
         else:
             del self._detail_windows[task_id]
 
-    def _push_detail_status(self, task_id: str, status: str):
-        """把状态变更推给已打开的详情窗"""
+    def _push_detail_status(self, task_id: str, status: str, message: str = None,
+                            downloaded_size=None, total_size=None, speed=None):
+        """把状态变更（含权威字节与安全原因）推给已打开的详情窗"""
         window = self._detail_windows.get(task_id)
         if window is None:
             return
         if window.winfo_exists():
-            window.update_status(status)
+            window.update_status(status, message, downloaded_size, total_size, speed)
         else:
             del self._detail_windows[task_id]
 
@@ -1547,7 +1578,7 @@ class MainWindow(ctk.CTk):
                 self.after(50, self._drain_ui_events)
 
     def _update_task_status(self, task_id: str, status: str, message: str = None):
-        """更新任务状态UI"""
+        """更新任务状态UI（以库里的当前状态为准，迟到事件不能改回旧失败态）"""
         if task_id not in self.task_widgets:
             return
 
@@ -1558,25 +1589,104 @@ class MainWindow(ctk.CTk):
             widgets['filename'] = task['filename']
             widgets['category'] = guess_file_category(task['filename'])
             widgets['filename_label'].configure(text=task['filename'])
-        widgets['status'] = status
-        # 重试/降级属于临时提示：显示到状态标签上，一有真实速度就自动收回去
+
+        db_status = (task or {}).get('status')
+        # 数据库先于回调写状态（引擎/管理器所有路径均如此），所以库内状态是权威。
+        # 任何与库不一致的 UI 事件都是旧的：不得覆盖状态、不得解除冻结、
+        # 不得嫁接旧 notice 或原因。真正的新 run 会先把库改成 downloading，
+        # 此时事件与库一致，即时重试提示仍会显示。
+        stale_event = bool(db_status and status != db_status)
+        effective_status = db_status if stale_event else status
+        widgets['status'] = effective_status
+
+        db_message = (task or {}).get('error_message') or ''
+        if stale_event:
+            problem_message = db_message if effective_status in ('failed', 'verify_failed', 'paused') else ''
+        else:
+            problem_message = db_message
+            if effective_status in ('failed', 'verify_failed', 'paused'):
+                problem_message = problem_message or (message or '')
+
+        # 重试/降级属于临时提示：显示到状态标签上，一有真实速度就自动收回去。
+        # 旧事件不得把上一轮的提示嫁接到当前状态。
         notice = ''
-        if status == 'downloading' and message and ('重试' in message or '降级' in message):
+        if (not stale_event and effective_status == 'downloading' and message
+                and ('重试' in message or '降级' in message)):
             notice = message
         widgets['notice'] = notice
         widgets['status_label'].configure(
-            text=self._get_status_text(status) + (f" · {notice}" if notice else ""))
-        if status != 'downloading':
+            text=self._get_status_text(effective_status) + (f" · {notice}" if notice else ""))
+
+        widgets['frozen'] = effective_status in ('completed', 'verify_failed', 'cancelled')
+        widgets['problem_message'] = problem_message
+        self._apply_task_problem(task_id, effective_status, problem_message)
+
+        if effective_status != 'downloading':
+            widgets['speed'] = 0.0
             widgets['speed_label'].configure(text=format_speed(0))
             widgets['eta_label'].configure(text="剩余 --")
+
+        # 完成/校验/暂停等状态事件立即用库里的权威字节刷新，不等下一次进度事件。
+        # 原值直接交给共用展示函数；无效字节不先 int 归零，避免冒充 0/0。
+        if task:
+            downloaded = task.get('downloaded_size')
+            total = task.get('total_size')
+            speed = float(task.get('speed') or 0)
+        else:
+            downloaded = widgets.get('downloaded')
+            total = widgets.get('total')
+            speed = float(widgets.get('speed') or 0)
+        self._render_task_progress(task_id, downloaded, total, speed, push_detail=False)
+
         # 状态回调和批量期间的新卡片同样遵守忙碌状态，不能重新启用冲突操作。
         self._refresh_task_controls(task_id)
 
-        # 同步详情窗（暂停/完成后曲线自然冻结）
-        self._push_detail_status(task_id, status)
+        # 同步详情窗（原因、权威字节与终态一起更新，已打开窗口不留旧原因）
+        self._push_detail_status(task_id, effective_status, problem_message,
+                                 downloaded, total, speed)
 
         self._apply_task_filter()
         self._refresh_sidebar()
+
+    def _apply_task_problem(self, task_id: str, status: str, message: str):
+        """按安全解释函数显示/隐藏卡片原因行（最多两行，不重建控件）"""
+        widgets = self.task_widgets.get(task_id)
+        if widgets is None:
+            return
+        label = widgets.get('reason_label')
+        if label is None or not label.winfo_exists():
+            return
+        reason, _advice = describe_task_problem(status, message)
+        if reason:
+            text = reason if len(reason) <= 80 else reason[:79] + '…'
+            label.configure(text=f"原因：{text}")
+            if not label.winfo_manager():
+                label.pack(fill="x", padx=10, pady=(0, 5), before=widgets['button_frame'])
+        elif label.winfo_manager():
+            label.pack_forget()
+
+    def _render_task_progress(self, task_id: str, downloaded_size: int, total_size: int,
+                              speed: float, push_detail: bool = True):
+        """卡片与详情共用的进度渲染（进度条/百分比/大小/ETA/速度）"""
+        widgets = self.task_widgets.get(task_id)
+        if widgets is None:
+            return
+        progress, percent_text = format_task_progress(
+            downloaded_size, total_size, widgets.get('status'))
+        widgets['progress_bar'].set(progress)
+        widgets['progress_label'].configure(text=percent_text)
+
+        size_text, eta_text, speed_text = format_progress_texts(
+            downloaded_size, total_size, speed, widgets.get('status'))
+        widgets['size_label'].configure(text=size_text)
+        widgets['eta_label'].configure(text=eta_text)
+        widgets['speed_label'].configure(text=speed_text)
+        widgets['downloaded'] = parse_byte_count(downloaded_size)
+        widgets['total'] = parse_byte_count(total_size)
+        widgets['speed'] = float(speed or 0)
+
+        if push_detail:
+            self._push_detail_update(task_id, downloaded_size, total_size, speed)
 
     def _update_task_progress(self, task_id: str, downloaded_size: int, total_size: int, speed: float):
         """更新任务进度UI"""
@@ -1584,6 +1694,9 @@ class MainWindow(ctk.CTk):
             return
 
         widgets = self.task_widgets[task_id]
+        # 终态已经按权威字节冻结，迟到的下载进度不能把完成/校验失败卡片倒退成未知。
+        if widgets.get('frozen'):
+            return
 
         # 数据又开始流动了，把“正在重试”这种临时提示收回成正常状态
         if widgets.get('notice') and float(speed or 0) > 0:
@@ -1605,22 +1718,8 @@ class MainWindow(ctk.CTk):
             while history and history[0][0] < second - 180:
                 history.popleft()
 
-        # 更新进度条
-        progress = downloaded_size / total_size if total_size > 0 else 0
-        widgets['progress_bar'].set(progress)
-
-        # 更新百分比
-        widgets['progress_label'].configure(text=f"{progress * 100:.1f}%")
-
-        # 已下载/总大小 + 剩余时间 + 速度：文案生成与详情窗共用一套逻辑
-        size_text, eta_text, speed_text = format_progress_texts(
-            downloaded_size, total_size, speed, widgets.get('status'))
-        widgets['speed_label'].configure(text=speed_text)
-        widgets['size_label'].configure(text=size_text)
-        widgets['eta_label'].configure(text=eta_text)
-
-        # 同步详情窗
-        self._push_detail_update(task_id, downloaded_size, total_size, speed)
+        # 用类方法调用：该方法也可在无 Tk 的轻量测试夹里以绑定方法验收。
+        MainWindow._render_task_progress(self, task_id, downloaded_size, total_size, speed)
 
     def _flash_status(self, text: str, seconds: float = 3.0):
         """状态栏闪一条临时提示，不弹窗：到点自动恢复常规统计"""
