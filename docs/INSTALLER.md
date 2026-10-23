@@ -65,6 +65,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 原生 EXE 三组与本轮打包版专项通过，503 实际等待 2.031 秒、未知大小/空文件进度/暂停分类正确、403 正式 GET 1 次、降级拒绝保留 1024 B。
 - 安装包七组通过，报告 `output/installer-smoke/run-mfcqh_np/result.json`：中文向导、自选中文空格路径、28 项白名单载荷、安装后真实下载、占用保护、覆盖升级/卸载/重装保留数据及原浏览器注册恢复。
 - 完整源码 628 项（831.203 秒）及扩展 43 项通过；29 个运行源码与原用户 data/断点/output 指纹保持，没有把用户数据装入发布包。物理混合 DPI 和公开站点长期下载未重新验收。
+- 已于 **2026-10-23 09:22:04 +08:00** 正式发布 v0.12.0（Release id 421357817）；源码发布提交 `f117124`、main/master 与新 annotated 标签已推送，五附件 size/SHA256 一致，latest 正确，18 个历史 Release 保留。三个二进制/ZIP 公开链接 HTTP 200/长度和两个校验文本实际 GET 字节已核验。
 
 ## 2026-10-22 v0.11.1 构建与验收
 

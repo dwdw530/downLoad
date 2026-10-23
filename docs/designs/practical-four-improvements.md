@@ -3,7 +3,7 @@
 - 日期：2026-10-22（Asia/Shanghai）。
 - 项目：`D:/vscode_workspace/downLoad_project`，daw 下载器。
 - 调研基线：工作区 v0.11.1，HEAD `b4ea6ad7098dee538415c8b36475cfda41b27aec`；设计开始时 Git 工作区干净。实施前重新核对，不为对齐基线回退代码。
-- 当前状态：**2026-10-23 Codex 接手残余修复，源码与原 dist/EXE/安装包验收通过，正在完成 v0.12.0 GitHub 发布核验。**完整 Python/真实 Tk 628 项、扩展 43 项、原生 EXE 三组、本轮打包版专项与安装包七组通过；前两轮“未通过”记录保留为历史。
+- 当前状态：**已完成：2026-10-23 v0.12.0 已正式交付原 dist、安装包、便携 ZIP 与 GitHub。**完整 Python/真实 Tk 628 项、扩展 43 项、原生 EXE 三组、本轮打包版专项与安装包七组通过，五附件远端 SHA256/大小和公开下载核验完成；前两轮“未通过”记录保留为历史。
 - 实施提示词：`D:/vscode_workspace/downLoad_project/docs/prompts/pi-practical-four-improvements.md`。
 - 历史功能入口：`D:/vscode_workspace/downLoad_project/docs/context-sessions/20251214-1555-老王下载器功能分析.md`。
 - 分工历史：最初 Codex 设计、Pi 编码，Codex 独立审查。2026-10-23 用户明确 Pi 无法继续，改由 Codex 直接检查、修复并验证；随后明确授权原 dist/EXE/安装包、提交推送与 GitHub 发布。**不保存或同步长期记忆，不自动启动代理。**
@@ -549,7 +549,10 @@ R13 受限浏览器上下文 429/503、F09 深浅主题与混合 DPI 人工验�
 - EXE 原三组（日志 `j-f2e4ra`）与新增 `scripts/smoke_practical_release.py` 专项通过（`j-vm95n2`，报告 `C:/Users/lenovo/AppData/Local/Temp/daw-practical-exe-5p694dqd/result.json`）。实际截图已检查安全原因/详情、暂停分类、未知大小 `--` 与空文件满条；浏览器 503 请求间隔 2.031 秒，403 仅 1 次 GET，降级拒绝保留 1024 B/旧块。
 - 安装包 155,842,150 B / `bd463628b8b2ea970bf1f8af0f53fa594e217ffdd609a00b00c0772139dacecb`；七组安装验收通过，报告 `output/installer-smoke/run-mfcqh_np/result.json`，原浏览器注册恢复。
 - 构建/安装/专项前后用户 data/断点/output 的 170 个既存文件与 29 个运行源码指纹未变。新专项前两次仅因坐标/双击目标夹具失败，修正已观察的点击位置后通过，产品与安装包未为此重建。
-- 当前尚待 ZIP/附件、Git 推送、Release 创建与公开下载核验；物理双屏混合 DPI 和公开站点长期下载未重新验收。不写长期记忆。
+- 便携 ZIP：213,924,285 B / `be348b40f731e22b2c0d1779d80ecfddb7b9c8143fdbb5105c98e11beebb5048`，27 项白名单载荷、CRC 与逐项字节通过；扩展 ZIP：30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`，13 项，与上一版内容一致。安装包、两个 ZIP 与两个校验文件共五附件，远端大小/digest/state 均一致。
+- 发布提交 `f11712438013745f2f57eca7fcc3df4c45c5369b`、main/master 和新 annotated 标签 v0.12.0 已原子推送，标签保持指向该发布提交；Release id `421357817` 于 **2026-10-23 09:22:04 +08:00** 正式公开，latest 指向 v0.12.0，18 个历史 Release 的发布时间与附件元数据未变。证据 `output/releases/v0.12.0/verification-remote.json`。
+- 五个公开附件已核验：安装包/便携 ZIP/扩展 ZIP 的公开链接返回 HTTP 200、Content-Length 与本地相符；两个校验文本实际 GET 字节一致。大型二进制未重复完整下载，完整性另据官方远端 SHA256 digest。草稿阶段缓存的 untagged URL 在公开后失效，重新读取已发布附件 URL 再核验，未误判为发布失败。证据 `output/releases/v0.12.0/verification-public-downloads.json`。
+- 本功能 **已完成正式交付**，原 dist 与 GitHub 下载均包含本轮改进；物理双屏混合 DPI 和公开站点长期下载仍未重新验收。未写或同步长期记忆。
 
 ## 10. 外部协议依据
 
