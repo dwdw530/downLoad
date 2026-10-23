@@ -399,4 +399,4 @@ pip install customtkinter
 
 MIT License
 
-**用得爽就给个Star！用得不爽就提Issue！老王我虚心接受批评！** 😤
+**用得爽就给个Star！用得不爽就提Issue！** 😤
