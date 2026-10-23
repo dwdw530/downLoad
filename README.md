@@ -1,6 +1,6 @@
 # daw下载器 (PyDownloader)
 
-一个类似IDM的多线程下载器，支持断点续传、队列管理等功能。
+多线程下载器，支持断点续传、队列管理等功能。
 
 > **仅支持 64 位 Windows。** 程序依赖 Windows 的 DPAPI 加密、Chrome 原生消息注册表和 NSIS 安装包，代码中没有跨平台分支；在 Linux/macOS 上需要自行改造才能运行。
 
