@@ -408,7 +408,7 @@ class SafetyGuiTests(FeatureFixture):
     def tearDown(self):
         try:
             for timer in self.app.tk.call('after', 'info'):
-                self.app.after_cancel(timer)
+                self.app.tk.call('after', 'cancel', timer)
             self.app._exit_app()
         finally:
             self.stack.close()

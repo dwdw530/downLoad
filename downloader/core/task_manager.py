@@ -59,6 +59,7 @@ class TaskManager:
         # 回调函数
         self.task_added_callback: Optional[Callable] = None
         self.task_status_changed_callback: Optional[Callable] = None
+        self.task_started_callback: Optional[Callable] = None
 
         # 艹，程序重启后必须先把遗留downloading纠偏成paused，不然僵尸任务会把队列拖死
         self._recover_stale_downloading_tasks()
@@ -145,6 +146,10 @@ class TaskManager:
     def set_task_status_changed_callback(self, callback: Callable):
         """设置任务状态变更回调"""
         self.task_status_changed_callback = callback
+
+    def set_task_started_callback(self, callback: Callable):
+        """通知实际接纳的启动/排队；即使瞬间完成也不会漏掉本轮参与者。"""
+        self.task_started_callback = callback
 
     @contextmanager
     def _adding_task(self):
@@ -257,12 +262,15 @@ class TaskManager:
                     or task_id in self._running_tasks):
                 return False
             self._activity_generation += 1
+            generation = self._activity_generation
             if len(self._running_tasks) >= self.max_concurrent:
                 queued = self.db.update_task_status(task_id, 'pending', '等待可用下载槽位')
             else:
                 queued = None
                 self._running_tasks.add(task_id)
 
+        if self.task_started_callback:
+            self.task_started_callback(task_id, generation)
         if queued is not None:
             if queued and self.task_status_changed_callback:
                 self.task_status_changed_callback(task_id, 'pending', '等待可用下载槽位')
@@ -656,6 +664,26 @@ class TaskManager:
     def get_total_speed(self) -> float:
         """下载中任务的速度合计（状态栏总速度）"""
         return self.db.get_total_speed()
+
+    def begin_idle_shutdown(self, expected_generation, completed_ids):
+        """原子完成最后复核并关闭入口；不持锁运行 Tk 或清理线程。"""
+        with self._lock:
+            if (self._shutdown_started or self._activity_generation != expected_generation
+                    or self._adding_tasks or self._running_tasks or self._batch_operations):
+                return False
+            try:
+                tasks = {task['task_id']: task for task in self.db.get_all_tasks()}
+                if (not completed_ids or any(tasks.get(task_id, {}).get('status') != 'completed'
+                                            for task_id in completed_ids)
+                        or any(task.get('status') in ('pending', 'downloading', 'verifying')
+                               for task in tasks.values())):
+                    return False
+            except Exception as error:
+                logger.warning('自动退出最终复核失败，保留程序运行: %s', error)
+                return False
+            self._shutdown_started = True
+            self._scheduling_paused = True
+        return True
 
     def shutdown(self):
         """

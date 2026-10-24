@@ -4,6 +4,7 @@
 老王说：配置文件就该简单明了，别搞那些花里胡哨的！
 """
 import json
+import math
 import logging
 import os
 import sys
@@ -14,6 +15,19 @@ from downloader.utils.url_utils import normalize_host
 
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_opacity(value, minimum=60):
+    """不透明度统一使用整数百分比；损坏值不能让窗口消失。"""
+    if isinstance(value, bool):
+        return 100
+    try:
+        number = float(value)
+        if not math.isfinite(number):
+            return 100
+        return max(minimum, min(100, math.floor(number + 0.5)))
+    except (TypeError, ValueError, OverflowError):
+        return 100
 
 
 def get_app_root() -> str:
@@ -53,6 +67,8 @@ class ConfigManager:
         "ui_hide_completed": False,  # 任务列表是否隐藏已完成任务（搜索词不持久化）
         "ui_active_category": "all",  # 左侧分类树当前选中项：all / status:xxx / type:xxx / host:xxx
         "ui_appearance_mode": "dark",  # 主题：dark 深色 / light 浅色 / system 跟随系统
+        "ui_window_opacity": 100,
+        "ui_float_bar_opacity": 100,
         "ui_float_bar_enabled": False,  # 桌面悬浮条：默认关闭，不打扰存量用户
         "ui_float_bar_mode": "normal",  # 悬浮条样式：normal 完整 / mini 迷你（只显示速度与进度）
         "ui_float_bar_pos": [],  # 悬浮条上次位置（物理像素 [x, y]，空表示首次放在右下角）
@@ -62,6 +78,7 @@ class ConfigManager:
             "open_file": False,  # 打开文件
             "open_folder": False,  # 打开所在文件夹
             "shutdown": False,  # 全部任务完成后关机
+            "exit_app": False,  # 本轮全部成功后正常退出（与关机互斥）
         },
     }
 
@@ -262,6 +279,22 @@ class ConfigManager:
     # ==================== 桌面悬浮条 ====================
 
     @property
+    def ui_window_opacity(self) -> int:
+        return normalize_opacity(self.get('ui_window_opacity', 100), 60)
+
+    @ui_window_opacity.setter
+    def ui_window_opacity(self, value):
+        self.set('ui_window_opacity', normalize_opacity(value, 60))
+
+    @property
+    def ui_float_bar_opacity(self) -> int:
+        return normalize_opacity(self.get('ui_float_bar_opacity', 100), 30)
+
+    @ui_float_bar_opacity.setter
+    def ui_float_bar_opacity(self, value):
+        self.set('ui_float_bar_opacity', normalize_opacity(value, 30))
+
+    @property
     def ui_float_bar_enabled(self) -> bool:
         """桌面悬浮条是否显示"""
         return bool(self._config.get("ui_float_bar_enabled", False))
@@ -331,17 +364,23 @@ class ConfigManager:
     @property
     def after_download(self) -> dict:
         """下载完成后动作，老配置缺字段时补默认值，别让键不存在炸掉回调"""
-        cfg = self._config.get("after_download") or {}
-        return {key: bool(cfg.get(key, False))
-                for key in ("open_file", "open_folder", "shutdown")}
+        cfg = self._config.get("after_download")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        actions = {key: bool(cfg.get(key, False))
+                   for key in ("open_file", "open_folder", "shutdown", "exit_app")}
+        if actions['exit_app']:
+            actions['shutdown'] = False
+        return actions
 
     @after_download.setter
     def after_download(self, value: dict):
-        cfg = value or {}
+        cfg = value if isinstance(value, dict) else {}
         self._config["after_download"] = {
             key: bool(cfg.get(key, False))
-            for key in ("open_file", "open_folder", "shutdown")
+            for key in ("open_file", "open_folder", "shutdown", "exit_app")
         }
+        if self._config['after_download']['exit_app']:
+            self._config['after_download']['shutdown'] = False
 
     # ==================== 代理配置 ====================
 

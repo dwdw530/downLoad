@@ -49,7 +49,7 @@ class GuiFeatures(FeatureFixture):
     def tearDown(self):
         try:
             for timer in self.app.tk.call('after', 'info'):
-                self.app.after_cancel(timer)
+                self.app.tk.call('after', 'cancel', timer)
             self.app._exit_app()
         finally:
             for item in reversed(self.patches):
@@ -300,12 +300,12 @@ class GuiFeatures(FeatureFixture):
     def test_settings_persist_after_download_actions(self):
         def fill(dialog):
             dialog.after_open_file_var.set(True)
-            dialog.after_shutdown_var.set(True)
+            dialog.completion_action_segment.set('关闭电脑')
             dialog._on_save()
         self.dialog_action(self.app._on_settings, SettingsDialog, fill)
         reloaded = ConfigManager(self.config.config_path)
         self.assertEqual(reloaded.after_download,
-                         {'open_file': True, 'open_folder': False, 'shutdown': True})
+                         {'open_file': True, 'open_folder': False, 'shutdown': True, 'exit_app': False})
 
     def test_completion_actions_stay_off_until_enabled(self):
         # 不需要真实下载：动作开关关闭时，完成回调就应该什么都不做
@@ -315,7 +315,7 @@ class GuiFeatures(FeatureFixture):
         self.app._on_task_status_changed(task_id, 'completed', '')
         self.pump(0.3)
         self.assertEqual(self.config.after_download,
-                         {'open_file': False, 'open_folder': False, 'shutdown': False})
+                         {'open_file': False, 'open_folder': False, 'shutdown': False, 'exit_app': False})
         with patch('downloader.ui.main_window.os.startfile') as startfile, \
                 patch('downloader.ui.main_window.subprocess.Popen') as popen:
             self.app._on_task_status_changed(task_id, 'completed', '')
@@ -350,6 +350,7 @@ class GuiFeatures(FeatureFixture):
 
     def test_shutdown_waits_for_the_last_active_task(self):
         task_id = self.create('/tiny')
+        self.db.update_task_status(task_id, 'completed')
         self.app._on_task_added(task_id)
         self.pump()
         self.config.after_download = {'shutdown': True}

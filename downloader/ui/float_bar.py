@@ -22,6 +22,7 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
 from downloader.utils.file_utils import format_remaining, format_speed
+from downloader.utils.config import normalize_opacity
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def _curve_points(samples, left, right, top, bottom):
     return points
 
 
-def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
+def render_bar(*, mode, theme, state, samples, hovered, scale=1.0, opacity=100):
     """把整条悬浮卡片画成 RGBA 图（4 倍超采样后降采样）
 
     Args:
@@ -180,6 +181,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
         samples: [(秒, 速度)] 速度曲线采样
         hovered: 鼠标是否悬停（描边变亮）
         scale: DPI 缩放
+        opacity: 30–100 的背景不透明度，前景保持不透明
     Returns:
         PIL.Image（RGBA，物理像素尺寸）
     """
@@ -189,6 +191,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
     width = max(1, round(base_w * scale))
     height = max(1, round(base_h * scale))
     ss = SUPERSAMPLE
+    background_alpha = round(normalize_opacity(opacity, 30) * 255 / 100)
 
     def u(value):
         """逻辑像素 -> 超采样画布坐标"""
@@ -213,7 +216,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
     if mini:
         radius = MINI_CARD_RADIUS
         draw.rounded_rectangle([u(1), u(1), u(base_w - 1), u(base_h - 1)], radius=u(radius),
-                               fill=_rgb(theme['card']), outline=_rgb(border_color),
+                               fill=_rgb(theme['card'], background_alpha), outline=_rgb(border_color, background_alpha),
                                width=max(1, u(1)))
         center_y = base_h / 2 - 2
         dot_r = 2.6
@@ -223,7 +226,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
         bar_left, bar_right = MINI_CARD_RADIUS, base_w - MINI_CARD_RADIUS
         bar_top, bar_bottom = base_h - 4, base_h - 2
         draw.rounded_rectangle([u(bar_left), u(bar_top), u(bar_right), u(bar_bottom)],
-                               radius=u(1), fill=_rgb(theme['track']))
+                               radius=u(1), fill=_rgb(theme['track'], background_alpha))
         if status != 'idle' and progress > 0:
             filled = min(bar_right, bar_left + max(4, (bar_right - bar_left) * progress))
             draw.rounded_rectangle([u(bar_left), u(bar_top), u(filled), u(bar_bottom)],
@@ -255,11 +258,8 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
     # ---------- 完整模式 ----------
     radius = CARD_RADIUS
     draw.rounded_rectangle([u(1), u(1), u(base_w - 1), u(base_h - 1)], radius=u(radius),
-                           fill=_rgb(theme['card']), outline=_rgb(border_color),
+                           fill=_rgb(theme['card'], background_alpha), outline=_rgb(border_color, background_alpha),
                            width=max(1, u(1)))
-    # 内圈细高光，给一点点玻璃质感
-    draw.rounded_rectangle([u(3), u(3), u(base_w - 3), u(base_h - 3)], radius=u(radius - 2),
-                           outline=_rgb(theme['highlight']), width=max(1, u(1)))
 
     # 顶部：状态点 + 标题 + 任务数
     center_y = 19
@@ -293,17 +293,15 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
          fill=theme['accent'] if status != 'idle' else theme['faint'],
          font_obj=percent_font, anchor='rm')
 
-    # 进度条：轨道 + 主色 + 顶部高光
+    # 进度条：克制的背景轨道与单层主色，前景不随背景变淡
     bar_left, bar_right = PAD, base_w - PAD
     bar_top, bar_bottom = 64, 70
     draw.rounded_rectangle([u(bar_left), u(bar_top), u(bar_right), u(bar_bottom)],
-                           radius=u(3), fill=_rgb(theme['track']))
+                           radius=u(3), fill=_rgb(theme['track'], background_alpha))
     if status != 'idle' and progress > 0:
         filled = min(bar_right, bar_left + max(7, (bar_right - bar_left) * progress))
         draw.rounded_rectangle([u(bar_left), u(bar_top), u(filled), u(bar_bottom)],
                                radius=u(3), fill=_rgb(theme['accent']))
-        draw.rounded_rectangle([u(bar_left), u(bar_top), u(filled), u(bar_top + 2)],
-                               radius=u(1), fill=_rgb(theme['accent_dim']))
 
     # 文件名 + 剩余时间
     eta_text = ''
@@ -312,7 +310,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
         eta_text = '剩余 ' + format_remaining(remaining, state['speed'])
     eta_width = _text_width(meta_font, eta_text) / (scale * ss)
     name_max = (bar_right - bar_left) - eta_width - 12
-    label_font = font(11, bold=True)
+    label_font = font(11)
     name_text = _ellipsize(label_font, state.get('filename') or '',
                            max(0, name_max) * scale * ss)
     if status == 'idle':
@@ -329,7 +327,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
     if curve is None:
         thickness = max(1, u(1))
         draw.rounded_rectangle([u(PAD), u(base_h - 9) - thickness, u(base_w - PAD), u(base_h - 9)],
-                               radius=thickness / 2, fill=_rgb(theme['track']))
+                               radius=thickness / 2, fill=_rgb(theme['track'], background_alpha))
     else:
         left, right = u(PAD), u(base_w - PAD)
         bottom = u(base_h - 9)
@@ -337,15 +335,11 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0):
         overlay = Image.new('RGBA', canvas_image.size, (0, 0, 0, 0))
         ImageDraw.Draw(overlay).polygon(
             [(area[i], area[i + 1]) for i in range(0, len(area), 2)],
-            fill=_rgb(theme['accent'], 56))
+            fill=_rgb(theme['accent'], round(24 * background_alpha / 255)))
         canvas_image = Image.alpha_composite(canvas_image, overlay)
         draw = ImageDraw.Draw(canvas_image)
         points = [(curve[i], curve[i + 1]) for i in range(0, len(curve), 2)]
-        draw.line(points, fill=_rgb(theme['accent']), width=max(1, u(2)), joint='curve')
-        end_radius = max(2, u(2.5))
-        draw.ellipse([points[-1][0] - end_radius, points[-1][1] - end_radius,
-                      points[-1][0] + end_radius, points[-1][1] + end_radius],
-                     fill=_rgb(theme['accent']), outline=_rgb(theme['card']))
+        draw.line(points, fill=_rgb(theme['accent']), width=max(1, u(1)), joint='curve')
 
     return canvas_image.resize((width, height), Image.LANCZOS)
 
@@ -379,6 +373,11 @@ class _BitmapInfo(ctypes.Structure):
     _fields_ = [('bmiHeader', _BitmapInfoHeader), ('bmiColors', ctypes.c_uint32 * 3)]
 
 
+def premultiplied_bgra(image):
+    """Windows AC_SRC_ALPHA 要求预乘；不能再转回普通 RGBA。"""
+    return image.convert('RGBA').convert('RGBa').tobytes('raw', 'BGRa')
+
+
 class LayeredSurface:
     """把 RGBA 图推成窗口像素。
 
@@ -394,6 +393,28 @@ class LayeredSurface:
             self._user32 = ctypes.windll.user32
             self._gdi32 = ctypes.windll.gdi32
             self.available = os.name == 'nt'
+            # 64 位句柄不能用 ctypes 默认的 32 位 int 返回类型。
+            self._user32.GetDC.restype = wintypes.HDC
+            self._user32.GetDC.argtypes = [wintypes.HWND]
+            self._user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+            self._user32.GetAncestor.restype = wintypes.HWND
+            self._user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            self._user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            self._user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+            self._gdi32.CreateCompatibleDC.restype = wintypes.HDC
+            self._gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+            self._gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+            self._gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.POINTER(_BitmapInfo),
+                                                   wintypes.UINT, ctypes.POINTER(ctypes.c_void_p),
+                                                   wintypes.HANDLE, wintypes.DWORD]
+            self._gdi32.SelectObject.restype = wintypes.HANDLE
+            self._gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+            self._gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+            self._gdi32.DeleteDC.argtypes = [wintypes.HDC]
+            self._user32.UpdateLayeredWindow.argtypes = [wintypes.HWND, wintypes.HDC,
+                ctypes.POINTER(wintypes.POINT), ctypes.POINTER(wintypes.SIZE), wintypes.HDC,
+                ctypes.POINTER(wintypes.POINT), wintypes.COLORREF,
+                ctypes.POINTER(_BlendFunction), wintypes.DWORD]
         except Exception:  # pragma: no cover - 非 Windows 环境
             self.available = False
 
@@ -419,12 +440,15 @@ class LayeredSurface:
             if image.mode != 'RGBA':
                 image = image.convert('RGBA')
             width, height = image.size
-            premultiplied = image.convert('RGBa').convert('RGBA')
-            raw = premultiplied.tobytes('raw', 'BGRA')
+            raw = premultiplied_bgra(image)
 
             screen = self._user32.GetDC(None)
+            if not screen:
+                raise OSError('GetDC failed')
             mem = self._gdi32.CreateCompatibleDC(screen)
             try:
+                if not mem:
+                    raise OSError('CreateCompatibleDC failed')
                 info = _BitmapInfo()
                 info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
                 info.bmiHeader.biWidth = width
@@ -435,18 +459,27 @@ class LayeredSurface:
                 bits = ctypes.c_void_p()
                 bitmap = self._gdi32.CreateDIBSection(mem, ctypes.byref(info), 0,
                                                       ctypes.byref(bits), None, 0)
-                if not bitmap:
-                    return False
+                if not bitmap or not bits.value:
+                    raise OSError('CreateDIBSection failed')
+                previous = None
                 try:
                     ctypes.memmove(bits, raw, len(raw))
-                    self._gdi32.SelectObject(mem, bitmap)
+                    previous = self._gdi32.SelectObject(mem, bitmap)
+                    if not previous or previous == ctypes.c_void_p(-1).value:
+                        previous = None
+                        raise OSError('SelectObject failed')
                     blend = _BlendFunction(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
                     size = wintypes.SIZE(width, height)
                     source = wintypes.POINT(0, 0)
-                    return bool(self._user32.UpdateLayeredWindow(
+                    success = bool(self._user32.UpdateLayeredWindow(
                         hwnd, screen, None, ctypes.byref(size), mem,
                         ctypes.byref(source), 0, ctypes.byref(blend), ULW_ALPHA))
+                    if not success:
+                        raise OSError('UpdateLayeredWindow failed')
+                    return True
                 finally:
+                    if previous:
+                        self._gdi32.SelectObject(mem, previous)
                     self._gdi32.DeleteObject(bitmap)
             finally:
                 self._gdi32.DeleteDC(mem)
@@ -546,6 +579,8 @@ class FloatBar:
         self._dragging = False
         self._samples = deque()  # (单调秒, 总速度)
         self._image = None       # 当前帧（RGBA），调试与测试可读
+        self._opacity = normalize_opacity(config.get('ui_float_bar_opacity', 100), 30)
+        self._last_push_succeeded = False
         self._state = {
             'speed': 0.0, 'downloaded': 0, 'total': 0,
             'filename': '', 'downloading': 0, 'pending': 0,
@@ -910,6 +945,11 @@ class FloatBar:
         """当前任务进度（0~1）"""
         return bar_progress(self._state)
 
+    def set_opacity(self, value):
+        """仅更新像素背景，预览不写配置、不改变显示开关。"""
+        self._opacity = normalize_opacity(value, 30)
+        self._draw()
+
     def _draw(self):
         """重画当前帧并推到窗口上"""
         if self._destroyed:
@@ -917,7 +957,7 @@ class FloatBar:
         try:
             image = render_bar(mode=self._mode, theme=self._theme, state=self._state,
                                samples=list(self._samples), hovered=self._hovered,
-                               scale=self._scale)
+                               scale=self._scale, opacity=self._opacity)
         except Exception as error:
             # 画不出来也不能让悬浮条把主程序拖崩
             logger.warning('悬浮条绘制失败: %s', error)
@@ -925,4 +965,4 @@ class FloatBar:
         self._image = image
         hwnd = getattr(self, '_hwnd', None)
         if hwnd:
-            self._surface.push(hwnd, image)
+            self._last_push_succeeded = self._surface.push(hwnd, image)

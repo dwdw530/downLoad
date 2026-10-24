@@ -359,7 +359,7 @@ class PracticalGuiTests(unittest.TestCase):
     def tearDown(self):
         try:
             for timer in self.app.tk.call('after', 'info'):
-                self.app.after_cancel(timer)
+                self.app.tk.call('after', 'cancel', timer)
             self.app._exit_app()
         finally:
             for item in reversed(self.patches):
@@ -739,6 +739,11 @@ class PracticalGuiTests(unittest.TestCase):
                     self.app.geometry(geometry)
                     width, height = map(int, geometry.split('x'))
                     window_scale = ctk.ScalingTracker.get_window_scaling(self.app)
+                    # 150% 会与系统 DPI 叠加。请求超过当前屏幕时 Windows 会夹取，
+                    # 用可容纳的视口验证布局，保留下面全部像素和控件边界断言。
+                    width = min(width, int((self.app.winfo_screenwidth() - 80) / window_scale))
+                    height = min(height, int((self.app.winfo_screenheight() - 80) / window_scale))
+                    self.app.geometry(f'{width}x{height}')
                     target = (round(width * window_scale), round(height * window_scale))
                     deadline = time.monotonic() + 3
                     while time.monotonic() < deadline:
@@ -773,20 +778,33 @@ class ProblemLayoutTests(unittest.TestCase):
     def test_f09_dark_light_and_resizing_at_100_and_150_percent(self):
         root = Path(__file__).resolve().parents[1]
         code = (
+            "import faulthandler; faulthandler.dump_traceback_later(20); "
             "from test_practical_improvements import PracticalGuiTests; "
             "import sys, customtkinter as ctk; "
             "ctk.set_widget_scaling(float(sys.argv[1])); "
             "ctk.set_window_scaling(float(sys.argv[1])); "
+            # 父 Tk 用例可能仍持有延迟渲染的系统剪贴板；父线程等待子进程时，
+            # 子 Tk 的 clipboard_get 会等父线程 WM_RENDERFORMAT 而死锁。
+            # 布局检查不涉及剪贴板，隔离这项外部依赖，真实剪贴板测试仍照旧。
+            "from unittest.mock import patch; "
+            "clipboard_patch = patch('downloader.ui.main_window.MainWindow.clipboard_get', return_value=''); "
+            "clipboard_patch.start(); "
             "PracticalGuiTests.setUpClass(); "
             "case = PracticalGuiTests('test_failed_reason_card_detail_and_clear_on_new_status'); "
             "case.setUp()\n"
             "try: case.check_problem_layout(float(sys.argv[1]))\n"
-            "finally: case.tearDown(); PracticalGuiTests.tearDownClass()")
+            "finally: case.tearDown(); PracticalGuiTests.tearDownClass(); clipboard_patch.stop(); faulthandler.cancel_dump_traceback_later()")
         for scaling in (1.0, 1.5):
             with self.subTest(scaling=scaling):
-                result = subprocess.run(
-                    [sys.executable, '-B', '-c', code, str(scaling)], cwd=root,
-                    capture_output=True, text=True, encoding='utf-8', timeout=30,
-                    env=dict(os.environ, PYTHONIOENCODING='utf-8',
-                             PYTHONPATH=os.pathsep.join((str(root), str(root / 'tests')))))
+                try:
+                    result = subprocess.run(
+                        [sys.executable, '-B', '-c', code, str(scaling)], cwd=root,
+                        capture_output=True, text=True, encoding='utf-8', timeout=30,
+                        env=dict(os.environ, PYTHONIOENCODING='utf-8',
+                                 PYTHONPATH=os.pathsep.join((str(root), str(root / 'tests')))))
+                except subprocess.TimeoutExpired as error:
+                    diagnostic = error.stderr or b''
+                    if isinstance(diagnostic, bytes):
+                        diagnostic = diagnostic.decode('utf-8', errors='replace')
+                    self.fail(f'布局子进程仍受 30 秒限制；超时堆栈：\n{diagnostic}')
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

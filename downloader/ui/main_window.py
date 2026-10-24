@@ -24,6 +24,7 @@ from downloader.ui.task_presentation import describe_task_problem, format_task_p
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT, scale_sidebar_font
+from downloader.utils.config import normalize_opacity
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,14 @@ class MainWindow(ctk.CTk):
         self._selected_task_ids = set()  # 多选集合：仅内存，重启清空
         self._batch_busy = False  # 一批多选操作执行期间禁用再次提交、勾选与全局操作
         self._exiting = False
+        self._exit_enabled = False
+        self._completion_action_value = 'none'
+        self._exit_revision = 0
+        self._exit_round_ids = set()
+        self._exit_consumed_generation = -1
+        self._exit_snapshot = None
+        self._exit_dialog = None
+        self._exit_dialog_open = False
         self._status_flash = None  # (文本, 截止时间) 状态栏临时提示：如“设置已保存”
         self._last_status_stats = ({'total': 0, 'downloading': 0, 'pending': 0, 'paused': 0,
                                     'completed': 0, 'failed': 0, 'cancelled': 0}, 0.0)
@@ -113,10 +122,13 @@ class MainWindow(ctk.CTk):
         # 设置任务管理器回调
         self.task_manager.set_task_added_callback(self._on_task_added)
         self.task_manager.set_task_status_changed_callback(self._on_task_status_changed)
+        self.task_manager.set_task_started_callback(self._on_task_started)
         self.task_manager.engine.set_progress_callback(self._on_task_progress)
 
         # 加载现有任务
         self._load_existing_tasks()
+        self._sync_exit_action()
+        self.attributes('-alpha', self.task_manager.engine.config.ui_window_opacity / 100)
 
         # 崩溃/强杀残留的分块临时文件：启动后清一次，不阻塞窗口显示
         self.after(0, self._sweep_orphan_temp)
@@ -222,6 +234,17 @@ class MainWindow(ctk.CTk):
     def _exit_app(self):
         """退出程序（停止下载并释放资源）"""
         self._exiting = True
+        # 根窗口销毁前撤掉本解释器的定时器；否则延迟 Tcl 脚本会引用已删命令。
+        try:
+            for job in self.tk.call('after', 'info'):
+                # 只取消脚本，不从错误的 widget 删除子窗口拥有的 Tcl 命令。
+                # 各 widget.destroy 会按注册所有权删除命令。
+                self.tk.call('after', 'cancel', job)
+        except tkinter.TclError:
+            pass
+        if getattr(self, '_exit_dialog', None) is not None:
+            self._exit_dialog.destroy()
+            self._exit_dialog = None
         try:
             if hasattr(self, 'browser_bridge'):
                 self.browser_bridge.close()
@@ -704,6 +727,8 @@ class MainWindow(ctk.CTk):
 
     def _on_settings_saved(self, settings: Dict):
         """设置保存回调（让运行时配置立即生效）"""
+        # 在延迟重绘前记下动作变更，关掉再开启不能复活旧退出确认。
+        self._sync_exit_action()
 
         def apply_runtime_settings():
             # 回调在 settings_dialog destroy 之前触发，如果这里直接碰主窗口控件，
@@ -717,6 +742,10 @@ class MainWindow(ctk.CTk):
     def _apply_saved_settings(self, settings: Dict):
         """应用设置保存后的运行时同步（在设置框销毁后执行）"""
         config = self.task_manager.engine.config
+        if self._exiting:
+            return
+        self._sync_exit_action()
+        self._preview_opacity(config.ui_window_opacity, config.ui_float_bar_opacity)
 
         # 配置对象这里再显式刷一次，避免后续维护把保存顺序改崩了
         if 'download_dir' in settings:
@@ -764,12 +793,26 @@ class MainWindow(ctk.CTk):
         # 悬浮条样式（完整/迷你）也随设置即时切换
         if getattr(self, 'float_bar', None) is not None:
             self.float_bar.set_mode(config.ui_float_bar_mode, persist=False)
+            self.float_bar.set_opacity(config.ui_float_bar_opacity)
         self._flash_status("设置已保存")
         if self._active_category != config.ui_active_category:
             self._active_category = config.ui_active_category
             for key in list(self.category_buttons):
                 self._set_category_selected(key, key == self._active_category)
         self._apply_task_filter()
+
+    def _preview_opacity(self, window, floating):
+        """仅预览窗口；独立弹窗与关闭的悬浮条不受影响。"""
+        if self._exiting:
+            return
+        try:
+            if self.winfo_exists():
+                self.attributes('-alpha', normalize_opacity(window, 60) / 100)
+            bar = getattr(self, 'float_bar', None)
+            if bar is not None and not bar._destroyed:
+                bar.set_opacity(floating)
+        except tkinter.TclError:
+            logger.debug('窗口已销毁，跳过透明度回退')
 
     def _on_history(self):
         """打开下载历史对话框"""
@@ -1479,7 +1522,7 @@ class MainWindow(ctk.CTk):
             return
 
         task = self.task_manager.get_task(task_id)
-        if not task:
+        if not task or task.get('status') != 'completed':
             return
 
         save_path = task.get('save_path') or ''
@@ -1497,6 +1540,96 @@ class MainWindow(ctk.CTk):
             self._shutdown_pending = True
             self._schedule_shutdown_if_idle()
 
+    def _sync_exit_action(self):
+        actions = self.task_manager.engine.config.after_download
+        action = 'exit_app' if actions['exit_app'] else 'shutdown' if actions['shutdown'] else 'none'
+        enabled = action == 'exit_app'
+        if action == self._completion_action_value:
+            return
+        self._completion_action_value = action
+        self._exit_enabled = enabled
+        self._exit_revision += 1
+        self._exit_round_ids.clear()
+        self._exit_snapshot = None
+        generation = self.task_manager.get_activity_state()[0]
+        # 开启前的排队事件不属于新轮次；当前仍活跃的任务由下面的快照纳入。
+        self._exit_consumed_generation = generation
+        if enabled:
+            self._exit_round_ids.update(task['task_id'] for task in self.task_manager.get_all_tasks()
+                                        if task.get('status') in ('pending', 'downloading', 'verifying'))
+
+    def _on_task_started(self, task_id, generation):
+        # worker 只入队，不操作 Tk。管理器在正式 GET 前通知，瞬时失败也不漏计。
+        self._ui_events.put((self._track_exit_task, (task_id, generation)))
+
+    def _track_exit_task(self, task_id, generation):
+        self._sync_exit_action()
+        if self._exit_enabled and generation > self._exit_consumed_generation:
+            self._exit_round_ids.add(task_id)
+
+    def _consume_exit_round(self, generation):
+        self._exit_round_ids.clear()
+        self._exit_consumed_generation = generation
+
+    def _check_completion_exit(self):
+        """事件排空后收尾本轮；历史失败不加入，已参与后失败/删除不能漏掉。"""
+        try:
+            self._sync_exit_action()
+            if not self._exit_enabled or self._exiting or not self._exit_round_ids:
+                return
+            generation, busy = self.task_manager.get_activity_state()
+            tasks = {task['task_id']: task for task in self.task_manager.get_all_tasks()}
+            if (busy or self._batch_busy or self._batch_add_pending or not self._ui_events.empty()
+                    or any(task.get('status') in ('pending', 'downloading', 'verifying')
+                           for task in tasks.values())):
+                return
+            if any(tasks.get(task_id, {}).get('status') != 'completed' for task_id in self._exit_round_ids):
+                self._consume_exit_round(generation)
+                return
+            if self._exit_dialog_open or self._shutdown_dialog_open or self.grab_current() is not None:
+                return
+            self._exit_snapshot = (frozenset(self._exit_round_ids), generation, self._exit_revision)
+            self._consume_exit_round(generation)
+            self._exit_dialog_open = True
+            self._exit_dialog = ExitConfirmDialog(self, on_exit=self._perform_completion_exit,
+                                                 can_exit=self._exit_still_valid,
+                                                 on_close=self._exit_confirmation_closed)
+        except Exception as error:
+            # 查库失败不能按“空队列”处理，更不能误关窗口。
+            logger.warning('完成后退出检查暂不可用: %s', error)
+            if self._exit_dialog is None or not self._exit_dialog.winfo_exists():
+                self._exit_dialog_open = False
+
+    def _exit_confirmation_closed(self):
+        self._exit_dialog_open = False
+
+    def _exit_still_valid(self):
+        try:
+            self._sync_exit_action()
+            if self._exiting or not self._exit_enabled or self._exit_snapshot is None:
+                return False
+            grab = self.grab_current()
+            if grab is not None and not isinstance(grab, ExitConfirmDialog):
+                return False
+            ids, generation, revision = self._exit_snapshot
+            if (revision != self._exit_revision or generation != self.task_manager.get_activity_state()[0]
+                    or not self._ui_events.empty() or self._has_active_tasks()):
+                return False
+            return all((self.task_manager.get_task(task_id) or {}).get('status') == 'completed'
+                       for task_id in ids)
+        except Exception as error:
+            logger.warning('退出确认已取消，最终状态不可读取: %s', error)
+            return False
+
+    def _perform_completion_exit(self):
+        if not self._exit_still_valid():
+            return
+        ids, generation, revision = self._exit_snapshot
+        if not self.task_manager.begin_idle_shutdown(generation, ids):
+            logger.info('最后检查期间任务有变化，取消自动退出')
+            return
+        self._exit_app()
+
     def _has_active_tasks(self) -> bool:
         """是否还有在跑的任务（下载中/等待/校验中）"""
         return (self._batch_busy or self._batch_add_pending > 0 or self.task_manager.get_activity_state()[1] or any(
@@ -1512,6 +1645,8 @@ class MainWindow(ctk.CTk):
         self._shutdown_dialog_open = True
         self._shutdown_pending = False
         self._shutdown_activity = self.task_manager.get_activity_state()[0]
+        self._sync_exit_action()
+        self._shutdown_revision = self._exit_revision
         try:
             dialog = ShutdownConfirmDialog(self, on_shutdown=self._perform_shutdown,
                                            can_shutdown=self._shutdown_still_valid)
@@ -1523,6 +1658,8 @@ class MainWindow(ctk.CTk):
     def _shutdown_still_valid(self):
         """新增、重试任务或关闭设置都使旧倒计时失效，即使新任务已经很快完成。"""
         return (self.task_manager.engine.config.after_download['shutdown']
+                and (not hasattr(self, '_shutdown_revision')
+                     or self._shutdown_revision == self._exit_revision)
                 and self._shutdown_activity == self.task_manager.get_activity_state()[0]
                 and not self._has_active_tasks())
 
@@ -1545,6 +1682,8 @@ class MainWindow(ctk.CTk):
         """任务添加回调"""
         task = self.task_manager.get_task(task_id)
         if task:
+            if task.get('status') == 'pending':
+                self._on_task_started(task_id, self.task_manager.get_activity_state()[0])
             self._ui_events.put((self._add_task_widget, (task,)))
 
     def _on_task_status_changed(self, task_id: str, status: str, message: str):
@@ -1574,6 +1713,8 @@ class MainWindow(ctk.CTk):
         except Empty:
             pass
         finally:
+            if not self._exiting:
+                self._check_completion_exit()
             if not self._exiting:
                 self.after(50, self._drain_ui_events)
 
@@ -2036,13 +2177,16 @@ class ShutdownConfirmDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
     DEFAULT_COUNTDOWN = 60
 
-    def __init__(self, parent, on_shutdown=None, countdown: int = DEFAULT_COUNTDOWN, can_shutdown=None):
+    def __init__(self, parent, on_shutdown=None, countdown: int = DEFAULT_COUNTDOWN, can_shutdown=None,
+                 action='shutdown', on_close=None):
         super().__init__(parent)
 
         self._on_shutdown = on_shutdown
         self._can_shutdown = can_shutdown or (lambda: True)
         self._remaining = max(0, int(countdown))
         self._tick_id = None
+        self._action_text = '退出下载器' if action == 'exit_app' else '关机'
+        self._on_close_callback = on_close
 
         self.title("下载完成")
         self.geometry("360x150")
@@ -2058,14 +2202,14 @@ class ShutdownConfirmDialog(SafeToplevelMixin, ctk.CTkToplevel):
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.pack(pady=10)
 
-        ctk.CTkButton(button_frame, text="立即关机", width=100, command=self._shutdown_now).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text=f"立即{self._action_text}", width=100, command=self._shutdown_now).pack(side="left", padx=5)
         ctk.CTkButton(button_frame, text="取消", width=100, command=self.destroy).pack(side="left", padx=5)
 
         self._center(parent)
         self._tick()
 
     def _countdown_text(self) -> str:
-        return f"{self._remaining} 秒后自动关机"
+        return f"{self._remaining} 秒后自动{self._action_text}"
 
     def _center(self, parent):
         try:
@@ -2098,12 +2242,24 @@ class ShutdownConfirmDialog(SafeToplevelMixin, ctk.CTkToplevel):
                 pass
             self._tick_id = None
         super().destroy()
+        callback = self._on_close_callback
+        self._on_close_callback = None
+        if callback:
+            callback()
 
     def _shutdown_now(self):
         allowed = self._can_shutdown()
         self.destroy()
         if allowed and self._on_shutdown:
             self._on_shutdown()
+
+
+class ExitConfirmDialog(ShutdownConfirmDialog):
+    """完成后正常退出：10 秒倒计时与立即退出共用最后复核。"""
+
+    def __init__(self, parent, on_exit=None, countdown=10, can_exit=None, on_close=None):
+        super().__init__(parent, on_shutdown=on_exit, countdown=countdown,
+                         can_shutdown=can_exit, action='exit_app', on_close=on_close)
 
 
 class DeleteTaskDialog(SafeToplevelMixin, ctk.CTkToplevel):

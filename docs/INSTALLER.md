@@ -2,13 +2,13 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.12.0/daw-downloader-v0.12.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.12.0/daw-downloader-v0.12.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.12.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-downloader-v0.13.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-downloader-v0.13.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.13.0)
 
-本版增加卡片/详情安全失败原因、已暂停分类，修正未知/空文件进度与 429/503 的 Retry-After，拒绝重试前保留断点；其他字体、边距及全局缩放不变。多选批量、默认关闭且手动目录优先的自动分目录、配置原子保存、后台任务操作、续传、限速与非覆盖保存保持。扩展 **0.6.2** 内容不变：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.12.0/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.12.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
+本版增加主窗口/悬浮条不透明度、悬浮条精修与完成后正常退出；安全失败原因、已暂停分类、未知/空文件进度与 429/503 的 Retry-After 保持。扩展 **0.6.2** 内容不变：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.13.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.12.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.13.0-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -25,7 +25,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.12.0 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.13.0 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -33,10 +33,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.12.0
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.13.0
 ```
 
-输出为 `dist/daw-downloader-v0.12.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 复用构建器默认版本 v0.12.0；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.13.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 复用构建器默认版本 v0.13.0；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -49,7 +49,7 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 在尚未安装本安装版的 Windows 测试用户下运行：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.12.0-windows-x64-setup.exe
+conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.13.0-windows-x64-setup.exe
 ```
 
 脚本操作真实中文安装向导，选择包含中文和空格的隔离路径，验证文件、快捷方式、注册表卸载入口和浏览器连接。随后直接通过安装后的 BrowserBridge 冷启动安装后的 EXE，复用现有带测试授权信息的视频下载、字节一致性、去重、单实例及正常退出检查；再验证文件占用拦截、覆盖升级、卸载保留数据、重装及浏览器注册归属。已有安装版或同名快捷方式时拒绝测试，结束后恢复原浏览器注册。
@@ -57,6 +57,12 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 验收输出保存在 `output/installer-smoke/`，包含安装路径页截图、完成页截图、应用测试日志和 `result.json`。应用验收在一次性安装目录内使用 `smoke_browser_bridge.py --app-dir`；该参数遇到已有 `data` 目录会拒绝运行，不能用于已有用户数据的目录。普通 EXE 的鼠标操作回归仍使用 `scripts/smoke_exe.py`，需要未锁定的交互桌面。
 
 静默安装支持 `/S`、`/NODESKTOP`、`/NOBRIDGE`；自选路径使用最后一个参数 `/D=完整路径`。静默卸载使用 `Uninstall.exe /S`，同样保留用户数据。
+
+## 2026-10-24 v0.13.0 构建与验收
+
+- v0.13.0 已完成双 EXE 重建、安装包封装和发布前白名单/源码对象校验；主程序 6 个本轮模块与当前源码一致，扩展 0.6.2 不变。
+- 安装包、便携 ZIP、扩展 ZIP 与两份 SHA256 文件在发布完成后补录远端附件大小/digest、公开下载和历史 Release 保留结果。
+- 源码完整回归、专项、视觉验收事实见 [v0.13.0 更新日志](releases/v0.13.0.md) 与 [设计验收记录](designs/appearance-and-completion-exit.md)。
 
 ## 2026-10-23 v0.12.0 构建与验收
 

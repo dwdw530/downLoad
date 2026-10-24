@@ -14,13 +14,13 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.2 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.11.1-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.13.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.11.1`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；全部历史 Release、标签与附件保留。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+发布统一走 GitHub Releases（当前 `v0.13.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；全部历史 Release、标签与附件保留。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
 
-v0.11.1 修复配置保存失败、探测中退出及任务操作阻塞界面；仅左侧分类项/标题改为 13 逻辑像素、标题仅加粗，其他字体和全局缩放不动。扩展保持 0.6.2，详见 [v0.11.1 更新日志](docs/releases/v0.11.1.md)。
+v0.13.0 增加主窗口/悬浮条不透明度、悬浮条精修与完成后正常退出；扩展保持 0.6.2，详见 [v0.13.0 更新日志](docs/releases/v0.13.0.md)。
 
-v0.11.1 已于 2026-10-22 15:47:26 +08:00 正式发布，源码提交 `933d778`、main/master 与 annotated 标签已同步；Release 420434179 的五附件 size/digest、latest 与 17 个历史 Release 保留均已核对。
+v0.13.0 的源码、EXE、安装包与 GitHub Release 将在本轮提交、构建和远端核验完成后补录；扩展 0.6.2 与历史 Release 保留。
 
 v0.11.0 新增当前筛选列表的多选批量暂停、开始/继续、重试与删除记录，以及默认关闭、手动目录优先、仅新任务生效的六类自动分目录。批量入口、调度预留、退出和异常释放均有保护；左侧分类项收为 16 磅、标题 15 磅加粗，其他字号不变。扩展保持 0.6.2，详见 [v0.11.0 更新日志](docs/releases/v0.11.0.md)。
 

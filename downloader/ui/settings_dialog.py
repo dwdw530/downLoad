@@ -8,7 +8,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from typing import Callable, Optional
 from downloader.ui.ctk_helpers import SafeToplevelMixin
-from downloader.utils.config import ConfigManager
+from downloader.utils.config import ConfigManager, normalize_opacity
 
 
 # 主题模式：配置值 <-> 界面标签（保证顺序：深色/浅色/跟随系统）
@@ -18,17 +18,22 @@ APPEARANCE_VALUE_BY_LABEL = {label: value for value, label in APPEARANCE_LABELS.
 # 悬浮条样式：配置值 <-> 界面标签
 FLOAT_BAR_MODE_LABELS = {"normal": "完整", "mini": "迷你"}
 FLOAT_BAR_MODE_VALUE_BY_LABEL = {label: value for value, label in FLOAT_BAR_MODE_LABELS.items()}
+COMPLETION_ACTION_LABELS = {'none': '不操作', 'exit_app': '退出下载器', 'shutdown': '关闭电脑'}
 
 
 class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
     """设置对话框"""
 
     def __init__(self, parent, config_manager: ConfigManager,
-                 on_save_callback: Optional[Callable] = None):
+                 on_save_callback: Optional[Callable] = None, on_preview_callback=None):
         super().__init__(parent)
 
         self.config = config_manager
         self.on_save_callback = on_save_callback
+        self._preview_callback = on_preview_callback or getattr(parent, '_preview_opacity', None)
+        self._opacity_baseline = (self.config.ui_window_opacity, self.config.ui_float_bar_opacity)
+        self.protocol('WM_DELETE_WINDOW', self._on_cancel)
+        self.bind('<Escape>', lambda event: self._on_cancel())
 
         # 设置窗口
         self.title("设置")
@@ -51,6 +56,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.tabview.pack(fill="both", expand=True, padx=16, pady=(16, 0))
 
         self._build_download_tab(self.tabview.add("下载"))
+        self._build_appearance_tab(self.tabview.add("外观"))
         self._build_other_tab(self.tabview.add("其他"))
 
         # 按钮区域
@@ -211,7 +217,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.https_proxy_entry.pack(side="left", padx=5)
 
     def _build_other_tab(self, tab):
-        """完成后动作、剪贴板监视和主题"""
+        """完成后动作与剪贴板监视；外观集中到独立页。"""
         tab.columnconfigure(1, weight=1)
 
         # ========== 下载完成后动作 ==========
@@ -228,8 +234,13 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.after_open_folder_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(after_frame, text="打开所在文件夹", variable=self.after_open_folder_var).pack(anchor="w")
 
-        self.after_shutdown_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(after_frame, text="全部下载完成后关机", variable=self.after_shutdown_var).pack(anchor="w")
+        ctk.CTkLabel(after_frame, text='全部完成后', font=('Arial', 12)).pack(anchor='w', pady=(12, 4))
+        self.completion_action_segment = ctk.CTkSegmentedButton(
+            after_frame, values=list(COMPLETION_ACTION_LABELS.values()))
+        self.completion_action_segment.pack(anchor='w')
+        ctk.CTkLabel(after_frame, text='退出前 10 秒、关机前 60 秒均可取消。\n本轮有失败或未完成任务时不自动退出。',
+                    font=('Arial', 11), text_color=('gray35', 'gray65'),
+                    justify='left', wraplength=320).pack(anchor='w', pady=(6, 0))
 
         # ========== 剪贴板监视 ==========
         clipboard_label = ctk.CTkLabel(tab, text="剪贴板监视:", font=("Arial", 12))
@@ -253,24 +264,30 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         self.ignore_hosts_textbox = ctk.CTkTextbox(clipboard_frame, width=320, height=100)
         self.ignore_hosts_textbox.pack(anchor="w")
 
-        # ========== 外观主题 ==========
+    def _build_appearance_tab(self, tab):
+        """外观集中到一页，保持既有窗口尺寸和字体。"""
+        tab.columnconfigure(1, weight=1)
         appearance_label = ctk.CTkLabel(tab, text="主题:", font=("Arial", 12))
-        appearance_label.grid(row=2, column=0, sticky="w", pady=10)
+        appearance_label.grid(row=0, column=0, sticky="w", pady=10)
 
         appearance_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        appearance_frame.grid(row=2, column=1, sticky="ew", pady=10, padx=10)
+        appearance_frame.grid(row=0, column=1, sticky="ew", pady=10, padx=10)
 
         self.appearance_segment = ctk.CTkSegmentedButton(
             appearance_frame, values=list(APPEARANCE_LABELS.values()), width=300)
         self.appearance_segment.pack(anchor="w")
         self.appearance_segment.set(APPEARANCE_LABELS[self.config.ui_appearance_mode])
 
+        self.window_opacity_slider, self.window_opacity_label = self._build_opacity_row(
+            tab, 1, '主窗口不透明度', 60,
+            '100% 为完全不透明；主窗口文字会一起变淡。\n设置与确认窗口保持不透明。', self._on_opacity_change)
+
         # ========== 桌面悬浮条 ==========
         float_label = ctk.CTkLabel(tab, text="桌面悬浮条:", font=("Arial", 12))
-        float_label.grid(row=3, column=0, sticky="nw", pady=10)
+        float_label.grid(row=2, column=0, sticky="nw", pady=10)
 
         float_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        float_frame.grid(row=3, column=1, sticky="ew", pady=10, padx=10)
+        float_frame.grid(row=2, column=1, sticky="ew", pady=10, padx=10)
 
         self.float_bar_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
@@ -281,8 +298,8 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
         ctk.CTkLabel(
             float_frame,
-            text="双击悬浮条显示主窗口，右键可隐藏、退出或切换迷你模式",
-            font=("Arial", 11), text_color="gray",
+            text="双击显示主窗口；右键可隐藏、退出或切换模式。",
+            font=("Arial", 11), text_color=('gray35', 'gray65'), wraplength=320, justify='left',
         ).pack(anchor="w", pady=(4, 0))
 
         mode_row = ctk.CTkFrame(float_frame, fg_color="transparent")
@@ -292,6 +309,46 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             mode_row, values=list(FLOAT_BAR_MODE_LABELS.values()), width=200)
         self.float_bar_mode_segment.pack(side="left")
         self.float_bar_mode_segment.set(FLOAT_BAR_MODE_LABELS[self.config.ui_float_bar_mode])
+
+        self.float_opacity_slider, self.float_opacity_label = self._build_opacity_row(
+            tab, 3, '悬浮条背景不透明度', 30, '只调整背景，文字和进度保持清晰。', self._on_opacity_change)
+
+    def _build_opacity_row(self, tab, row, title, minimum, hint, command):
+        ctk.CTkLabel(tab, text=title, font=('Arial', 12)).grid(
+            row=row, column=0, sticky='nw', pady=(12, 8))
+        frame = ctk.CTkFrame(tab, fg_color='transparent')
+        frame.grid(row=row, column=1, sticky='ew', padx=10, pady=(12, 8))
+        frame.columnconfigure(0, weight=1)
+        slider = ctk.CTkSlider(frame, from_=minimum, to=100, number_of_steps=100-minimum,
+                              width=230, command=command)
+        slider.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        label = ctk.CTkLabel(frame, text='100%', width=44, anchor='e', font=('Arial', 12))
+        label.grid(row=0, column=1)
+        ctk.CTkLabel(frame, text=hint, font=('Arial', 11), justify='left',
+                    text_color=('gray35', 'gray65'), wraplength=320).grid(
+            row=1, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        return slider, label
+
+    def _load_appearance_actions(self):
+        actions = self.config.after_download
+        action = 'exit_app' if actions['exit_app'] else 'shutdown' if actions['shutdown'] else 'none'
+        self.completion_action_segment.set(COMPLETION_ACTION_LABELS[action])
+        self.window_opacity_slider.set(self.config.ui_window_opacity)
+        self.float_opacity_slider.set(self.config.ui_float_bar_opacity)
+        self.window_opacity_label.configure(text=f'{self.config.ui_window_opacity}%')
+        self.float_opacity_label.configure(text=f'{self.config.ui_float_bar_opacity}%')
+
+    def _on_opacity_change(self, value=None):
+        window = normalize_opacity(self.window_opacity_slider.get(), 60)
+        floating = normalize_opacity(self.float_opacity_slider.get(), 30)
+        self.window_opacity_label.configure(text=f'{window}%')
+        self.float_opacity_label.configure(text=f'{floating}%')
+        if self._preview_callback:
+            self._preview_callback(window, floating)
+
+    def _restore_preview(self):
+        if self._preview_callback:
+            self._preview_callback(*self._opacity_baseline)
 
     def _load_config(self):
         """加载当前配置"""
@@ -317,7 +374,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         after_cfg = self.config.after_download
         self.after_open_file_var.set(after_cfg["open_file"])
         self.after_open_folder_var.set(after_cfg["open_folder"])
-        self.after_shutdown_var.set(after_cfg["shutdown"])
+        self._load_appearance_actions()
         # 剪贴板监视
         self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
         self.ignore_hosts_textbox.delete("1.0", "end")
@@ -425,7 +482,8 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             after_config = {
                 'open_file': self.after_open_file_var.get(),
                 'open_folder': self.after_open_folder_var.get(),
-                'shutdown': self.after_shutdown_var.get(),
+                'shutdown': self.completion_action_segment.get() == COMPLETION_ACTION_LABELS['shutdown'],
+                'exit_app': self.completion_action_segment.get() == COMPLETION_ACTION_LABELS['exit_app'],
             }
             self.config.after_download = after_config
             # 剪贴板监视（忽略站点由 setter 归一化：小写、去www.、去重）
@@ -440,12 +498,17 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             float_bar_mode = FLOAT_BAR_MODE_VALUE_BY_LABEL.get(
                 self.float_bar_mode_segment.get(), "normal")
             self.config.ui_float_bar_mode = float_bar_mode
+            self.config.ui_window_opacity = self.window_opacity_slider.get()
+            self.config.ui_float_bar_opacity = self.float_opacity_slider.get()
             if not self.config.save():
                 for key, value in previous_settings.items():
                     self.config.set(key, value)
+                self._restore_preview()
                 messagebox.showerror("错误", "配置文件写入失败，请检查目录权限和可用空间。", parent=self)
                 return
 
+            self._opacity_baseline = (self.config.ui_window_opacity, self.config.ui_float_bar_opacity)
+            self._restore_preview()
             # 保存后通知外部：配置文件落地只是第一步，运行时也得马上同步，不然就是假保存
             if self.on_save_callback:
                 runtime_settings = {
@@ -465,6 +528,8 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
                     'appearance_mode': appearance_mode,
                     'float_bar_enabled': float_bar_enabled,
                     'float_bar_mode': float_bar_mode,
+                    'ui_window_opacity': self.config.ui_window_opacity,
+                    'ui_float_bar_opacity': self.config.ui_float_bar_opacity,
                 }
                 self.on_save_callback(runtime_settings)
 
@@ -473,7 +538,11 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             self.destroy()
 
         except Exception as e:
+            self._restore_preview()
             messagebox.showerror("错误", f"保存设置失败: {e}", parent=self)
+        finally:
+            # 输入校验的提前返回同样属于未保存；成功时基线已更新为新值。
+            self._restore_preview()
 
     def _on_cancel(self):
         """取消"""
@@ -501,6 +570,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
 
     def destroy(self):
         """销毁前撤掉提示定时器，避免窗口没了回调还在排队"""
+        self._restore_preview()
         if getattr(self, '_status_job', None) is not None:
             try:
                 self.after_cancel(self._status_job)
@@ -513,8 +583,11 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
         """恢复默认设置"""
         if messagebox.askyesno("确认", "确定要恢复默认设置吗？", parent=self):
             if not self.config.reset():
+                self._restore_preview()
                 messagebox.showerror("错误", "恢复默认设置失败，配置文件未能保存。", parent=self)
                 return
+            self._opacity_baseline = (self.config.ui_window_opacity, self.config.ui_float_bar_opacity)
+            self._restore_preview()
             if self.on_save_callback:
                 self.on_save_callback(self.config.get_all())
             # 重新加载配置
@@ -544,7 +617,7 @@ class SettingsDialog(SafeToplevelMixin, ctk.CTkToplevel):
             after_default = self.config.after_download
             self.after_open_file_var.set(after_default["open_file"])
             self.after_open_folder_var.set(after_default["open_folder"])
-            self.after_shutdown_var.set(after_default["shutdown"])
+            self._load_appearance_actions()
             # 剪贴板监视重置
             self.clipboard_monitor_var.set(self.config.clipboard_monitor_enabled)
             self.ignore_hosts_textbox.delete("1.0", "end")

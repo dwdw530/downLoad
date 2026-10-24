@@ -64,6 +64,17 @@ class DownloadHandler(BaseHTTPRequestHandler):
             if self.path == '/partial-404':
                 start_hint = int(re.fullmatch(r'bytes=(\d+)-.*', range_header)[1])
                 if start_hint != 0:
+                    gate = getattr(self.server, 'fatal_404_gate', None)
+                    if gate is not None:
+                        committed, requested = gate
+                        try:
+                            requested.wait(timeout=3)
+                        except threading.BrokenBarrierError:
+                            self.send_error(500, 'test request barrier did not converge')
+                            return
+                        if not committed.wait(3):
+                            self.send_error(500, 'test first chunk did not commit')
+                            return
                     self.send_error(404)
                     return
         start, end = 0, len(PAYLOAD) - 1
@@ -262,8 +273,24 @@ class DownloadRegressions(unittest.TestCase):
 
     def test_fatal_404_fails_fast_and_keeps_completed_chunks(self):
         task_id = self.make_task('gone', path='partial-404')
-        self.assertTrue(self.engine.start_download(task_id, resume=True))
-        task = self.wait_terminal(task_id)
+        first = min(self.db.get_chunks(task_id), key=lambda chunk: chunk['start_byte'])
+        committed = threading.Event()
+        self.server.fatal_404_gate = (committed, threading.Barrier(3))
+        original_update = self.db.update_chunk_progress
+        def update_progress(chunk_id, downloaded_bytes, status=None):
+            saved = original_update(chunk_id, downloaded_bytes, status)
+            if saved and chunk_id == first['chunk_id'] and status == 'completed':
+                committed.set()
+            return saved
+        try:
+            # 404 必须在真实首块落盘/提交且其它三块均发出请求之后才返回。
+            # 否则首个致命响应抢先取消所有流，“保留已完成块”的前提根本不存在。
+            with patch.object(self.db, 'update_chunk_progress', side_effect=update_progress):
+                self.assertTrue(self.engine.start_download(task_id, resume=True))
+                task = self.wait_terminal(task_id)
+        finally:
+            self.server.fatal_404_gate = None
+        self.assertTrue(committed.is_set())
         self.assertEqual(task['status'], 'failed')
         self.assertIn('404', task['error_message'])
         # 致命错误不降级单线程、不重试，已完成分块和临时文件都保留
@@ -274,6 +301,8 @@ class DownloadRegressions(unittest.TestCase):
         chunks = self.db.get_chunks(task_id)
         self.assertTrue(any(Path(chunk['temp_file']).exists() for chunk in chunks))
         self.assertGreater(sum(int(chunk['downloaded_bytes'] or 0) for chunk in chunks), 0)
+        self.assertEqual(Path(first['temp_file']).read_bytes(),
+                         PAYLOAD[first['start_byte']:first['end_byte'] + 1])
 
     def test_exhausted_transient_retries_keep_partial_data(self):
         task_id = self.make_task('busy', path='always-503')

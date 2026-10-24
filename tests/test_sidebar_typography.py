@@ -43,7 +43,7 @@ class SidebarWidgetFontTests(unittest.TestCase):
     def tear_down_widgets(self):
         ctk.set_widget_scaling(self.original_scaling)
         for timer in self.root.tk.call('after', 'info'):
-            self.root.after_cancel(timer)
+            self.root.tk.call('after', 'cancel', timer)
         self.root.destroy()
 
     def check_fonts(self, scaling):
