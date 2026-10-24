@@ -61,8 +61,8 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 ## 2026-10-24 v0.13.0 构建与验收
 
 - v0.13.0 已完成双 EXE 重建、安装包封装和发布前白名单/源码对象校验；主程序 6 个本轮模块与当前源码一致，扩展 0.6.2 不变。
-- 安装包、便携 ZIP、扩展 ZIP 与两份 SHA256 文件在发布完成后补录远端附件大小/digest、公开下载和历史 Release 保留结果。
-- 源码完整回归、专项、视觉验收事实见 [v0.13.0 更新日志](releases/v0.13.0.md) 与 [设计验收记录](designs/appearance-and-completion-exit.md)。
+- 安装包 155,772,659 字节，SHA256 `377264756264cbe9f606eff3e64610cc3031aa9b83cc5ed643d88def42c94f19`；便携 ZIP 213,931,651 字节，SHA256 `a518214ce4f0934082861e842901fb3fecdfcc805d2006f05636e265bf14c69b`；扩展 ZIP 30,514 字节，SHA256 `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`。
+- 已于 **2026-10-24 17:16:29 +08:00** 正式发布 v0.13.0（Release id 422629139）；源码提交 `911dfa7`、main/master 与 annotated 标签已同步，五附件远端 size/digest/state 一致，latest 正确，历史 Release 保留。详情见 [v0.13.0 更新日志](releases/v0.13.0.md) 与 [设计验收记录](designs/appearance-and-completion-exit.md)。
 
 ## 2026-10-23 v0.12.0 构建与验收
 

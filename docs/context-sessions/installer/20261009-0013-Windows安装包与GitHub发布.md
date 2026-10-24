@@ -4,11 +4,18 @@
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
 - 更新时间：2026-10-23 11:00 +08:00（接续中断线程，完成进度及两套本地记忆最终复验）
-- 状态：已完成（v0.12.0 原 dist、EXE/安装包、GitHub 发布与附件核验）
+- 状态：已完成（v0.13.0 原 dist、EXE/安装包、GitHub 发布与附件核验）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
-## v0.12.0 构建、验收与正式发布（2026-10-23，已完成）
+## v0.13.0 构建、验收与正式发布（2026-10-24，已完成）
+
+- 用户授权提交源码、重建原 dist、封装安装包并发布 GitHub 新版本；扩展 0.6.2 内容不变，历史 Release/标签/附件保留。
+- 源码提交 `911dfa7c386e0486747f5cd4ebb6b18b4c8855f2`，main/master 与 annotated 标签 `v0.13.0` 已同步；首次推送因误将超过 GitHub 100 MB 限制的安装包纳入 Git 被拒，随后从提交移除该二进制，安装包仍保留在本机并作为 Release 附件上传。
+- 主程序 `60d37bccc824de2e9ed9274b34173c7f9a09d89fa985257ac71fa6061cc5af3f`、BrowserBridge `7127db05774e240a03719774069a8f9b779de7cbcb10d6cd708a145ef9b93d57`；安装包 155,772,659 B / `377264756264cbe9f606eff3e64610cc3031aa9b83cc5ed643d88def42c94f19`。
+- 便携 ZIP 213,931,651 B / `a518214ce4f0934082861e842901fb3fecdfcc805d2006f05636e265bf14c69b`；扩展 ZIP 30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`；安装包 `.sha256` 与 ZIP `SHA256SUMS.txt` 已生成。
+- GitHub Release `422629139` 于 **2026-10-24 17:16:29 +08:00** 正式发布，发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.13.0`；五附件远端 size/digest/state 与本地一致，latest 指向 v0.13.0，历史 Release 保留。
+- 发布后 API 远端资产核验完成；GitHub 大二进制公开下载 HEAD 检查受本机连接超时影响，未将其误报为公开 CDN 全链路通过。其余生产构建、源码对象、ZIP CRC/白名单与用户数据指纹核验通过。
 
 - 用户明确授权原 dist/EXE/安装包、提交推送与 GitHub 发布；新增 v0.12.0，扩展 0.6.2 不变。官方 API 确认旧 latest v0.11.1，18 个历史 Release 元数据已快照，不改历史标签或附件。
 - 原 dist 双 EXE 已重建，本轮 6 个主模块与共用工具模块代码对象与源码一致；主 EXE 21,727,640 B / `d6184e2ca420b5181c7f3c555ed52f8ba389211ae78bf3baf3ed81977bd83e59`，BrowserBridge 9,988,961 B / `c0d093948ab60b65ba72253964621a470c35e88113970a563062b7bcf6b7c030`。
