@@ -58,6 +58,13 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 
 静默安装支持 `/S`、`/NODESKTOP`、`/NOBRIDGE`；自选路径使用最后一个参数 `/D=完整路径`。静默卸载使用 `Uninstall.exe /S`，同样保留用户数据。
 
+## 2026-11-03 v0.14.0 发布与验收
+
+- [v0.14.0 发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.14.0)，包含侧栏滚动与功能窗口显示稳定性修复；扩展 0.6.2 内容不变。
+- 安装包 155,820,888 字节，SHA256 `5b3f5278b72990d9c2d1055b0b00b159c818618860de612dc9ce0cc2e370cf00`；两个 ZIP 和校验文件完整上传，远端尺寸/digest 与本地一致。
+- 六组真实中文向导、安装后下载、占用保护、同目录升级、卸载、重装与注册恢复验收通过。main/master 与 annotated 标签已同步，latest 指向新版，20 个旧 Release/附件保持。
+- 官方公开下载地址经机器既有代理验证二进制 HEAD 200/尺寸和校验文本 GET 字节；直连网络失败独立记录。不含用户运行数据，原配置/数据库/断点保持。记录 `output/releases/v0.14.0/verification-remote.json`。
+
 ## 2026-10-24 v0.13.0 构建与验收
 
 - v0.13.0 已完成双 EXE 重建、安装包封装和发布前白名单/源码对象校验；主程序 6 个本轮模块与当前源码一致，扩展 0.6.2 不变。

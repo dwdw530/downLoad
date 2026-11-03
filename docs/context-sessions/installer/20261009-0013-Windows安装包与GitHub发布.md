@@ -3,17 +3,18 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-11-03 14:51 +08:00（v0.14.0 推送发布进行中）
-- 状态：进行中（v0.14.0 产物已生成，安装验收与 GitHub 发布收尾）
+- 更新时间：2026-11-03 15:14 +08:00（v0.14.0 发布、附件与公开下载核验完成）
+- 状态：已完成（v0.14.0 双分支、annotated 标签、GitHub Release 与完整附件验收）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
-## v0.14.0 构建、验收与正式发布（2026-11-03，进行中）
+## v0.14.0 构建、验收与正式发布（2026-11-03，已完成）
 
 - 用户明确授权推送当前代码、发布新版并更新 GitHub；新增 v0.14.0，不覆盖 v0.13.0 或任何旧标签/附件，扩展 0.6.2 不变。
-- 远端 main/master 基线 `1687b9f`，本地代码 `998146f` 含侧栏滚动和标题栏稳定性修复。当前 EXE 字节与此前已验收版本完全一致；发布前实际鼠标打开添加/设置/历史，各只显示一次且无隐藏，正常关闭退出。
+- 发布提交 `c770cf6cafae5cd9e6bf8ee02d24dbf7be7fac07`，main/master 已同步；annotated 标签 v0.14.0 指向该提交。软件代码包含 998146f 的闪烁修复及此前侧栏改进，EXE 与已验收字节一致；实际鼠标打开添加/设置/历史各一次 show、零 hide，正常退出。
 - 安装包 155,820,888 B / `5b3f5278b72990d9c2d1055b0b00b159c818618860de612dc9ce0cc2e370cf00`；便携 ZIP 213,931,716 B / `000526520c352dee9cb548610e486a9344550937bc3df767d14ed3ae2ec9ef74`；扩展 ZIP 30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`，扩展与旧发布完全一致。安装包旁 `.sha256` 和两个 ZIP 的 `SHA256SUMS.txt` 已生成，ZIP CRC/字节/无用户数据检查通过。
-- 新版安装包六组完整验收通过，报告 `output/installer-smoke/run-5uiboc32/result.json`，原浏览器注册已恢复、原 dist 数据未改。20 个历史 Release 与附件快照在 `output/releases/v0.14.0/history-before.json`；接下来推送双分支、annotated 标签和上传核验，不把尚未完成的远端动作写成已完成。
+- 新版安装包六组完整验收通过，报告 `output/installer-smoke/run-5uiboc32/result.json`。Release `432367634` 于 2026-11-03 15:04:40 +08:00 正式发布，latest=v0.14.0，五附件 size/digest/state 与本地一致，20 个旧 Release 的时间与附件 ID/名称/尺寸/digest 保持。官方公开 URL 经既有代理核验三个二进制 HEAD 200/尺寸与两个校验文本 GET 字节一致；直连失败独立记录，没有改系统代理或禁用 TLS。原 6 份运行数据指纹不变，桥接注册恢复，不上传运行数据、令牌或测试输出。证据 `output/releases/v0.14.0/verification-remote.json`，未写或同步长期记忆。
+- 发布页：[v0.14.0](https://github.com/dwdw530/downLoad/releases/tag/v0.14.0)。README、INSTALLER、构建/验收默认版本及更新日志均已更新。后续仅提交发布记录，不移动已发布标签或修改旧附件。
 
 ## v0.13.0 构建、验收与正式发布（2026-10-24，已完成）
 
