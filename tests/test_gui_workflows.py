@@ -92,16 +92,50 @@ class GuiFeatures(FeatureFixture):
             raise errors[0]
         self.pump()
 
-    def test_destroyed_dialogs_ignore_delayed_titlebar_and_focus_callbacks(self):
-        config = ConfigManager(str(self.root / 'dialog-config.json'))
-        for factory in (lambda: AddTaskDialog(self.app), lambda: CloseConfirmDialog(self.app, config),
+
+    def test_dialog_opening_does_not_hide_a_visible_window(self):
+        self.config.clipboard_monitor_enabled = False
+        self.app.deiconify()
+        self.pump(0.1)
+        task_id = self._inject_task('dialog-fixture', 'file.bin',
+                                    'https://fixture.example/file.bin', status='paused')
+        def open_detail():
+            self.app._on_open_detail(task_id)
+            return self.app._detail_windows[task_id]
+
+        factories = (
+            ('add', lambda: AddTaskDialog(self.app)),
+            ('settings', lambda: SettingsDialog(self.app, self.config)),
+            ('history', lambda: HistoryDialog(self.app, self.db)),
+            ('detail', open_detail),
+        )
+        for name, factory in factories:
+            with self.subTest(dialog=name):
+                dialog = factory()
+                hidden = []
+                dialog.bind('<Unmap>', lambda event, window=dialog:
+                            hidden.append(event.type) if event.widget is window else None, add='+')
+                try:
+                    self.pump(0.35)
+                    self.assertTrue(dialog.winfo_ismapped())
+                    self.assertEqual(hidden, [])
+                finally:
+                    dialog.destroy()
+                    self.pump(0.05)
+
+    def test_quickly_closed_dialogs_do_not_reopen_or_hold_the_parent_grab(self):
+        self.config.clipboard_monitor_enabled = False
+        self.app.deiconify()
+        self.pump(0.1)
+        for factory in (lambda: AddTaskDialog(self.app),
+                        lambda: SettingsDialog(self.app, self.config),
                         lambda: HistoryDialog(self.app, self.db)):
             dialog = factory()
             dialog.destroy()
-            dialog._revert_withdraw_after_windows_set_titlebar_color()
-            dialog.focus_set()
-            dialog.focus()
-        self.pump(0.5)
+            self.pump(0.3)
+            self.assertFalse(dialog.winfo_exists())
+            self.assertTrue(self.app.winfo_ismapped())
+            self.assertIsNone(self.app.grab_current())
 
     def test_main_window_keeps_full_resolution_icon_photo(self):
         self.assertEqual(self.app._window_icon_photo.width(), 256)

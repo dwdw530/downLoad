@@ -27,7 +27,7 @@ downloader/
 │   └── db_manager.py          SQLite 封装：任务表、分块表、历史表与老库字段迁移
 ├── ui/
 │   ├── main_window.py         主窗口、任务卡片，及添加/删除/退出确认对话框
-│   ├── ctk_helpers.py        CTk Toplevel 延迟回调守卫
+│   ├── ctk_helpers.py        CTk Toplevel 稳定标题栏更新与延迟回调守卫
 │   ├── typography.py         左侧分类树字体（微软雅黑 UI 13 逻辑像素 / 标题仅加粗）
 │   ├── float_bar.py           桌面速度悬浮条（完整/迷你两种样式，Canvas 自绘）
 │   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速、完成后动作）
@@ -277,6 +277,13 @@ pending ──start──► downloading ──pause──► paused ──resum
 - 轮询异常全吞（非文本内容返回 TclError、窗口销毁停表）；设置界面「剪贴板监视」节读写开关与忽略站点多行文本（setter 归一化：小写、去 www.、去重）。轮询与曲线均为纯内存/CPU 操作，无磁盘 I/O。
 
 完成后动作由 completed 事件经 UI 队列触发，verify_failed 不触发。关机空闲检查包含 downloading/pending/verifying、运行槽位、后台探测及批量待添加工作。倒计时记录 TaskManager 的任务操作代数，每次 tick 及真正执行前再次检查；新增/重试任务或关闭设置会取消旧倒计时，关闭窗口也不关机。
+
+### 8.5 功能窗口显示稳定性
+
+`SafeToplevelMixin._windows_set_titlebar_color` 在窗口未映射时继续使用 CTk 初始化；窗口已显示时直接设置 DWM 的沉浸式标题栏属性（20，保留既有 19 回退），不再 withdraw/update/deiconify 或排队恢复焦点。这样 resizable 的延迟标题栏回调不会让功能窗口二次显隐。保留窗口销毁后的回调保护、原布局/字体/配色，以及剪贴板非模态和正常模态行为。Native API 按 HWND/DWORD/指针/HRESULT 明确声明 ctypes 签名，更新失败写固定日志，不修改全局 CTk 或第三方安装目录。
+
+实现依据：[CTkToplevel 文档](https://github.com/tomschimansky/customtkinter/wiki/CTkToplevel) 与 [DwmSetWindowAttribute](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmsetwindowattribute)。
+
 
 ## 9. 日志与排障
 
