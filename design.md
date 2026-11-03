@@ -28,7 +28,7 @@ downloader/
 ├── ui/
 │   ├── main_window.py         主窗口、任务卡片，及添加/删除/退出确认对话框
 │   ├── ctk_helpers.py        CTk Toplevel 延迟回调守卫
-│   ├── typography.py         左侧分类树字体（微软雅黑 UI 18pt / 标题 17pt 加粗）
+│   ├── typography.py         左侧分类树字体（微软雅黑 UI 13 逻辑像素 / 标题仅加粗）
 │   ├── float_bar.py           桌面速度悬浮条（完整/迷你两种样式，Canvas 自绘）
 │   ├── settings_dialog.py     设置对话框（目录、线程、并发、超时、代理、限速、完成后动作）
 │   ├── history_dialog.py      下载历史对话框
@@ -227,8 +227,9 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ### 8.1.1 左侧分类树（v0.6.0）
 
-- 主窗口主体改为左右分栏：左侧 `CTkFrame` 容器内嵌分类树（宽 170），右侧保留搜索行与任务列表。分组：状态（全部/下载中/等待中/已完成/失败）、类型（`file_utils.FILE_CATEGORY_LABELS`：视频/音频/文档/压缩包/程序/其他，按扩展名 `guess_file_category` 判定）、站点（按 `url_utils.host_from_url` 聚合，保留非 www 子域，动态重建）。
+- 主窗口主体为左右分栏：左侧 `CTkFrame` 固定 240 逻辑像素宽，右侧保留搜索行与任务列表。分组：状态（全部/下载中/等待中/已暂停/已完成/失败）、类型（`file_utils.FILE_CATEGORY_LABELS`：视频/音频/文档/压缩包/程序/其他，按扩展名 `guess_file_category` 判定）、站点（按 `url_utils.host_from_url` 聚合，保留非 www 子域，动态重建）。
 - 分类项用**原生 `tkinter.Label`**（`bind("<Button-1>")` + `<Enter>/<Leave>` 换底色），不用 `CTkButton`/`CTkLabel`：侧栏项数以十计且每个主窗口都会重建，CTk 控件的 canvas/字体/hover 动画在反复创建上千次后会显著拖慢 Tk 事件循环（实测 GUI 测试从 120s 劣化到 530s，并连带本地 HTTP 探测超时）。原生控件不吃 CTk 的 `(light, dark)` 元组，颜色由模块级 `SIDEBAR_PALETTE` 提供，主题切换后 `_retheme_sidebar()` 重新上色。
+- 2026-11-03 源码新增侧栏滚动：原生 `Canvas` 内嵌 `Frame` 承载原有分类项，使用单个 `CTkScrollbar`，只在内容溢出时显示。内容增删和视口尺寸变化同步滚动范围，内容不足一屏时归零；主题切换同步画布与内层背景。滚轮只绑定本主窗口，按事件控件的父链识别侧栏，返回 `break` 阻止任务列表接走事件；滚动条自身已处理的滚轮不重复执行，不新增 `bind_all`。原字号、240px 宽度和筛选逻辑不变；尚未进入原 dist/安装包。
 - 选中键编码为 `all` / `status:xxx` / `type:xxx` / `host:xxx`，`_task_matches_category()` 解析；「失败」组含 `failed`/`verify_failed`/`cancelled`。
 - `_refresh_sidebar()` 在任务增删、状态变更后更新各分类计数；启动加载阶段不按半份列表判断站点消失，全部加载后才回退到「全部」。选中项写入 `ui_active_category` 并持久化。
 
@@ -245,8 +246,8 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 ### 8.1.4 左侧分类树字号与设置保存反馈
 
-- 侧栏分类项与分组标题只做字号调整：`ui/typography.py` 提供 `SIDEBAR_ITEM_FONT`（微软雅黑 UI 18pt）与 `SIDEBAR_HEADING_FONT`（17pt 加粗），侧栏宽度 210 → 240、行内边距加大，避免字数多的分类被挤掉。
-- 原生 `tkinter.Label` 的 font 元组里**正数是磅、负数是像素**；侧栏必须给正值，写成负值反而会比原来的 `("Arial", 14)` 更小。其它界面（按钮、输入框、设置页、各对话框）字体一律保持原样，不做统一定制。
+- `ui/typography.py` 的 `SIDEBAR_ITEM_FONT` 与 `SIDEBAR_HEADING_FONT` 均为微软雅黑 UI 13 逻辑像素，标题仅加粗；跟随既有 CTk 控件缩放。240px 侧栏宽度、行内边距和其他字体保持不变，本次滚动不调整字号。
+- 原生 `tkinter.Label` 的 font 元组里**正数是磅、负数是像素**；当前侧栏使用负像素值，与 CTk 的像素口径一致。18/17 磅是已被用户纠正的历史设置，不恢复旧值，也不修改全局 DPI。
 - 设置保存成功不再弹 `messagebox`：对话框直接关闭，主窗口状态栏闪 3 秒「设置已保存」后自动恢复常规统计（`MainWindow._flash_status`；`_status_flash` 由状态栏定时器尊重）。恢复默认在按钮旁就地提示 2 秒，不弹窗。
 - 仅错误路径仍用弹窗（目录不可写、配置写入失败等），失败必须让用户停下来处理。
 

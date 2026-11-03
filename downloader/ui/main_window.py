@@ -304,12 +304,10 @@ class MainWindow(ctk.CTk):
         content = ctk.CTkFrame(self, fg_color="transparent")
         content.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        # 分类项数量有限（状态+类型+站点），用普通 Frame 即可；
-        # 侧栏不用 CTkScrollableFrame：它会在每次创建/销毁窗口时反复注册全局鼠标滚轮绑定，
-        # 大量测试窗口累积后会拖慢整个 Tk 事件循环（实测让 GUI 测试从 120s 劣化到 530s）。
-        self.sidebar_frame = ctk.CTkFrame(content, width=240)
-        self.sidebar_frame.pack(side="left", fill="y", padx=(0, 8))
-        self.sidebar_frame.pack_propagate(False)
+        # 保留固定侧栏宽度与原生分类项，不新增 CTkScrollableFrame 的全局滚轮绑定。
+        self.sidebar_container = ctk.CTkFrame(content, width=240)
+        self.sidebar_container.pack(side="left", fill="y", padx=(0, 8))
+        self.sidebar_container.pack_propagate(False)
 
         right_frame = ctk.CTkFrame(content, fg_color="transparent")
         right_frame.pack(side="left", fill="both", expand=True)
@@ -392,6 +390,20 @@ class MainWindow(ctk.CTk):
         self._known_hosts = []
         self._sidebar_heading_labels = []
         self._sidebar_colors_cache = self._sidebar_palette()
+        self.sidebar_canvas = tkinter.Canvas(self.sidebar_container, bd=0, highlightthickness=0,
+                                             bg=self._sidebar_colors_cache['bg'],
+                                             yscrollincrement=round(24 * ctk.ScalingTracker.get_widget_scaling(self)))
+        self.sidebar_scrollbar = ctk.CTkScrollbar(self.sidebar_container, width=12,
+                                                command=self.sidebar_canvas.yview)
+        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
+        self.sidebar_canvas.pack(side="left", fill="both", expand=True)
+        self.sidebar_frame = tkinter.Frame(self.sidebar_canvas, bd=0, highlightthickness=0,
+                                          bg=self._sidebar_colors_cache['bg'])
+        self._sidebar_window_id = self.sidebar_canvas.create_window(0, 0, window=self.sidebar_frame, anchor="nw")
+        self.sidebar_frame.bind("<Configure>", self._update_sidebar_scrollregion)
+        self.sidebar_canvas.bind("<Configure>", self._on_sidebar_resize)
+        # Toplevel 绑定只覆盖本窗口；返回 break，避免右侧列表的全局绑定接走侧栏滚轮。
+        self.bind("<MouseWheel>", self._on_sidebar_mousewheel, add="+")
 
         self._create_sidebar_heading("分类")
         self._create_sidebar_heading("状态")
@@ -408,6 +420,37 @@ class MainWindow(ctk.CTk):
         self.host_section_frame = tkinter.Frame(self.sidebar_frame, bd=0, highlightthickness=0,
                                                 bg=self._sidebar_colors_cache['bg'])
         self.host_section_frame.pack(fill="x")
+
+    def _on_sidebar_resize(self, event):
+        self.sidebar_canvas.itemconfigure(self._sidebar_window_id, width=event.width)
+        self._update_sidebar_scrollregion()
+
+    def _update_sidebar_scrollregion(self, _event=None):
+        height = self.sidebar_frame.winfo_reqheight()
+        viewport_height = self.sidebar_canvas.winfo_height()
+        overflow = height > viewport_height
+        if overflow and not self.sidebar_scrollbar.winfo_manager():
+            self.sidebar_scrollbar.pack(side="right", fill="y")
+        elif not overflow and self.sidebar_scrollbar.winfo_manager():
+            self.sidebar_scrollbar.pack_forget()
+        self.sidebar_canvas.configure(scrollregion=(0, 0, self.sidebar_canvas.winfo_width(),
+                                                    max(height, viewport_height)))
+        if not overflow:
+            self.sidebar_canvas.yview_moveto(0)
+
+    def _on_sidebar_mousewheel(self, event):
+        widget = event.widget
+        while widget is not None and widget is not self.sidebar_container:
+            # CTkScrollbar 已在自身 canvas 上处理滚轮，不再重复移动。
+            if widget is self.sidebar_scrollbar:
+                return "break"
+            widget = getattr(widget, 'master', None)
+        if widget is None:
+            return
+        if event.delta:
+            steps = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+            self.sidebar_canvas.yview_scroll(steps, "units")
+        return "break"
 
     @staticmethod
     def _sidebar_palette() -> dict:
@@ -461,6 +504,8 @@ class MainWindow(ctk.CTk):
         self._sidebar_colors_cache = self._sidebar_palette()
         self._last_appearance_mode = ctk.get_appearance_mode()
         colors = self._sidebar_colors_cache
+        self.sidebar_canvas.configure(bg=colors['bg'])
+        self.sidebar_frame.configure(bg=colors['bg'])
         for label in self._sidebar_heading_labels:
             if label.winfo_exists():
                 label.configure(bg=colors['bg'], fg=colors['muted'])

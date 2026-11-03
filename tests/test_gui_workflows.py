@@ -577,6 +577,45 @@ class GuiFeatures(FeatureFixture):
         self.assertEqual(self.app._active_category, 'all')
         self.assertNotIn('host:dl.example.com', self.app.category_buttons)
 
+    def test_sidebar_scroll_reaches_sites_without_scrolling_task_list(self):
+        for index in range(14):
+            self._inject_task(f'scroll-{index}', f'file-{index}.bin',
+                              f'https://site{index:02}.example/file.bin', status='paused')
+        self.app.deiconify()
+        self.pump(0.2)
+        sidebar = self.app.sidebar_canvas
+        tasks = self.app.task_list_frame._parent_canvas
+        task_position = tasks.yview()
+        for _ in range(60):
+            self.app.category_buttons['all'].event_generate('<MouseWheel>', delta=-120)
+            self.app.update()
+        last = self.app.category_buttons['host:site13.example']
+        self.assertTrue(last.winfo_ismapped())
+        self.assertGreaterEqual(last.winfo_rooty(), sidebar.winfo_rooty())
+        self.assertLessEqual(last.winfo_rooty() + last.winfo_height(),
+                             sidebar.winfo_rooty() + sidebar.winfo_height())
+        self.assertEqual(tasks.yview(), task_position)
+        last.event_generate('<Button-1>')
+        self.pump(0.1)
+        self.assertEqual(self.app._active_category, 'host:site13.example')
+        self.assertEqual(self.app.filter_hint_label.cget('text'), '显示 1 / 14')
+
+        self.app._on_category_select('all')
+        self.pump(0.1)
+        sidebar_position = sidebar.yview()
+        self.app.task_widgets['scroll-0']['filename_label'].event_generate('<MouseWheel>', delta=-120)
+        self.pump(0.1)
+        self.assertEqual(sidebar.yview(), sidebar_position)
+        self.assertGreater(tasks.yview()[0], task_position[0])
+        for index in range(1, 14):
+            self.app._remove_task_ui(f'scroll-{index}')
+            self.db.delete_task(f'scroll-{index}')
+        self.app._refresh_sidebar()
+        self.app.geometry('900x900')
+        self.pump(0.2)
+        self.assertEqual(sidebar.yview(), (0.0, 1.0))
+        self.assertFalse(self.app.sidebar_scrollbar.winfo_manager())
+
     # ---------- 右键菜单与手动排序 ----------
 
     def _menu_command_index(self, menu, label):
