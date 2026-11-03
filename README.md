@@ -6,19 +6,17 @@
 
 正式入口：`dist/daw下载器.exe`。窗口、托盘和 EXE 使用统一的绿色下载箭头图标。旧配置和下载目录保持原样；浏览器扩展更新后需重新加载，原桥接标识不变。
 
-Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-downloader-v0.13.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
+Windows 用户可直接下载 [安装包 EXE](https://github.com/dwdw530/downLoad/releases/download/v0.14.0/daw-downloader-v0.14.0-windows-x64-setup.exe)，安装时选择目录，之后可从系统中卸载。[GitHub Releases](https://github.com/dwdw530/downLoad/releases/latest) 同时提供完整便携版 ZIP 和独立浏览器扩展；GitHub 自动生成的 Source code 是源码。
 
-当前桌面版 **v0.13.0**、浏览器扩展 **0.6.2**（内容不变）。本版增加**主窗口/悬浮条不透明度、悬浮条精修和完成后正常退出**；安全失败原因、已暂停分类、未知/空文件进度、Retry-After、多选批量和自动分目录等能力保持。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.13.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
+当前桌面版 **v0.14.0**、浏览器扩展 **0.6.2**（内容不变）。本版增加**侧栏滚动与功能窗口显示稳定性修复**；下载安全、暂停分类、Retry-After、多选批量、自动分目录、透明度、悬浮条与完成后动作保持。[下载插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.14.0/daw-browser-extension-v0.6.2.zip) · [更新日志与升级步骤](docs/releases/v0.14.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
 
 项目现支持生成中文 Windows 安装包：安装时可选择目录、创建快捷方式，之后可从系统“已安装的应用”中卸载。双击 `build_installer.bat` 构建，产物在 `dist/*-setup.exe`；卸载保留配置、下载记录、断点和下载文件。完整步骤见 [安装包说明](docs/INSTALLER.md)。
-
-> **本地构建，尚未发版**：2026-11-03 原 `dist/daw下载器.exe`、`BrowserBridge.exe` 与本地安装包已重新构建，包含侧栏滚动和功能窗口显隐稳定性修复。沿用 v0.13.0 版本号；本地重建文件与上方 GitHub 正式发布文件不同，不代表远端 Release 已更新。
 
 > **v0.12.0 已进入原 `dist` 与安装包**：安全失败原因、暂停分类、未知/空文件进度和 Retry-After 已完成源码、真实 Tk、EXE 与安装包验收；扩展 0.6.2 内容不变。完整证据见 [v0.12.0 更新日志](docs/releases/v0.12.0.md)。
 
 ## 功能特性
 
-> **v0.13.0 已进入正式 `dist`、安装包和 GitHub Release**：主窗口/悬浮条不透明度、悬浮条精修和完成后正常退出已完成源码、真实 Tk/Win32、EXE 与安装包验收；扩展 0.6.2 内容不变。完整证据见 [v0.13.0 更新日志](docs/releases/v0.13.0.md) 与 [设计验收记录](docs/designs/appearance-and-completion-exit.md) 第 8 节。
+> **v0.14.0：侧栏滚动与窗口显示稳定性**。侧栏可独立滚动并访问末尾站点，功能窗口不再为刷新标题栏二次显隐；扩展 0.6.2 内容不变。验证范围与升级步骤见 [v0.14.0 更新日志](docs/releases/v0.14.0.md)。
 
 ✅ **多线程分块下载** - 最多16线程，充分利用带宽
 ✅ **断点续传** - 支持暂停恢复；普通文件续传前校验远端版本，变化或无法确认时安全重下
@@ -129,7 +127,7 @@ python main.py
 - 列表上方可按 **文件名或链接** 搜索（不区分大小写，不支持通配符）
 - 勾选 **"隐藏已完成"** 后已完成任务不再显示，该选项会写入 `config.json` 的 `ui_hide_completed` 并在重启后保留；搜索词不保存
 - **左侧分类树**分三组：状态、文件类型（按扩展名判定）、站点（按链接主机名自动生成，含子域名）。括号里是当前数量，选中项会与搜索、「隐藏已完成」叠加生效，并写入 `config.json` 的 `ui_active_category`
-- **本地构建新增（尚未发版）**：左侧分类栏支持鼠标滚轮和拖动滚动条；内容超出时才显示滚动条，站点增删及窗口缩放后自动调整范围。左右两栏独立滚动，保留 240px 宽度、13 逻辑像素字号和原筛选规则。
+- **侧栏滚动（v0.14.0）**：左侧分类栏支持鼠标滚轮和拖动滚动条；内容超出时才显示滚动条，站点增删及窗口缩放后自动调整范围。左右两栏独立滚动，保留 240px 宽度、13 逻辑像素字号和原筛选规则。
 - **功能窗口显示稳定性修复**：添加、设置、历史等窗口已显示后直接刷新 Windows 标题栏，不再为标题栏重绘先隐藏再弹出；首次布局、字体和配色保持不变。
 - **右键任务卡片**弹出菜单：开始/暂停、打开文件、打开所在文件夹、复制下载链接、上移、置顶、删除任务；不可用的项自动置灰
 - **上移/置顶**会改写任务列表顺序（落库的 `list_order`），重启后保留；等待中的任务按该顺序依次出队
