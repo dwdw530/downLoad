@@ -6,6 +6,10 @@
 
 本版增加主窗口/悬浮条不透明度、悬浮条精修与完成后正常退出；安全失败原因、已暂停分类、未知/空文件进度与 429/503 的 Retry-After 保持。扩展 **0.6.2** 内容不变：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.13.0/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.13.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
 
+> **2026-11-03 本地重建，尚未发版**：`dist/daw-downloader-v0.13.0-windows-x64-setup.exe` 已重新封装源码提交 `b1e2b0c` 的侧栏滚动；沿用当前版本号，未更新 GitHub Release 或标签。此本地文件大小为 155,812,592 字节，SHA256 为 `44b75c63ce499d5bbde9bb6ae66c113fb800524fe54f5432b524ee4522d68d97`，不同于上方正式发布下载。
+
+本地安装包已通过 `scripts/smoke_installer.py` 六组真实验收：中文向导和自选路径、安装后程序/桥接、占用保护、同目录升级保留数据、安全卸载及重装。原浏览器注册已恢复，原配置/数据库与断点目录清单保持；详细记录在 `output/installer-smoke/run-x2hidk1g/result.json`。完整便携 ZIP 位于 `output/local-builds/sidebar-b1e2b0c/`，含本地构建说明与全部浏览器/视频组件，不含用户运行数据。
+
 ## 安装、升级和卸载
 
 1. 双击 `dist/daw-downloader-v0.13.0-windows-x64-setup.exe`。

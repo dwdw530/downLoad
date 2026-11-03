@@ -229,7 +229,7 @@ pending ──start──► downloading ──pause──► paused ──resum
 
 - 主窗口主体为左右分栏：左侧 `CTkFrame` 固定 240 逻辑像素宽，右侧保留搜索行与任务列表。分组：状态（全部/下载中/等待中/已暂停/已完成/失败）、类型（`file_utils.FILE_CATEGORY_LABELS`：视频/音频/文档/压缩包/程序/其他，按扩展名 `guess_file_category` 判定）、站点（按 `url_utils.host_from_url` 聚合，保留非 www 子域，动态重建）。
 - 分类项用**原生 `tkinter.Label`**（`bind("<Button-1>")` + `<Enter>/<Leave>` 换底色），不用 `CTkButton`/`CTkLabel`：侧栏项数以十计且每个主窗口都会重建，CTk 控件的 canvas/字体/hover 动画在反复创建上千次后会显著拖慢 Tk 事件循环（实测 GUI 测试从 120s 劣化到 530s，并连带本地 HTTP 探测超时）。原生控件不吃 CTk 的 `(light, dark)` 元组，颜色由模块级 `SIDEBAR_PALETTE` 提供，主题切换后 `_retheme_sidebar()` 重新上色。
-- 2026-11-03 源码新增侧栏滚动：原生 `Canvas` 内嵌 `Frame` 承载原有分类项，使用单个 `CTkScrollbar`，只在内容溢出时显示。内容增删和视口尺寸变化同步滚动范围，内容不足一屏时归零；主题切换同步画布与内层背景。滚轮只绑定本主窗口，按事件控件的父链识别侧栏，返回 `break` 阻止任务列表接走事件；滚动条自身已处理的滚轮不重复执行，不新增 `bind_all`。原字号、240px 宽度和筛选逻辑不变；尚未进入原 dist/安装包。
+- 2026-11-03 源码新增侧栏滚动：原生 `Canvas` 内嵌 `Frame` 承载原有分类项，使用单个 `CTkScrollbar`，只在内容溢出时显示。内容增删和视口尺寸变化同步滚动范围，内容不足一屏时归零；主题切换同步画布与内层背景。滚轮只绑定本主窗口，按事件控件的父链识别侧栏，返回 `break` 阻止任务列表接走事件；滚动条自身已处理的滚轮不重复执行，不新增 `bind_all`。原字号、240px 宽度和筛选逻辑不变；已进入原 dist 与本地安装包并完成实际运行验收，尚未发版。
 - 选中键编码为 `all` / `status:xxx` / `type:xxx` / `host:xxx`，`_task_matches_category()` 解析；「失败」组含 `failed`/`verify_failed`/`cancelled`。
 - `_refresh_sidebar()` 在任务增删、状态变更后更新各分类计数；启动加载阶段不按半份列表判断站点消失，全部加载后才回退到「全部」。选中项写入 `ui_active_category` 并持久化。
 
