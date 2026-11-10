@@ -3,19 +3,19 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-11-10（v0.14.1 原 dist 构建、安装包六组及附件验收完成）
-- 状态：进行中（v0.14.1 构建验收完成，待双分支推送、标签和 GitHub Release 发布）
+- 更新时间：2026-11-10（v0.14.1 双分支推送、Release、附件和公开下载核验完成）
+- 状态：已完成（v0.14.1 原 dist、安装包六组、GitHub Release 与五附件核验完成）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
-## v0.14.1 构建与发布准备（2026-11-10）
+## v0.14.1 构建、验收与正式发布（2026-11-10，已完成）
 
 - 用户授权重新打包、发布新版本和更新 GitHub；版本选 v0.14.1，修复移动盘缺失时误报网络失败，扩展 0.6.2 不变。保留全部旧标签、Release 和附件，不提交真实运行数据或测试输出。
 - 远端 main/master 基线为 `14be48d8a8eeac4f8e8a695b28ba5898dac62a1e`，原 latest=v0.14.0，21 个旧 Release 元数据已快照；仓库 owner 账号权限核验通过，令牌仅在内存和 curl 标准输入中使用。
 - 原 dist 双 EXE、NSIS 安装包、便携 ZIP 和扩展 ZIP 已生成；安装包 170,131,368 B / `d70cb48768222b764d43f27a8a6efa6a353da25a3f60c27ee83dbd176c3da20b`，便携 ZIP 231,817,043 B / `57281f8ade0b7f6f4336c80550b243f2cd0d16ff7a43cd135627552d808d5ca3`，扩展 ZIP 30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`。两个校验文本已生成，五附件哈希见 `output/releases/v0.14.1/assets-local.json`；27 项便携白名单与旧版清单一致、逐项字节/CRC 通过。
 - 源码 29 项针对性测试通过。实际原 EXE 普通下载、暂停/重启续传、校验、历史和正常退出三组通过（`downloader-exe-smoke-z03v2bw1`）；新版安装包中文向导、安装后真实下载、占用保护、同目录升级、卸载、重装与注册恢复六组通过，报告 `output/installer-smoke/run-w6vibny1/result.json`。构建前后原 6 份用户数据指纹保持，原注册恢复。
-- 临时缺盘夹具先后修正原生窗口字段名、Tk 文本不可经 Win32 标题读取和鼠标事件处理时序；产品逻辑未为这些夹具改变。卡片与目标盘详情使用真实 EXE 截图并经 Windows 中文 OCR 核验，网络请求为 0，旧分块与进度保留。
-- 待 GitHub 提交/双分支推送、annotated 标签、新 Release 及五附件上传核验；本轮不新增或同步长期记忆。完整 Python 套件、物理混合 DPI 和公开站点长期下载未重新验收。
+- 临时缺盘夹具先后修正原生窗口字段名、Tk 文本不可经 Win32 标题读取、鼠标事件处理时序和过早缓存的窗口坐标；产品逻辑未为这些夹具改变。目标盘/临时盘两场景的卡片和详情由真实 EXE 截图并经 Windows 中文 OCR 核验，网络请求为 0，旧分块与进度保留。目标盘证据在 `missing-volume-exe-4m1gwpmn`，临时盘最终报告 `output/releases/v0.14.1/missing-volume-exe-tl90bnlb/result.json`。
+- 发布提交 `0c824a7815484ef5704c2b5c9657a6601794f8f1`，main/master 与 annotated 标签 v0.14.1 已原子推送。Release `440142365` 于 2026-11-10 17:11:56 +08:00 正式公开，[发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.14.1)，latest 正确；五附件 size/digest/state 与本地一致，21 个历史 Release/附件保持。公开 URL 经仓库既有代理核验三个二进制 HEAD 200/尺寸与两个校验文本 GET 字节，未关闭 TLS 或改系统代理。原 6 份用户数据指纹保持；本轮不新增或同步长期记忆，完整 Python 套件、物理混合 DPI 和公开站点长期下载未重新验收。核验记录 `output/releases/v0.14.1/verification-remote.json`。
 
 ## v0.14.0 构建、验收与正式发布（2026-11-03，已完成）
 

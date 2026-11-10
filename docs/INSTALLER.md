@@ -65,6 +65,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 新安装包完成中文向导、自选中文空格路径、安装后桥接与真实下载、占用拦截、同目录升级、卸载、重装及注册恢复六组验收。报告 `output/installer-smoke/run-w6vibny1/result.json`。
 - 安装包 170,131,368 字节，SHA256 `d70cb48768222b764d43f27a8a6efa6a353da25a3f60c27ee83dbd176c3da20b`；便携 ZIP 231,817,043 字节，SHA256 `57281f8ade0b7f6f4336c80550b243f2cd0d16ff7a43cd135627552d808d5ca3`。ZIP 的 27 项白名单载荷逐项与正式目录一致，CRC 通过，不含用户运行数据；扩展 ZIP 与 v0.14.0 字节一致。
 - 构建前后原 6 份配置、数据库与运行文件指纹一致，不删除断点。完整 Python 套件、物理混合 DPI 和所有公开网站长期下载未重新全量验收。
+- 已于 2026-11-10 17:11:56 +08:00 正式发布 [v0.14.1](https://github.com/dwdw530/downLoad/releases/tag/v0.14.1)，Release `440142365`。main/master 与 annotated 标签的发布提交为 `0c824a7`，latest 指向本版；五附件远端 size/digest/state 与本地一致，公开 URL 经既有代理核验二进制 HEAD 200/尺寸和校验文本 GET 字节，21 个旧 Release/附件保持。
 
 ## 2026-11-03 v0.14.0 发布与验收
 
