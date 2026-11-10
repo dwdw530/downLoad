@@ -14,9 +14,11 @@
 | 桥接程序 | `dist/BrowserBridge.exe` | Chrome 原生消息主机 |
 | 浏览器扩展 | `dist/chrome-extension/` | Manifest V3，当前版本 0.6.2 |
 | 离线视频组件 | `dist/video-tools/` | yt-dlp + FFmpeg + ffprobe + Node |
-| 安装包 | `dist/daw-downloader-v0.14.0-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
+| 安装包 | `dist/daw-downloader-v0.14.1-windows-x64-setup.exe` | NSIS 离线安装包，可选安装路径、可从系统卸载 |
 
-发布统一走 GitHub Releases（当前 `v0.14.0`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；全部历史 Release、标签与附件保留。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+发布统一走 GitHub Releases（当前 `v0.14.1`）：便携版 ZIP、独立扩展 ZIP 与安装包，均附 SHA256 校验；全部历史 Release、标签与附件保留。`v0.7.1` 与 `extension-v0.6.1` 未单独发布，其内容已并入 v0.7.2。
+
+v0.14.1 修复缺盘误报网络失败：添加、开始和继续下载前检查目标盘、临时盘及旧分块所在盘；缺盘时不联网、不自动换盘、不清除断点。通用排查建议不再当作明确故障原因，扩展保持 0.6.2，详见 [v0.14.1 更新日志](docs/releases/v0.14.1.md)。
 
 v0.14.0 新增侧栏独立滚动与功能窗口显示稳定性修复；扩展保持 0.6.2，下载安全、透明度、悬浮条和完成后动作保持，详见 [v0.14.0 更新日志](docs/releases/v0.14.0.md)。
 

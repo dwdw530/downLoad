@@ -3,10 +3,19 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-11-03 15:14 +08:00（v0.14.0 发布、附件与公开下载核验完成）
-- 状态：已完成（v0.14.0 双分支、annotated 标签、GitHub Release 与完整附件验收）
+- 更新时间：2026-11-10（v0.14.1 原 dist 构建、安装包六组及附件验收完成）
+- 状态：进行中（v0.14.1 构建验收完成，待双分支推送、标签和 GitHub Release 发布）
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
+
+## v0.14.1 构建与发布准备（2026-11-10）
+
+- 用户授权重新打包、发布新版本和更新 GitHub；版本选 v0.14.1，修复移动盘缺失时误报网络失败，扩展 0.6.2 不变。保留全部旧标签、Release 和附件，不提交真实运行数据或测试输出。
+- 远端 main/master 基线为 `14be48d8a8eeac4f8e8a695b28ba5898dac62a1e`，原 latest=v0.14.0，21 个旧 Release 元数据已快照；仓库 owner 账号权限核验通过，令牌仅在内存和 curl 标准输入中使用。
+- 原 dist 双 EXE、NSIS 安装包、便携 ZIP 和扩展 ZIP 已生成；安装包 170,131,368 B / `d70cb48768222b764d43f27a8a6efa6a353da25a3f60c27ee83dbd176c3da20b`，便携 ZIP 231,817,043 B / `57281f8ade0b7f6f4336c80550b243f2cd0d16ff7a43cd135627552d808d5ca3`，扩展 ZIP 30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`。两个校验文本已生成，五附件哈希见 `output/releases/v0.14.1/assets-local.json`；27 项便携白名单与旧版清单一致、逐项字节/CRC 通过。
+- 源码 29 项针对性测试通过。实际原 EXE 普通下载、暂停/重启续传、校验、历史和正常退出三组通过（`downloader-exe-smoke-z03v2bw1`）；新版安装包中文向导、安装后真实下载、占用保护、同目录升级、卸载、重装与注册恢复六组通过，报告 `output/installer-smoke/run-w6vibny1/result.json`。构建前后原 6 份用户数据指纹保持，原注册恢复。
+- 临时缺盘夹具先后修正原生窗口字段名、Tk 文本不可经 Win32 标题读取和鼠标事件处理时序；产品逻辑未为这些夹具改变。卡片与目标盘详情使用真实 EXE 截图并经 Windows 中文 OCR 核验，网络请求为 0，旧分块与进度保留。
+- 待 GitHub 提交/双分支推送、annotated 标签、新 Release 及五附件上传核验；本轮不新增或同步长期记忆。完整 Python 套件、物理混合 DPI 和公开站点长期下载未重新验收。
 
 ## v0.14.0 构建、验收与正式发布（2026-11-03，已完成）
 
@@ -20,10 +29,11 @@
 
 - 用户授权提交源码、重建原 dist、封装安装包并发布 GitHub 新版本；扩展 0.6.2 内容不变，历史 Release/标签/附件保留。
 - 源码提交 `911dfa7c386e0486747f5cd4ebb6b18b4c8855f2`，main/master 与 annotated 标签 `v0.13.0` 已同步；首次推送因误将超过 GitHub 100 MB 限制的安装包纳入 Git 被拒，随后从提交移除该二进制，安装包仍保留在本机并作为 Release 附件上传。
-- 主程序 `60d37bccc824de2e9ed9274b34173c7f9a09d89fa985257ac71fa6061cc5af3f`、BrowserBridge `7127db05774e240a03719774069a8f9b779de7cbcb10d6cd708a145ef9b93d57`；安装包 155,772,659 B / `377264756264cbe9f606eff3e64610cc3031aa9b83cc5ed643d88def42c94f19`。
+- 主程序 `60d37bccc824de2e9ed9274b34173c7f9a09d89fa985257ac71fa6061cc5af3f`、BrowserBridge `7127db05774e240a03719774069a8f9b779de7cbcb10d6cd708a145ef9b93d57`；安装包 155,772,659 B / `377264756264cbe9f606eff3e64610cc3031aa9b83cc5ed643d88def42c94f19`。用户运行数据未入 Git/Release；发布后 `verification-remote.json` 的 `user_data_unchanged` 为 false，不能宣称 dist/data 字节未变。
 - 便携 ZIP 213,931,651 B / `a518214ce4f0934082861e842901fb3fecdfcc805d2006f05636e265bf14c69b`；扩展 ZIP 30,514 B / `ee2c04026aa9dba9026ade7137b62a50262b342ba7c3cebeb36b4931cf11fc1d`；安装包 `.sha256` 与 ZIP `SHA256SUMS.txt` 已生成。
 - GitHub Release `422629139` 于 **2026-10-24 17:16:29 +08:00** 正式发布，发布页 `https://github.com/dwdw530/downLoad/releases/tag/v0.13.0`；五附件远端 size/digest/state 与本地一致，latest 指向 v0.13.0，历史 Release 保留。
-- 发布后 API 远端资产核验完成；GitHub 大二进制公开下载 HEAD 检查受本机连接超时影响，未将其误报为公开 CDN 全链路通过。其余生产构建、源码对象、ZIP CRC/白名单与用户数据指纹核验通过。
+- 发布后 API 远端资产核验完成；GitHub 大二进制公开下载 HEAD 检查受本机连接超时影响，未将其误报为公开 CDN 全链路通过。其余生产构建、源码对象与 ZIP CRC/白名单核验通过；`dist/data/config.json` 与 `dist/data/downloads.db` 相对发布基线指纹发生变化，运行数据未提交，也未用未知旧副本覆盖/恢复。
+- 2026-10-24 17:29 +08:00：按用户要求更新本安装发布档、原功能分析档、Pi/Claude 共用记忆及 Codex 项目记忆；三项目标均回读核验，未改用户运行数据。
 
 - 用户明确授权原 dist/EXE/安装包、提交推送与 GitHub 发布；新增 v0.12.0，扩展 0.6.2 不变。官方 API 确认旧 latest v0.11.1，18 个历史 Release 元数据已快照，不改历史标签或附件。
 - 原 dist 双 EXE 已重建，本轮 6 个主模块与共用工具模块代码对象与源码一致；主 EXE 21,727,640 B / `d6184e2ca420b5181c7f3c555ed52f8ba389211ae78bf3baf3ed81977bd83e59`，BrowserBridge 9,988,961 B / `c0d093948ab60b65ba72253964621a470c35e88113970a563062b7bcf6b7c030`。
@@ -166,13 +176,14 @@
 
 ## 本地记忆
 
-- Codex：`C:/Users/lenovo/.codex/projects/downLoad_project/memory/project-handoff.md` 和同目录 `memory_index.json`。
-- Claude Code：`C:/Users/lenovo/.claude/projects/D--vscode-workspace-downLoad-project/memory/project-handoff.md`、`memory_index.json`、`MEMORY.md`。
+- Codex：`C:/Users/lenovo/.codex/projects/downLoad_project/memory/project-handoff.md` 和同目录 `memory_index.json`。2026-11-03 15:37 已按 v0.14.0 完成定向更新并回读验收。
+- Claude Code / Pi：`C:/Users/lenovo/.claude/projects/D--vscode-workspace-downLoad-project/memory/project-handoff.md`、`memory_index.json`、`MEMORY.md`。同日期/范围定向更新并回读验收；写入来源标记 `omp`。
+- 本档已同步记录本次记忆完成状态；后续接续按本节与共用工作流定位，不重复搬运发布流水账。
 - 两库安装包约定和 v0.11.1 交付接续均指向本档；新增同名运行 data 边界索引，已纠正仅源码未打包/现行16至15磅等过期摘要，Claude 入口同步。具体提交、哈希和临时验证输出只保留在进度/说明文档中。
 
 ## 下一步行动
 
-本轮暂无剩余实施任务。后续修改安装器时从本档和 `docs/INSTALLER.md` 接续，先核对当前源码、发布附件及用户数据，再按本次具体需求构建和验收。
+v0.14.0 发布与记忆同步已完成，本轮暂无剩余实施任务。后续修改安装器或发布时从本档和 `docs/INSTALLER.md` 接续，先核对当前源码、发布附件及用户数据，再按本次具体需求构建和验收；不移动已发布标签或修改旧附件。
 
 下一次发布的起点：核对 `dist/data` 与当前双 EXE 哈希 → 跑 `python -B -m unittest discover -s tests` → 需要重建时 `scripts/build_exe.py` → `scripts/build_installer.py <新版本>` 与 `scripts/package_release.py <新版本>` → 更新 `docs/releases/<新版本>.md` 与相关链接 → 提交推送并另开标签，保留原 Release。
 

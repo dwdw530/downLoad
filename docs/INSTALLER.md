@@ -2,13 +2,13 @@
 
 安装包提供中文向导、安装路径选择、开始菜单入口、可选桌面快捷方式，以及 Windows 系统卸载入口。包含主程序、BrowserBridge、浏览器扩展、视频组件和第三方许可证，安装和运行不需要 Python。
 
-[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.14.0/daw-downloader-v0.14.0-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.14.0/daw-downloader-v0.14.0-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.14.0)
+[下载安装包](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-downloader-v0.14.1-windows-x64-setup.exe) · [SHA256 校验文件](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-downloader-v0.14.1-windows-x64-setup.exe.sha256) · [发布页](https://github.com/dwdw530/downLoad/releases/tag/v0.14.1)
 
-本版增加侧栏独立滚动与功能窗口显示稳定性修复；下载安全、透明度、悬浮条和完成后动作保持。扩展 **0.6.2** 内容不变：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.14.0/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.14.0.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
+本版修复移动盘未连接时误报网络失败；下载前检查目标盘、临时盘和旧分块所在盘，缺盘时明确提示并保留断点。侧栏滚动、窗口显示稳定性、下载安全、透明度、悬浮条和完成后动作保持。扩展 **0.6.2** 内容不变：[独立插件 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-browser-extension-v0.6.2.zip) · [更新日志](releases/v0.14.1.md)。升级前退出下载器及旧 BrowserBridge，升级后重启下载器和浏览器，无需重新安装扩展。
 
 ## 安装、升级和卸载
 
-1. 双击 `dist/daw-downloader-v0.14.0-windows-x64-setup.exe`。
+1. 双击 `dist/daw-downloader-v0.14.1-windows-x64-setup.exe`。
 2. 选择组件和安装目录。默认安装到 `%LOCALAPPDATA%\Programs\dawDownloader`，仅安装给当前 Windows 用户，无需管理员权限。自选目录必须对当前用户可写。
 3. 从开始菜单或桌面快捷方式启动。勾选浏览器连接时会将当前用户的桥接指向此目录；仍需在 Chrome / Edge 的扩展管理页面手动加载安装目录内的 `chrome-extension`，详见安装后的 `使用说明.txt`。
 4. 升级前正常退出下载器及托盘进程，再运行新版安装包，沿用原安装目录。安装程序只覆盖发布文件，不打包或覆盖现有配置、数据库、下载文件和断点。
@@ -25,7 +25,7 @@
 完整重建主程序、桥接及安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.14.0 --rebuild
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.14.1 --rebuild
 ```
 
 也可双击项目根目录的 `build_installer.bat`。构建前应准备好 `vendor/video`（沿用 `scripts/setup_video_tools.py`），并退出正在使用原 `dist` 的下载器。
@@ -33,10 +33,10 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 仅将已验证的当前 `dist` 制作成安装包：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.14.0
+conda run --no-capture-output -n py310_env python -B scripts/build_installer.py v0.14.1
 ```
 
-输出为 `dist/daw-downloader-v0.14.0-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 复用构建器默认版本 v0.14.0；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
+输出为 `dist/daw-downloader-v0.14.1-windows-x64-setup.exe` 和相邻的 `.exe.sha256` 校验文件。`build_installer.bat` 复用构建器默认版本 v0.14.1；安装包沿用发布版号，软件原有窗口版号不由安装器修改。
 
 构建器复用 `scripts/package_release.py` 的明确文件清单，检查组件存在、非空、位于发布目录内，并核对扩展与源码一致。用户数据库、配置、下载内容和本机桥接清单不属于发布清单。
 
@@ -49,7 +49,7 @@ conda run --no-capture-output -n py310_env python -B scripts/build_installer.py 
 在尚未安装本安装版的 Windows 测试用户下运行：
 
 ```powershell
-conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.14.0-windows-x64-setup.exe
+conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py --installer dist/daw-downloader-v0.14.1-windows-x64-setup.exe
 ```
 
 脚本操作真实中文安装向导，选择包含中文和空格的隔离路径，验证文件、快捷方式、注册表卸载入口和浏览器连接。随后直接通过安装后的 BrowserBridge 冷启动安装后的 EXE，复用现有带测试授权信息的视频下载、字节一致性、去重、单实例及正常退出检查；再验证文件占用拦截、覆盖升级、卸载保留数据、重装及浏览器注册归属。已有安装版或同名快捷方式时拒绝测试，结束后恢复原浏览器注册。
@@ -57,6 +57,14 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 验收输出保存在 `output/installer-smoke/`，包含安装路径页截图、完成页截图、应用测试日志和 `result.json`。应用验收在一次性安装目录内使用 `smoke_browser_bridge.py --app-dir`；该参数遇到已有 `data` 目录会拒绝运行，不能用于已有用户数据的目录。普通 EXE 的鼠标操作回归仍使用 `scripts/smoke_exe.py`，需要未锁定的交互桌面。
 
 静默安装支持 `/S`、`/NODESKTOP`、`/NOBRIDGE`；自选路径使用最后一个参数 `/D=完整路径`。静默卸载使用 `Uninstall.exe /S`，同样保留用户数据。
+
+## 2026-11-10 v0.14.1 构建与验收
+
+- 本版修复移动盘未连接时误报网络失败，扩展 0.6.2 内容不变。原 `dist` 双 EXE 和安装包已重建，源码 29 项针对性测试通过。
+- 正式 EXE 完成普通下载、暂停、重启续传、Range/non-Range、SHA256、历史清空与正常退出三组验收；原生鼠标夹具增加事件处理等待，产品源码未为验收改变。
+- 新安装包完成中文向导、自选中文空格路径、安装后桥接与真实下载、占用拦截、同目录升级、卸载、重装及注册恢复六组验收。报告 `output/installer-smoke/run-w6vibny1/result.json`。
+- 安装包 170,131,368 字节，SHA256 `d70cb48768222b764d43f27a8a6efa6a353da25a3f60c27ee83dbd176c3da20b`；便携 ZIP 231,817,043 字节，SHA256 `57281f8ade0b7f6f4336c80550b243f2cd0d16ff7a43cd135627552d808d5ca3`。ZIP 的 27 项白名单载荷逐项与正式目录一致，CRC 通过，不含用户运行数据；扩展 ZIP 与 v0.14.0 字节一致。
+- 构建前后原 6 份配置、数据库与运行文件指纹一致，不删除断点。完整 Python 套件、物理混合 DPI 和所有公开网站长期下载未重新全量验收。
 
 ## 2026-11-03 v0.14.0 发布与验收
 

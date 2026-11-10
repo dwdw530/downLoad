@@ -76,6 +76,13 @@ def _http_problem(status_code: int):
 
 def _classify(text: str, raw_status_code=None):
     """按明确证据识别失败类别，返回 (卡片原因, 详情建议)。"""
+    # 排查建议不等于已确认的原因，不能因兜底里有“请检查网络”就判为网络故障。
+    text = re.split(r'[，；。](?:请|建议)', text, maxsplit=1)[0]
+    for label in ('下载目录', '临时目录'):
+        if f'{label}所在磁盘不可用' in text:
+            return (f'{label}所在磁盘不可用',
+                    '请插入U盘或移动硬盘，确认原盘符后重试。\n'
+                    '更换保存位置需重新添加任务。')
     if ('服务器要求等待时间超出本次重试上限' in text
             or '服务器要求较长等待' in text):
         return ('服务器要求较长等待',

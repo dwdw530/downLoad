@@ -364,6 +364,20 @@ def _existing_ancestor(path: str) -> str:
     return current
 
 
+def check_download_volumes(directories) -> tuple:
+    """检查下载所用磁盘是否在线；不存在的普通子目录仍可在下载时创建。"""
+    checked = set()
+    for directory, label in directories:
+        drive = os.path.splitdrive(os.path.abspath(directory))[0]
+        root = os.path.normcase(drive + os.sep)
+        if root in checked:
+            continue
+        checked.add(root)
+        if not os.path.isdir(root):
+            return False, f'{label}所在磁盘不可用，请连接存储设备并检查盘符后重试'
+    return True, None
+
+
 def check_free_space(requirements) -> tuple:
     """检查多个路径所在卷的剩余空间。
 

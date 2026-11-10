@@ -22,7 +22,7 @@ from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
 from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, calculate_file_hash,
                                         validate_filename, publish_download, parse_content_disposition,
-                                        check_free_space, format_size,
+                                        check_free_space, check_download_volumes, format_size,
                                         resolve_download_directory)
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
@@ -54,6 +54,7 @@ ADD_ERROR_DETAILS = {
     'range_protocol': '服务器未按分块方式返回数据',
     'invalid_filename': '链接里的文件名不合法',
     'invalid_url': '链接格式不正确',
+    'disk_unavailable': '下载所用磁盘不可用，请连接存储设备并检查盘符后重试',
     'disk_space': '磁盘空间不足',
     'unknown': '无法获取文件大小或链接不可用',
 }
@@ -337,6 +338,15 @@ class DownloadEngine:
                 self.status_callback(task_id, 'failed', str(error))
             return None
 
+        ok, detail = check_download_volumes([
+            (save_path or self.config.download_dir, '下载目录'),
+            (self.config.temp_dir, '临时目录')])
+        if not ok:
+            self._set_add_error('disk_unavailable', detail)
+            if self.status_callback:
+                self.status_callback(task_id, 'failed', detail)
+            return None
+
         metadata = {}
         support_range, total_size = self.check_url_support_range(url, request_context, metadata=metadata)
 
@@ -532,6 +542,10 @@ class DownloadEngine:
             directory = resolve_download_directory(
                 self.config.download_dir, filename,
                 bool(getattr(self.config, 'auto_classify_downloads', False)))
+        ok, detail = check_download_volumes([
+            (directory, '下载目录'), (self.config.temp_dir, '临时目录')])
+        if not ok:
+            raise ValueError(detail)
         if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
                 total_size=0, support_range=False, thread_count=1, download_type=kind, video_height=height,
                 browser_context=protect(context) if context else None, reserve_path=True):
@@ -571,6 +585,15 @@ class DownloadEngine:
         pool.submit(worker.run)
         return True
 
+    def _check_task_volumes(self, task):
+        directories = [(os.path.dirname(task['save_path']), '下载目录'),
+                       (self.config.temp_dir, '临时目录')]
+        # 续传分块可能仍指向旧临时盘，不能只检查当前设置后就清除旧断点。
+        directories.extend((os.path.dirname(chunk['temp_file']), '临时目录')
+                           for chunk in self.db.get_chunks(task['task_id'])
+                           if chunk.get('temp_file'))
+        return check_download_volumes(directories)
+
     def start_download(self, task_id: str, resume: bool = False) -> bool:
         """
         开始下载任务
@@ -598,6 +621,9 @@ class DownloadEngine:
 
         # 旧任务或探测期间外部新建的同名文件也不能被覆盖。
         try:
+            ok, detail = self._check_task_volumes(task)
+            if not ok:
+                raise ValueError(detail)
             self.db.reserve_task_path(task_id)
             task = self.db.get_task(task_id)
             if task.get('download_type') in VIDEO_KINDS:
@@ -1401,6 +1427,11 @@ class DownloadEngine:
         if task['status'] == 'paused':
             # 艹，非分块任务优先复用当前下载器继续，保证暂停后进度不归零
             if not task.get('support_range') and task_id in self.active_downloaders:
+                ok, detail = self._check_task_volumes(task)
+                if not ok:
+                    self._stop_active_task_workers(task_id, wait=True)
+                    self._fail_task(task_id, detail)
+                    return False
                 with self._lifecycle:
                     if not self._is_current_task_run(task_id, run_id):
                         return False

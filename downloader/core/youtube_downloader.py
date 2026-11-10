@@ -12,7 +12,7 @@ import tempfile
 from urllib.parse import parse_qs, urlsplit
 
 from downloader.utils.config import get_app_root
-from downloader.utils.file_utils import publish_download
+from downloader.utils.file_utils import publish_download, check_download_volumes
 from downloader.browser.security import http_url, normalize_stream_context, unprotect
 
 logger = logging.getLogger(__name__)
@@ -384,7 +384,12 @@ class YoutubeDownloader:
 
     def run(self):
         errors = []
+        directories = [(str(Path(self.task['save_path']).parent), '下载目录'),
+                       (str(self.folder), '临时目录')]
         try:
+            ok, detail = check_download_volumes(directories)
+            if not ok:
+                raise ValueError(detail)
             self.folder.mkdir(parents=True, exist_ok=True)
             with self.lock:
                 if not self.active():
@@ -434,10 +439,13 @@ class YoutubeDownloader:
                 self.completed(destination.stat().st_size)
         except Exception as error:
             if self.active():
-                if isinstance(error, ValueError):
+                ok, detail = check_download_volumes(directories)
+                if not ok:
+                    message = detail
+                elif isinstance(error, ValueError):
                     message = str(error)
                 else:
-                    message = '视频下载失败，请检查网络、磁盘或下载组件'
+                    message = '视频下载发生异常，请重试或查看日志'
                     logger.debug("视频下载异常", exc_info=True)
                 # 失败原因与 yt-dlp 输出尾巴都进日志；链接和凭据字段已遮蔽
                 logger.warning("视频下载失败（%s）: %s", self.kind, message)
