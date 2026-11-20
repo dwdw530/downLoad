@@ -14,19 +14,22 @@ from urllib.parse import parse_qs, urlsplit
 from downloader.utils.config import get_app_root
 from downloader.utils.file_utils import publish_download, check_download_volumes
 from downloader.browser.security import http_url, normalize_stream_context, unprotect
+from downloader.core.media_options import (
+    VIDEO_HEIGHTS, MEDIA_SUFFIXES, SUBTITLE_LANGUAGES, normalize_media_options)
 
 logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(r'https?://\S+')
 SECRET_PATTERN = re.compile(r'(?i)\b(cookie|authorization)\b\s*[:=]\s*\S+')
 
-VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash', 'xhs')
+VIDEO_KINDS = ('youtube', 'x', 'bilibili', 'douyin', 'hls', 'dash', 'xhs', 'direct')
 STREAM_KINDS = ('hls', 'dash')
-CONTEXT_KINDS = ('douyin', *STREAM_KINDS, 'xhs')
+CONTEXT_KINDS = ('douyin', *STREAM_KINDS, 'xhs', 'direct')
 
 
 def video_task_url(value, kind):
-    return http_url(value) if kind in STREAM_KINDS else video_page_url(value, kind)
+    return (http_url(value) if kind in (*STREAM_KINDS, 'direct')
+            else video_page_url(value, kind))
 
 
 def youtube_url(value):
@@ -203,7 +206,7 @@ def xhs_request_context(url, context, height=None):
         if item.get('vcodec') not in ('h264', 'h265'):
             raise ValueError('无效的小红书视频编码')
         # 小红书以竖屏为主，清晰度档位按短边计（1080x1920 即 1080p）
-        if height is not None and min(item['width'], item['height']) > height:
+        if height and min(item['width'], item['height']) > height:
             continue
         if media_url in seen:
             continue
@@ -270,13 +273,17 @@ def failure_message(lines, kind=None):
 
 
 class YoutubeDownloader:
-    def __init__(self, task, config, progress, completed, failed, is_current, directory=None):
+    def __init__(self, task, config, progress, completed, failed, is_current,
+                 prepare_output, directory=None):
         self.task = task
         self.config = config
         self.progress = progress
         self.completed = completed
         self.failed = failed
         self.is_current = is_current
+        self.prepare_output = prepare_output
+        self.options = normalize_media_options(task.get('media_options'))
+        self.output_path = None
         self.tools = require_tools(directory)
         self.stop = threading.Event()
         self.process = None
@@ -290,48 +297,79 @@ class YoutubeDownloader:
         self.xhs_format_id = None
 
     def command(self):
-        height = int(self.task.get('video_height') or 720)
-        if height not in (480, 720, 1080):
+        height = self.task.get('video_height', 720)
+        if type(height) is not int or height not in VIDEO_HEIGHTS:
             raise ValueError('不支持的清晰度')
-        command = [str(self.tools / 'yt-dlp.exe'), '--ignore-config', '--no-playlist', '--no-cache-dir',
-                   '--no-update', '--no-colors', '--newline', '--progress', '--progress-delta', '0.5',
-                   '--match-filters', '!is_live',
-                   '--continue', '--no-overwrites', '--socket-timeout', str(self.config.timeout),
-                   '--retries', str(self.config.retry_times), '--fragment-retries', str(self.config.retry_times),
-                   '--js-runtimes', 'node:' + str(self.tools / 'node.exe'),
-                   '--ffmpeg-location', str(self.tools), '--merge-output-format', 'mp4',
-                   '--format', f'bv[height<={height}][vcodec^=avc1]+ba[ext=m4a]/b[height<={height}][ext=mp4]',
+        limit = (f'[height<=?{height}]' if self.kind in STREAM_KINDS
+                 else f'[height<={height}]') if height else ''
+        audio = self.options['mode'] == 'audio'
+        container = 'mkv' if self.options['profile'] == 'source' else 'mp4'
+        if self.kind == 'direct':
+            selection = 'b'
+        elif audio:
+            selection = 'ba/b'
+        elif self.options['profile'] == 'source':
+            selection = f'bv{limit}+ba/b{limit}/bv{limit}'
+        elif self.kind in STREAM_KINDS:
+            selection = f'bv{limit}+ba/b{limit}/bv{limit}'
+        else:
+            selection = (f'bv{limit}[vcodec^=avc1]+ba[ext=m4a]/'
+                         f'b{limit}[ext=mp4]')
+        command = [str(self.tools / 'yt-dlp.exe'), '--ignore-config',
+                   '--no-playlist', '--no-cache-dir', '--no-update',
+                   '--no-colors', '--newline', '--progress',
+                   '--progress-delta', '0.5', '--match-filters', '!is_live',
+                   '--continue', '--no-overwrites', '--socket-timeout',
+                   str(self.config.timeout), '--retries',
+                   str(self.config.retry_times), '--fragment-retries',
+                   str(self.config.retry_times), '--js-runtimes',
+                   'node:' + str(self.tools / 'node.exe'),
+                   '--ffmpeg-location', str(self.tools), '--format', selection,
                    '--output', str(self.folder / 'video.%(ext)s'),
-                   '--progress-template', 'download:__LW_PROGRESS__{"downloaded":%(progress.downloaded_bytes|0)j,"total":%(progress.total_bytes,progress.total_bytes_estimate|0)j,"speed":%(progress.speed|0)j,"file":%(progress.filename)j}']
+                   '--print', 'after_move:__DAW_OUTPUT__%(filepath)j',
+                   '--no-simulate', '--progress-template',
+                   'download:__LW_PROGRESS__{"downloaded":'
+                   '%(progress.downloaded_bytes|0)j,"total":'
+                   '%(progress.total_bytes,progress.total_bytes_estimate|0)j,'
+                   '"speed":%(progress.speed|0)j,"file":%(progress.filename)j}']
+        if audio:
+            command += ['--extract-audio', '--audio-format',
+                        self.options['audio_format']]
+        else:
+            command += ['--merge-output-format', container,
+                        '--remux-video', container]
+        if self.options['subtitles'] != 'none':
+            command += ['--write-subs', '--write-auto-subs', '--sub-langs',
+                        SUBTITLE_LANGUAGES[self.options['subtitles']],
+                        '--sub-format', 'srt/best', '--convert-subs', 'srt']
         if self.config.speed_limit:
             command += ['--limit-rate', str(self.config.speed_limit)]
         proxies = self.config.proxies or {}
         if proxies.get('https') or proxies.get('http'):
             command += ['--proxy', proxies.get('https') or proxies['http']]
+        if self.kind in (*STREAM_KINDS, 'direct'):
+            command += ['--force-generic-extractor']
         if self.kind in STREAM_KINDS:
-            # Native fragment download preserves resume and scoped cookies; never skip lost fragments.
-            command[command.index('--format') + 1] = (
-                f'bv[height<=?{height}]+ba/b[height<=?{height}]/bv[height<=?{height}]')
-            command += ['--force-generic-extractor', '--downloader', 'm3u8:native',
-                        '--downloader', 'dash:native', '--abort-on-unavailable-fragments',
-                        '--remux-video', 'mp4']
+            command += ['--downloader', 'm3u8:native', '--downloader',
+                        'dash:native', '--abort-on-unavailable-fragments']
         if self.kind in CONTEXT_KINDS:
-            context = video_request_context(self.task['url'], self.kind,
-                unprotect(self.task['browser_context']) if self.task.get('browser_context') else None, height)
+            context = video_request_context(
+                self.task['url'], self.kind,
+                unprotect(self.task['browser_context'])
+                if self.task.get('browser_context') else None, height)
             for key, value in context['headers'].items():
                 command += ['--add-header', f'{key}:{value}']
             if self.cookie_file:
                 command += ['--cookies', self.cookie_file]
         if self.kind in ('douyin', 'xhs'):
             if not self.info_file:
-                label = '抖音' if self.kind == 'douyin' else '小红书'
-                raise ValueError(f'{label}视频信息尚未准备好')
+                raise ValueError('视频信息尚未准备好')
             if self.kind == 'xhs':
                 if not self.xhs_format_id:
-                    raise ValueError('未找到不高于所选清晰度的完整 MP4')
-                # 竖屏下 yt-dlp 的 [height<=N] 永远选不到，直接固定已校验的那一条
+                    raise ValueError('未找到所选清晰度的完整 MP4')
                 command[command.index('--format') + 1] = self.xhs_format_id
-            # The browser already obtained signed formats. Do not repeat an unsigned page API request.
+            elif audio:
+                command[command.index('--format') + 1] = 'b'
             return command + ['--load-info-json', self.info_file]
         return command + ['--', video_task_url(self.task['url'], self.kind)]
 
@@ -353,10 +391,9 @@ class YoutubeDownloader:
     def prepare_video_info(self):
         if self.kind not in ('douyin', 'xhs'):
             return
-        try:
-            height = int(self.task.get('video_height') or 720)
-        except (TypeError, ValueError):
-            height = 720
+        height = self.task.get('video_height', 720)
+        if type(height) is not int or height not in VIDEO_HEIGHTS:
+            raise ValueError('不支持的清晰度')
         context = video_request_context(self.task['url'], self.kind,
             unprotect(self.task['browser_context']) if self.task.get('browser_context') else None, height)
         self.expected_duration = context['video']['duration']
@@ -400,7 +437,9 @@ class YoutubeDownloader:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             for line in self.process.stdout:
-                if line.startswith('__LW_PROGRESS__'):
+                if line.startswith('__DAW_OUTPUT__'):
+                    self.output_path = json.loads(line[len('__DAW_OUTPUT__'):])
+                elif line.startswith('__LW_PROGRESS__'):
                     try:
                         self.consume_progress(line)
                     except (ValueError, TypeError):
@@ -413,30 +452,90 @@ class YoutubeDownloader:
                 return
             if code:
                 raise ValueError(failure_message(errors, self.kind))
-            output = self.folder / 'video.mp4'
-            if not output.is_file() or output.stat().st_size == 0:
-                raise ValueError('视频引擎未生成完整的 MP4 文件')
-            probe = subprocess.run([str(self.tools / 'ffprobe.exe'), '-v', 'error', '-show_entries',
-                'stream=codec_type:format=duration', '-of', 'json', str(output)], capture_output=True,
+            if not isinstance(self.output_path, str):
+                raise ValueError('媒体引擎未返回最终输出文件')
+            output = Path(self.output_path).resolve()
+            if (output.parent != self.folder.resolve()
+                    or output.suffix not in MEDIA_SUFFIXES
+                    or not output.is_file() or output.stat().st_size == 0):
+                raise ValueError('媒体引擎未生成完整的输出文件')
+            if self.options['mode'] == 'audio':
+                expected = ('.mp3' if self.options['audio_format'] == 'mp3'
+                            else None)
+            else:
+                expected = ('.mkv' if self.options['profile'] == 'source'
+                            else '.mp4')
+            if expected and output.suffix != expected:
+                raise ValueError('输出文件格式与所选格式不一致')
+            probe = subprocess.run(
+                [str(self.tools / 'ffprobe.exe'), '-v', 'error',
+                 '-show_entries',
+                 'stream=codec_type,codec_name,width,height:format=duration',
+                 '-of', 'json', str(output)], capture_output=True,
                 text=True, encoding='utf-8', timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                creationflags=subprocess.CREATE_NO_WINDOW
+                if os.name == 'nt' else 0)
             metadata = json.loads(probe.stdout)
-            types = {stream.get('codec_type') for stream in metadata.get('streams', [])}
-            required = {'video'} if self.kind in ('x', *STREAM_KINDS) else {'video', 'audio'}
+            streams = metadata.get('streams', [])
+            types = {stream.get('codec_type') for stream in streams}
+            audio = self.options['mode'] == 'audio'
+            required = ({'audio'} if audio else {'video'}
+                        if self.kind in ('x', *STREAM_KINDS, 'direct')
+                        else {'video', 'audio'})
             duration = float(metadata.get('format', {}).get('duration', 0))
-            if probe.returncode or not required <= types or not math.isfinite(duration) or duration <= 0:
-                raise ValueError('合并结果缺少视频、音频或有效时长')
-            if self.expected_duration and abs(duration - self.expected_duration) > max(2, self.expected_duration * 0.02):
-                raise ValueError('下载结果时长与完整视频不符，未发布不完整文件')
+            if (probe.returncode or not required <= types
+                    or (audio and 'video' in types)
+                    or not math.isfinite(duration) or duration <= 0):
+                raise ValueError('输出缺少所选媒体轨或有效时长')
+            if (self.expected_duration and abs(duration - self.expected_duration)
+                    > max(2, self.expected_duration * 0.02)):
+                raise ValueError('输出时长与完整媒体不符，未保存不完整文件')
+            subtitles = []
+            if self.options['subtitles'] != 'none':
+                for path in sorted(self.folder.glob('video.*.srt')):
+                    language = path.name[len('video.'):-len('.srt')]
+                    if (re.fullmatch(r'[a-zA-Z0-9_-]{1,40}', language)
+                            and path.stat().st_size > 0):
+                        subtitles.append((path, f'.{language}.srt'))
             if not self.active():
                 return
-            destination = Path(self.task['save_path'])
+            destination = Path(self.prepare_output(
+                output.suffix, [suffix for _, suffix in subtitles]))
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
+            files = [(path, destination.with_name(destination.stem + suffix))
+                     for path, suffix in subtitles] + [(output, destination)]
+            if any(path.exists() for _, path in files):
                 raise ValueError('保存位置已有同名文件，未覆盖原文件')
-            publish_download(str(output), str(destination), self.active)
-            if self.active():
-                self.completed(destination.stat().st_size)
+            published = []
+            try:
+                for source, target in files:
+                    publish_download(str(source), str(target), self.active)
+                    published.append((source, target))
+                if not self.active():
+                    raise InterruptedError('下载会话已停止')
+            except Exception:
+                for source, target in reversed(published):
+                    publish_download(str(target), str(source))
+                raise
+            video = next((s for s in streams
+                          if s.get('codec_type') == 'video'), {})
+            sound = next((s for s in streams
+                          if s.get('codec_type') == 'audio'), {})
+            result = {
+                'width': video.get('width'), 'height': video.get('height'),
+                'video_codec': video.get('codec_name'),
+                'audio_codec': sound.get('codec_name'), 'duration': duration,
+                'subtitles': [str(target) for _, target in files[:-1]],
+                'subtitle_missing': self.options['subtitles'] != 'none'
+                and (not subtitles or any(
+                    not any(path.name.split('.')[1].split('-')[0]
+                            in (('zh', 'cmn', 'yue') if language == 'zh'
+                                else (language,))
+                            for path, _ in subtitles)
+                    for language in self.options['subtitles'].split(',')
+                    if language != 'all')),
+            }
+            self.completed(destination.stat().st_size, result)
         except Exception as error:
             if self.active():
                 ok, detail = check_download_volumes(directories)

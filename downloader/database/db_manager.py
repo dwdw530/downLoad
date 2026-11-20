@@ -4,6 +4,7 @@
 老王说：这玩意儿是整个项目的底层基础，千万别给我写出bug！
 """
 import logging
+import json
 import sqlite3
 import os
 from datetime import datetime
@@ -12,6 +13,7 @@ import threading
 from downloader.utils.config import get_app_root
 from downloader.core.youtube_downloader import VIDEO_KINDS
 from downloader.utils.file_utils import available_download_path
+from downloader.core.media_options import normalize_media_options
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,13 @@ class DatabaseManager:
                 cursor.execute('ALTER TABLE download_tasks ADD COLUMN list_order REAL DEFAULT 0')
                 cursor.execute('UPDATE download_tasks SET list_order = rowid WHERE list_order IS NULL OR list_order = 0')
 
+            for column in ('media_options', 'media_result'):
+                if column not in columns:
+                    cursor.execute(
+                        f"ALTER TABLE download_tasks ADD COLUMN {column} "
+                        "TEXT DEFAULT '{}'"
+                    )
+
             conn.commit()
             conn.close()
 
@@ -177,7 +186,8 @@ class DatabaseManager:
                                 browser_context: Optional[str] = None, download_type: str = 'file',
                                 video_height: int = 720, status: str = 'pending',
                                 resource_etag=None, resource_last_modified=None,
-                                reserve_path: bool = False) -> bool:
+                                reserve_path: bool = False,
+                                media_options=None) -> bool:
         """
         原子创建任务与分块（可选带预期哈希）
         老王说：任务和分块必须一锅端，要么全成要么全回滚，别搞半截子烂账。
@@ -204,8 +214,13 @@ class DatabaseManager:
                           thread_count, status, self._next_list_order(cursor), resource_etag, resource_last_modified))
 
                     if download_type in VIDEO_KINDS:
-                        cursor.execute('UPDATE download_tasks SET download_type = ?, video_height = ? WHERE task_id = ?',
-                                       (download_type, video_height, task_id))
+                        options = normalize_media_options(media_options)
+                        cursor.execute(
+                            'UPDATE download_tasks SET download_type = ?, '
+                            'video_height = ?, media_options = ? '
+                            'WHERE task_id = ?',
+                            (download_type, video_height,
+                             json.dumps(options), task_id))
                     if browser_context:
                         cursor.execute('UPDATE download_tasks SET browser_context = ? WHERE task_id = ?',
                                        (browser_context, task_id))
@@ -237,8 +252,8 @@ class DatabaseManager:
                 if conn:
                     conn.close()
 
-    def reserve_task_path(self, task_id: str):
-        """启动前重查外部新增文件和旧任务重名；重试也不覆盖上次的输出。"""
+    def reserve_task_path(self, task_id: str, extension=None, subtitles=()):
+        """预留主文件及字幕的共同名称，不覆盖现有文件或其他任务。"""
         with self._lock:
             conn = self._get_connection()
             try:
@@ -249,9 +264,30 @@ class DatabaseManager:
                         raise ValueError('任务不存在')
                     occupied = [row[0] for row in conn.execute(
                         'SELECT save_path FROM download_tasks WHERE task_id != ?', (task_id,))]
-                    path = available_download_path(task[0], occupied)
+                    original = task[0]
+                    if extension is not None:
+                        original = os.path.splitext(original)[0] + extension
+                    while True:
+                        path = available_download_path(original, occupied)
+                        base = os.path.splitext(path)[0]
+                        if not any(os.path.lexists(base + suffix)
+                                   for suffix in subtitles):
+                            break
+                        occupied.append(path)
                     conn.execute('UPDATE download_tasks SET filename = ?, save_path = ? WHERE task_id = ?',
                                  (os.path.basename(path), path, task_id))
+            finally:
+                conn.close()
+        return path
+
+    def update_media_result(self, task_id, result):
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                with conn:
+                    conn.execute(
+                        'UPDATE download_tasks SET media_result = ? '
+                        'WHERE task_id = ?', (json.dumps(result), task_id))
             finally:
                 conn.close()
 

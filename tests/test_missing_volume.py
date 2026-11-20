@@ -123,7 +123,9 @@ class MissingVolumeTests(unittest.TestCase):
                         'save_path': str((self.missing if location == 'destination' else self.root) / 'video.mp4')}
                 failed, completed = Mock(), Mock()
                 with patch('downloader.core.youtube_downloader.require_tools', return_value=self.root):
-                    worker = YoutubeDownloader(task, self.config, Mock(), completed, failed, lambda: True)
+                    worker = YoutubeDownloader(
+                        task, self.config, Mock(), completed, failed,
+                        lambda: True, lambda _ext, _subs: task['save_path'])
                 if location == 'temp':
                     worker.folder = self.missing / 'x' / location
                 with patch('downloader.core.youtube_downloader.subprocess.Popen') as process:
@@ -141,7 +143,9 @@ class MissingVolumeTests(unittest.TestCase):
         task = {'task_id': 'local-error', 'download_type': 'x',
                 'save_path': str(self.root / 'video.mp4')}
         with patch('downloader.core.youtube_downloader.require_tools', return_value=self.root):
-            worker = YoutubeDownloader(task, self.config, Mock(), completed, failed, lambda: True)
+            worker = YoutubeDownloader(
+                task, self.config, Mock(), completed, failed, lambda: True,
+                lambda _ext, _subs: task['save_path'])
         with patch('downloader.core.youtube_downloader.subprocess.Popen') as process:
             worker.run()
         process.assert_not_called()

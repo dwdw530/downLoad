@@ -1,3 +1,5 @@
+import {normalizeMediaOptions} from "./media-options.js";
+
 let tabId;
 const $ = id => document.getElementById(id);
 const send = message => chrome.runtime.sendMessage({...message, tabId});
@@ -10,7 +12,16 @@ function node(tag, value, className) {
 async function refresh() {
   const result = await send({action: "list"});
   $("enabled").checked = result.enabled !== false;
-  $("quality").value = String(result.videoHeight || 720);
+  $("quality").value = String(result.videoHeight ?? 720);
+  const options = normalizeMediaOptions(result.mediaOptions);
+  $("mode").value = options.mode;
+  $("audioFormat").value = options.audio_format;
+  $("profile").value = options.profile;
+  $("subtitles").value = options.subtitles;
+  const audio = options.mode === "audio";
+  $("audioFormat").disabled = !audio;
+  $("quality").disabled = audio;
+  $("profile").disabled = audio;
   $("items").replaceChildren();
   if (!result.enabled || !result.items?.length) {
     $("items").append(node("div", result.enabled === false ? "视频识别已关闭" : result.emptyMessage || "当前页面不可用", "empty"));
@@ -21,8 +32,8 @@ async function refresh() {
     const info = node("div", "");
     info.append(node("div", item.name, "name"));
     const supported = !item.protected && ["mp4", "webm", "youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind);
-    const note = item.protected ? "受保护视频" : ["youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
-      : supported ? item.sizeLabel : item.unsupportedReason;
+    const note = item.protected ? "受保护视频"
+      : supported ? result.mediaDescription || item.sizeLabel : item.unsupportedReason;
     info.append(node("div", `${item.kindLabel} · ${note}`, "meta"));
     const button = node("button", "下载", "download");
     button.disabled = !supported;
@@ -50,6 +61,15 @@ $("quality").addEventListener("change", async () => {
   await send({action: "setting", videoHeight: Number($("quality").value)});
   await refresh();
 });
+for (const id of ["mode", "audioFormat", "profile", "subtitles"]) {
+  $(id).addEventListener("change", async () => {
+    await send({action: "setting", mediaOptions: {
+      mode: $("mode").value, audio_format: $("audioFormat").value,
+      profile: $("profile").value, subtitles: $("subtitles").value
+    }});
+    await refresh();
+  });
+}
 (async () => {
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   tabId = tab?.id;

@@ -3,10 +3,22 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-11-10（v0.14.1 双分支推送、Release、附件和公开下载核验完成）
-- 状态：已完成（v0.14.1 原 dist、安装包六组、GitHub Release 与五附件核验完成）
+- 更新时间：2026-11-20（v0.15.0 原 dist、安装包及 ZIP 已构建，进入正式发布）
+- 状态：本地构建与核心验收完成，GitHub 提交发布进行中。
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
+
+## v0.15.0 打包验收与发布（2026-11-20）
+
+- 用户明确授权打包、提交代码、发布 GitHub 新版本。桌面版 v0.15.0、扩展 0.7.0，新增仅音频、已有字幕、高清选项和简洁更新检查；不覆盖旧标签、Release 或附件，运行数据不入 Git/Release。
+- 发布基线 main/master 均为 fc35ec183b7b8244040741d5b1feab36d09a8c23，旧 latest=v0.14.1，22 个历史 Release/附件元数据已快照。使用仓库 owner 已存凭据并验证 admin/push 权限，仅内存使用，不写源码、配置或日志。
+- 明确使用 py310_env Python 3.10.14 / PyInstaller 6.17.0 构建原 dist，再制作 NSIS 3.13 安装包。主 EXE SHA256 为 16fbfea5e1ba69d18932f636e0dec101afde1f82081e959d58953c7cacc2377a，BrowserBridge 为 f6f56bc6fcb81ab61310e2d86fca10b9699f86978c9a36796dc808dcb666e710。
+- 安装包为 170,213,713 B / 30cf1062e1a1de1bf58d512e0515765d5cc9fe915c0e341eef258b8e9c9a306c；便携 ZIP 为 231,831,742 B / 754850bf5fc60c87d345754b9dd5645c0485b46ab1c6744ab86b49fb706e4d50；扩展 ZIP 为 32,477 B / d3355d52b4d8cd98b5a40dd0d15acfe477735cbb7a9e6d7d471cfe8c0b1ef463。另含安装包 .sha256 和 ZIP SHA256SUMS.txt，五附件详情见 output/releases/v0.15.0/assets-local.json。
+- 96 项 Python 和 44 项扩展检查通过。正式 Host/EXE 五组实际下载通过：源 Opus、MP3、3840×2160 MKV/英文 SRT、1440p 上限、字幕缺失反馈；实际文件扩展名与历史记录一致，同请求去重通过。媒体正常退出后保留 paused 状态和 7168 字节断点及音频/MP3 设置。
+- 安装包六组验证通过：中文向导与自选中文空格路径、安装后实际下载与单实例、占用保护、同目录升级保留数据、卸载保留数据及其他注册、重装与注册恢复。报告 output/installer-smoke/run-278wjg5r/result.json；原六份运行文件指纹不变、无新增文件，见 user-data-verification.json。
+- 鼠标暂停/继续验收被 LockScreenBackstopFrame 遮挡，未绕过锁屏，也未改成伪造点击通过。该项未完成，保留失败记录；五组真实媒体完成结果及正常退出断点证明独立记录，不将其冒充完整鼠标回归。
+- 便携 ZIP 28 项、扩展 ZIP 14 项 CRC/无重复条目/白名单/逐项内容一致性通过，不包含 data/temp/logs。原发布脚本仍在打包前校验扩展与源码；冒烟窗口版本已统一读取 APP_VERSION，不再固定旧 v1.0。
+- 本地证据、旧 Release 快照与附件哈希位于 output/releases/v0.15.0/。提交、标签与公开 Release 结果在实际完成后补充，不宣称已公开。
 
 ## v0.14.1 构建、验收与正式发布（2026-11-10，已完成）
 

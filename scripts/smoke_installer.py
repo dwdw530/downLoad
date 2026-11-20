@@ -15,6 +15,7 @@ import time
 import winreg
 
 from package_release import collect_release_files, sha256
+from downloader.version import APP_VERSION
 from smoke_exe import app_windows, capture, enum_children, wait_for
 
 
@@ -151,7 +152,8 @@ def assert_preserved(files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--installer', type=Path, default=ROOT / 'dist' / 'daw-downloader-v0.14.1-windows-x64-setup.exe')
+    parser.add_argument('--installer', type=Path, default=ROOT / 'dist' /
+                        f'daw-downloader-v{APP_VERSION}-windows-x64-setup.exe')
     args = parser.parse_args()
     installer = args.installer.resolve()
     desktop = shell_folder(0x10) / 'daw下载器.lnk'

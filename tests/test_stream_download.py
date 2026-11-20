@@ -82,7 +82,9 @@ class StreamTests(unittest.TestCase):
                         browser_context=protect(self.context), save_path=str(self.root / (kind + '.mp4')))
             completed, failed = Mock(), Mock()
             with patch('downloader.core.youtube_downloader.require_tools', return_value=self.root):
-                worker = YoutubeDownloader(task, self.config, Mock(), completed, failed, lambda: True)
+                worker = YoutubeDownloader(
+                    task, self.config, Mock(), completed, failed, lambda: True,
+                    lambda _ext, _subs: task['save_path'])
             command = worker.command()
             self.assertEqual(command[-1], URL)
             self.assertIn('--abort-on-unavailable-fragments', command)
@@ -99,14 +101,17 @@ class StreamTests(unittest.TestCase):
                 jars.append(jar)
                 self.assertIn('media.example.test\tFALSE\t/video/\tTRUE', jar.read_text())
                 self.assertIn('private-token', jar.read_text())
-                return Mock(stdout=io.StringIO(''), wait=Mock(return_value=0))
+                result = '__DAW_OUTPUT__' + json.dumps(
+                    str(worker.folder / 'video.mp4')) + '\n'
+                return Mock(stdout=io.StringIO(result), wait=Mock(return_value=0))
 
             probe = SimpleNamespace(returncode=0, stdout=json.dumps(
                 {'streams': [{'codec_type': 'video'}], 'format': {'duration': '5'}}))
             with patch('downloader.core.youtube_downloader.subprocess.Popen', side_effect=launch), \
                     patch('downloader.core.youtube_downloader.subprocess.run', return_value=probe):
                 worker.run()
-            completed.assert_called_once_with(5)
+            completed.assert_called_once()
+            self.assertEqual(completed.call_args.args[0], 5)
             failed.assert_not_called()
             self.assertTrue(all(not jar.exists() for jar in jars))
 

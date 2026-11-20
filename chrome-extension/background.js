@@ -1,5 +1,7 @@
 import {classify, classifyResponse, displayName, upsert, publicItem, youtubeUrl, xUrl, isXPage, bilibiliUrl, douyinUrl, isDouyinPage, xhsUrl, isXhsPage} from "./media.js";
 import {registerLinkDownloadMenu} from "./link-download.js";
+import {VIDEO_HEIGHTS, normalizeMediaOptions, readMediaSettings, needsMediaFeature,
+  mediaRequestId, describeMediaSettings} from "./media-options.js";
 
 const HOST = "com.laowang.downloader";
 const tabLocks = new Map();
@@ -117,26 +119,32 @@ async function download(tabId, id, senderFrame) {
     const current = xhsUrl(frame?.url);
     if (!isXhsPage(frame?.url) || (current && current !== item.url)) return {ok: false, error: "小红书视频已切换，请刷新资源列表"};
   }
-  const sendKey = `${tabId}:${id}`;
+  const {height, options} = await readMediaSettings();
+  const requestId = await mediaRequestId(item.id, height, options);
+  const advanced = needsMediaFeature(height, options);
+  const sendKey = `${tabId}:${requestId}`;
   if (sending.has(sendKey)) return sending.get(sendKey);
   const request = (async () => {
     if (["youtube", "x", "bilibili"].includes(item.kind)) {
       const connection = await native({action: "ping"});
       if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: "请更新并重启桌面下载器，视频模块尚未就绪"};
-      const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
-      const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
-      return native({action: "download", request_id: `${item.id}-${height}`,
+      if (advanced && !connection.features?.includes("media_options_v1"))
+        return {ok: false, error: "请升级桌面下载器后使用音频、字幕或高清选项"};
+      return native({action: "download", request_id: requestId,
         url: item.kind === "bilibili" ? bilibiliUrl(item.url) : item.kind === "x" ? xUrl(item.url) : youtubeUrl(item.url),
-        kind: item.kind, filename: item.name, height});
+        kind: item.kind, filename: item.name, height, media_options: options});
     }
     const headers = {"User-Agent": navigator.userAgent};
     const segmented = ["hls", "dash"].includes(item.kind);
-    const scopedContext = segmented || item.kind === "douyin" || item.kind === "xhs";
+    const scopedContext = segmented || item.kind === "douyin" || item.kind === "xhs"
+      || (["mp4", "webm"].includes(item.kind) && needsMediaFeature(720, options));
     if (scopedContext) {
       const connection = await native({action: "ping"});
-      if (!connection.capabilities?.includes(item.kind)) return {ok: false, error: item.kind === "douyin"
+      if (!connection.capabilities?.includes(["mp4", "webm"].includes(item.kind) ? "direct" : item.kind)) return {ok: false, error: item.kind === "douyin"
         ? "请更新并重启桌面下载器，抖音模块尚未就绪" : item.kind === "xhs"
         ? "请更新并重启桌面下载器，小红书模块尚未就绪" : "请更新并重启桌面下载器，流媒体模块尚未就绪"};
+      if (advanced && !connection.features?.includes("media_options_v1"))
+        return {ok: false, error: "请升级桌面下载器后使用音频、字幕或高清选项"};
     }
     let video;
     if (item.kind === "douyin") {
@@ -177,8 +185,6 @@ async function download(tabId, id, senderFrame) {
     const cookies = await chrome.cookies.getAll({url: item.url, storeId});
     const ordinary = cookies.filter(cookie => !cookie.partitionKey).sort((a, b) => b.path.length - a.path.length);
     if (scopedContext) {
-      const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
-      const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
       if (item.kind === "douyin") {
         // Reading cookies/settings is asynchronous: a feed may switch after metadata was captured.
         const selected = await chrome.tabs.sendMessage(tabId, {action: "douyinPost"}, {frameId: item.frameId}).catch(() => null);
@@ -196,13 +202,14 @@ async function download(tabId, id, senderFrame) {
         if (!latest || !(await setting())) return {ok: false, error: "视频资源已过期或识别已关闭，请刷新页面"};
         if (latest.protected) return {ok: false, error: "受保护视频不支持下载"};
       }
-      return native({action: "download", request_id: `${item.id}-${height}`, url: item.url,
-        filename: item.name, kind: item.kind, height, headers, ...(video ? {video} : {}),
+      return native({action: "download", request_id: requestId, url: item.url,
+        filename: item.name, kind: item.kind, height, media_options: options,
+        headers, ...(video ? {video} : {}),
         cookies: ordinary.filter(cookie => cookie.name).map(({name, value, domain, path, secure, hostOnly}) => ({name, value, domain, path, secure, hostOnly}))});
     }
     if (ordinary.length) headers.Cookie = ordinary.map(cookie => `${cookie.name}=${cookie.value}`).join("; ");
-    return native({action: "download", request_id: item.id, url: item.url,
-      filename: item.name, kind: item.kind, headers});
+    return native({action: "download", request_id: requestId, url: item.url,
+      filename: item.name, kind: item.kind, height, media_options: options, headers});
   })().catch(() => ({ok: false, error: "读取当前网站授权信息失败"}));
   sending.set(sendKey, request);
   try { return await request; } finally { sending.delete(sendKey); }
@@ -213,7 +220,8 @@ async function handle(message, sender) {
   const popup = sender.url === chrome.runtime.getURL("popup.html");
   const tabId = popup ? message.tabId : sender.tab?.id;
   if (message.action === "setting" && popup) {
-    if ([480, 720, 1080].includes(message.videoHeight)) await chrome.storage.local.set({videoHeight: message.videoHeight});
+    if (VIDEO_HEIGHTS.includes(message.videoHeight)) await chrome.storage.local.set({videoHeight: message.videoHeight});
+    if (message.mediaOptions) await chrome.storage.local.set({mediaOptions: normalizeMediaOptions(message.mediaOptions)});
     if (typeof message.enabled === "boolean") {
       await chrome.storage.local.set({enabled: message.enabled});
       if (!message.enabled) {
@@ -288,8 +296,9 @@ async function handle(message, sender) {
       : onDouyin ? "未确认当前视频，请先播放视频并完整刷新页面后重试"
       : onXhs ? "未获取笔记视频信息，请刷新笔记页后重试"
       : applies(states[`blob:${tabId}`]) ? "检测到浏览器内视频源（blob），尚未获取可下载直链" : "当前页面尚未发现视频资源";
-    const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
-    return {ok: true, enabled: await setting(), emptyMessage, videoHeight,
+    const {height, options} = await readMediaSettings();
+    return {ok: true, enabled: await setting(), emptyMessage, videoHeight: height,
+      mediaOptions: options, mediaDescription: describeMediaSettings(height, options),
       items: items.filter(i => (popup || i.frameId === sender.frameId) &&
         (pageUrl ? i.kind === pageKind && i.url === pageUrl : onDouyin ? false : onX ? popup && i.kind === pageKind : true)).map(publicItem)};
   }

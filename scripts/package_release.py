@@ -4,12 +4,16 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from downloader.version import APP_VERSION
 
 from build_exe import VIDEO_FILES
 
 
-EXTENSION_FILES = ('background.js', 'content.js', 'douyin-page.js', 'xhs-page.js', 'link-download.js', 'media.js', 'manifest.json', 'package.json',
+EXTENSION_FILES = ('background.js', 'content.js', 'douyin-page.js', 'xhs-page.js', 'link-download.js', 'media.js', 'media-options.js', 'manifest.json', 'package.json',
                    'popup.js', 'popup.html', 'popup.css', 'icons/download.svg', 'icons/LICENSE')
 PROGRAM_FILES = ('daw下载器.exe', 'BrowserBridge.exe', 'install_browser_bridge.cmd', 'uninstall_browser_bridge.cmd')
 
@@ -54,6 +58,8 @@ def main():
     pattern = r'extension-v\d+\.\d+\.\d+' if args.extension_only else r'v\d+\.\d+\.\d+'
     if not re.fullmatch(pattern, args.version):
         parser.error('Expected an extension-vMAJOR.MINOR.PATCH tag with --extension-only, otherwise vMAJOR.MINOR.PATCH')
+    if not args.extension_only and args.version != f'v{APP_VERSION}':
+        parser.error(f'Release tag must match downloader/version.py: v{APP_VERSION}')
     root = Path(__file__).resolve().parents[1]
     dist = root / 'dist'
     notes = root / 'docs' / 'releases' / (args.version + '.md')

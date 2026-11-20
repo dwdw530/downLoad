@@ -25,6 +25,9 @@ from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT, scale_sidebar_font
 from downloader.utils.config import normalize_opacity
+from downloader.ui.update_dialog import UpdateDialog
+from downloader.version import APP_VERSION
+from downloader.core.media_options import describe_media_result
 
 
 logger = logging.getLogger(__name__)
@@ -88,7 +91,7 @@ class MainWindow(ctk.CTk):
         self._clipboard_last_seen = None  # 上一次见到的剪贴板内容，同一次内容只弹一次
 
         # 设置窗口
-        self.title("daw下载器 v1.0")
+        self.title(f"daw下载器 v{APP_VERSION}")
         from downloader.ui.tray_manager import icon_path
         window_icon = icon_path()
         self.iconbitmap(default=window_icon)
@@ -158,6 +161,14 @@ class MainWindow(ctk.CTk):
         # 不管主题是哪条路径改的，最多 0.5 秒后侧栏颜色都会跟上。
         self._last_appearance_mode = ctk.get_appearance_mode()
         self.after(500, self._watch_appearance_mode)
+
+    def _on_updates(self):
+        dialog = getattr(self, '_update_dialog', None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.lift()
+            dialog.focus_set()
+        else:
+            self._update_dialog = UpdateDialog(self)
 
     def _watch_appearance_mode(self):
         """外观模式变化兜底：确保侧栏原生控件始终跟随当前主题"""
@@ -299,6 +310,9 @@ class MainWindow(ctk.CTk):
         # 历史按钮
         history_btn = ctk.CTkButton(toolbar, text="📜 历史", command=self._on_history, width=100)
         history_btn.pack(side="right", padx=5)
+
+        update_btn = ctk.CTkButton(toolbar, text="检查更新", command=self._on_updates, width=90)
+        update_btn.pack(side="right", padx=5)
 
         # 主体：左侧分类树 + 右侧任务区
         content = ctk.CTkFrame(self, fg_color="transparent")
@@ -1100,6 +1114,7 @@ class MainWindow(ctk.CTk):
             return
         if window.winfo_exists():
             window.update_status(status, message, downloaded_size, total_size, speed)
+            window.update_media(self.task_manager.get_task(task_id) or {})
         else:
             del self._detail_windows[task_id]
 
@@ -1843,9 +1858,14 @@ class MainWindow(ctk.CTk):
         if label is None or not label.winfo_exists():
             return
         reason, _advice = describe_task_problem(status, message)
+        summary = ''
+        if status == 'completed':
+            task = self.task_manager.get_task(task_id) or {}
+            summary = describe_media_result(task.get('media_result'))
+            reason = summary
         if reason:
             text = reason if len(reason) <= 80 else reason[:79] + '…'
-            label.configure(text=f"原因：{text}")
+            label.configure(text=text if summary else f"原因：{text}")
             if not label.winfo_manager():
                 label.pack(fill="x", padx=10, pady=(0, 5), before=widgets['button_frame'])
         elif label.winfo_manager():

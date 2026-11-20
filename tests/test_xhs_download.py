@@ -1,4 +1,5 @@
 """XHS note pages: URL normalization, scoped context validation and complete output checks."""
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -100,7 +101,9 @@ class XhsTests(unittest.TestCase):
         task = dict(task_id='xhs-task', url=URL, download_type='xhs', video_height=720,
                     browser_context=protect(self.context), save_path=str(self.root / 'out.mp4'))
         with patch(MODULE + '.require_tools', return_value=self.root):
-            worker = YoutubeDownloader(task, self.config(), Mock(), completed, failed, lambda: True)
+            worker = YoutubeDownloader(
+                task, self.config(), Mock(), completed, failed, lambda: True,
+                lambda _ext, _subs: task['save_path'])
         worker.folder.mkdir(parents=True)
         (worker.folder / 'video.mp4').write_bytes(b'video')
         infos, cookies = [], []
@@ -122,7 +125,9 @@ class XhsTests(unittest.TestCase):
             self.assertIn('User-Agent:test-browser', command)
             self.assertIn('Referer:https://www.xiaohongshu.com/', command)
             self.assertIn('--add-header', command)
-            return Mock(stdout=io_empty(), wait=Mock(return_value=0))
+            result = '__DAW_OUTPUT__' + json.dumps(
+                str(worker.folder / 'video.mp4')) + '\n'
+            return Mock(stdout=io.StringIO(result), wait=Mock(return_value=0))
 
         probe = SimpleNamespace(returncode=0, stdout=json.dumps(
             {'streams': [{'codec_type': 'video'}, {'codec_type': 'audio'}], 'format': {'duration': '12.34'}}))
@@ -144,9 +149,6 @@ class XhsTests(unittest.TestCase):
                                speed_limit=0, proxies={}, download_dir=str(self.root / 'out'))
 
 
-def io_empty():
-    import io
-    return io.StringIO('')
 
 
 if __name__ == '__main__':

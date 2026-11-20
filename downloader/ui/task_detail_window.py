@@ -11,6 +11,7 @@ import tkinter as tk
 from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.ui.task_presentation import describe_task_problem, format_task_progress
 from downloader.utils.file_utils import format_progress_texts, format_speed, parse_byte_count
+from downloader.core.media_options import describe_media_result
 
 # 状态文案映射（任务卡片与详情窗共用，改这里两处一起变）
 STATUS_TEXT_MAP = {
@@ -74,6 +75,7 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
         self.canvas.bind("<Configure>", lambda _event: self._redraw())
         self.after(60, self._redraw)
         self._refresh_stats()
+        self.update_media(task)
 
     def _create_ui(self, task: dict):
         """创建UI组件"""
@@ -85,6 +87,9 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
 
         self.stats_label = ctk.CTkLabel(self, text="", font=("Arial", 12), anchor="w", justify="left")
         self.stats_label.pack(fill="x", padx=14, pady=(0, 4))
+
+        self.media_label = ctk.CTkLabel(
+            self, text='', anchor='w', justify='left', wraplength=520)
 
         progress_row = ctk.CTkFrame(self, fg_color="transparent")
         progress_row.pack(fill="x", padx=14, pady=(0, 8))
@@ -110,6 +115,20 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
         self.canvas = tk.Canvas(self, bg=CANVAS_BG, highlightthickness=0, height=260)
         self.canvas.pack(fill="both", expand=True, padx=14, pady=(0, 12))
         self._refresh_problem()
+
+    def update_media(self, task):
+        if self._closed or not self.winfo_exists():
+            return
+        filename = task.get('filename') or ''
+        self.filename_label.configure(text=filename)
+        self.title(f'任务详情 - {filename}')
+        summary = describe_media_result(task.get('media_result'))
+        self.media_label.configure(text=summary)
+        if summary and not self.media_label.winfo_manager():
+            self.media_label.pack(fill='x', padx=14, pady=(0, 6),
+                                  before=self.stats_label)
+        elif not summary and self.media_label.winfo_manager():
+            self.media_label.pack_forget()
 
     def update_progress(self, downloaded_size: int, total_size: int, speed: float):
         """主窗口进度事件推送（主线程调用）"""

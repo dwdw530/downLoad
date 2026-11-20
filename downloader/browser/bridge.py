@@ -16,10 +16,12 @@ from downloader.browser.security import http_url, normalize_context, protect, re
 from downloader.utils.config import get_app_root
 from downloader.utils.file_utils import resolve_download_directory
 from downloader.core.youtube_downloader import video_page_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
+from downloader.core.media_options import (
+    DEFAULT_MEDIA_OPTIONS, normalize_media_options, media_extension)
 
 MAX_MESSAGE = 256 * 1024
 # Protocol version 2 keeps the video capabilities untouched and advertises the file branch separately.
-FEATURES = ('file_download_v1',)
+FEATURES = ('file_download_v1', 'media_options_v1')
 
 
 def instance_key():
@@ -105,7 +107,10 @@ def video_filename(message):
     candidate = re.sub(r'\.(mp4|webm)$', '', candidate, flags=re.I).strip(' .') or 'video'
     if re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', candidate, re.I):
         candidate = '_' + candidate
-    return candidate + '.' + kind
+    options = normalize_media_options(message.get('media_options'))
+    suffix = (media_extension(options) if kind == 'mp4'
+              or options != DEFAULT_MEDIA_OPTIONS else '.webm')
+    return candidate + suffix
 
 
 class BridgeServer:
@@ -212,7 +217,10 @@ class BridgeServer:
             if request_id in self.receipts:
                 return self.receipts[request_id]
             filename = video_filename(message)
+            options = normalize_media_options(message.get('media_options'))
             kind = message.get('kind')
+            if kind in ('mp4', 'webm') and options != DEFAULT_MEDIA_OPTIONS:
+                kind = 'direct'
             is_page = kind in PAGE_KINDS
             url = video_page_url(message['url'], kind) if is_page else http_url(message['url'])
             context = None if is_page else normalize_context(url, {'headers': message.get('headers', {})})
@@ -234,10 +242,13 @@ class BridgeServer:
             else:
                 raise ValueError('Too many duplicate filenames')
             if kind in CONTEXT_KINDS:
-                task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720),
-                                                       kind=kind, request_context=context)
+                task_id = self.manager.add_youtube_task(
+                    url, name, directory, message.get('height', 720),
+                    kind=kind, request_context=context, media_options=options)
             elif is_page:
-                task_id = self.manager.add_youtube_task(url, name, directory, message.get('height', 720), kind=kind)
+                task_id = self.manager.add_youtube_task(
+                    url, name, directory, message.get('height', 720),
+                    kind=kind, media_options=options)
             else:
                 task_id = self.manager.add_task(url, filename=name, save_path=directory, request_context=context)
             if not task_id:

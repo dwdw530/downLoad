@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from downloader.browser.native_host import read_message, write_message
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
+from downloader.version import APP_VERSION
 from smoke_exe import app_windows, wait_for, user32, capture
 
 
@@ -108,18 +109,18 @@ def main():
         assert native(file_message) == file_response
         assert len(db.get_all_tasks()) == 2
         print('PASS: packaged file_download_v1, authenticated signed file, exact bytes and deduplication')
-        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title']=='daw下载器 v1.0'),None))
+        window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == f'daw下载器 v{APP_VERSION}'), None))
         capture(window['hwnd'], workspace / 'video-completed.png')
         second = subprocess.run([str(exe)], capture_output=True, timeout=20,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         assert second.returncode == 0
-        assert len([w for w in app_windows(exe) if w['title']=='daw下载器 v1.0']) == 1
+        assert len([w for w in app_windows(exe) if w['title'] == f'daw下载器 v{APP_VERSION}']) == 1
         print('PASS: packaged native framing, cold GUI start, authenticated video, byte equality, dedupe and single instance')
         print('Video SHA256:', hashlib.sha256(video).hexdigest())
         print('Artifacts:', workspace)
     finally:
         for window in app_windows(exe):
-            if window['title'] == 'daw下载器 v1.0':
+            if window['title'] == f'daw下载器 v{APP_VERSION}':
                 user32.PostMessageW(window['hwnd'], 0x0010, 0, 0)
         wait_for(lambda: not app_windows(exe), timeout=30)
         server.shutdown()

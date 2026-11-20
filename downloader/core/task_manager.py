@@ -217,12 +217,15 @@ class TaskManager:
                 self._try_start_next_task()
             return task_id
 
-    def add_youtube_task(self, url, filename, save_path, height=720, kind='youtube', request_context=None):
+    def add_youtube_task(self, url, filename, save_path, height=720,
+                         kind='youtube', request_context=None,
+                         media_options=None):
         with self._adding_task() as accepted:
             if not accepted:
                 return None
-            task_id = self.engine.create_youtube_task(url, filename, save_path, height, kind,
-                                                   request_context=request_context)
+            task_id = self.engine.create_youtube_task(
+                url, filename, save_path, height, kind,
+                request_context=request_context, media_options=media_options)
             if task_id:
                 if self._shutdown_started:
                     self.db.update_task_status(task_id, 'paused', '程序退出自动暂停')

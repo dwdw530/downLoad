@@ -34,8 +34,9 @@ class YoutubeTests(unittest.TestCase):
         self.task = {'task_id': 'test-task', 'url': URL + '&t=1s', 'video_height': 720,
                      'save_path': str(self.root / 'downloads/movie.mp4')}
         self.progress, self.completed, self.failed = Mock(), Mock(), Mock()
-        self.worker = YoutubeDownloader(self.task, self.config, self.progress, self.completed,
-                                        self.failed, lambda: True, self.tools)
+        self.worker = YoutubeDownloader(
+            self.task, self.config, self.progress, self.completed, self.failed,
+            lambda: True, lambda _ext, _subs: self.task['save_path'], self.tools)
 
     def test_url_validation(self):
         for value in (URL + '&t=1s&list=x', 'https://youtu.be/ayl6TcSsre8',
@@ -65,8 +66,9 @@ class YoutubeTests(unittest.TestCase):
 
     def test_x_command_and_valid_silent_video(self):
         self.task.update(download_type='x', url='https://x.com/u/status/123/video/1')
-        self.worker = YoutubeDownloader(self.task, self.config, self.progress, self.completed,
-                                        self.failed, lambda: True, self.tools)
+        self.worker = YoutubeDownloader(
+            self.task, self.config, self.progress, self.completed, self.failed,
+            lambda: True, lambda _ext, _subs: self.task['save_path'], self.tools)
         command = self.worker.command()
         self.assertEqual(command[-1], self.task['url'])
         self.assertEqual(self.worker.folder.parent.name, 'x')
@@ -97,8 +99,9 @@ class YoutubeTests(unittest.TestCase):
 
     def test_bilibili_command_single_part_and_merge_validation(self):
         self.task.update(download_type='bilibili', url='https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2&t=9')
-        self.worker = YoutubeDownloader(self.task, self.config, self.progress, self.completed,
-                                        self.failed, lambda: True, self.tools)
+        self.worker = YoutubeDownloader(
+            self.task, self.config, self.progress, self.completed, self.failed,
+            lambda: True, lambda _ext, _subs: self.task['save_path'], self.tools)
         command = self.worker.command()
         self.assertEqual(command[-1], 'https://www.bilibili.com/video/BV1VbYk6FE6c/?p=2')
         self.assertIn('--no-playlist', command)
@@ -192,11 +195,11 @@ class YoutubeTests(unittest.TestCase):
         self.assertIn('--ignore-config', command)
         self.assertIn('!is_live', command)
         self.assertFalse(any('cookie' in arg.lower() for arg in command))
-        for height in (480, 720, 1080):
+        for height in (480, 720, 1080, 1440, 2160):
             self.task['video_height'] = height
             command = self.worker.command()
             self.assertIn(f'height<={height}', command[command.index('--format') + 1])
-        self.task['video_height'] = 2160
+        self.task['video_height'] = 4320
         with self.assertRaises(ValueError):
             self.worker.command()
 
@@ -213,7 +216,9 @@ class YoutubeTests(unittest.TestCase):
     def run_worker(self, streams=('video', 'audio'), code=0, log=''):
         self.worker.folder.mkdir(parents=True, exist_ok=True)
         (self.worker.folder / 'video.mp4').write_bytes(b'merged video')
-        process = Mock(stdout=io.StringIO(log))
+        result = '__DAW_OUTPUT__' + json.dumps(
+            str(self.worker.folder / 'video.mp4')) + '\n'
+        process = Mock(stdout=io.StringIO(log + '\n' + result))
         process.wait.return_value = code
         probe = SimpleNamespace(returncode=0, stdout=json.dumps({
             'streams': [{'codec_type': kind} for kind in streams], 'format': {'duration': '10'}}))
@@ -224,7 +229,8 @@ class YoutubeTests(unittest.TestCase):
     def test_complete_requires_audio_video_and_valid_duration(self):
         self.run_worker()
         self.assertEqual(Path(self.task['save_path']).read_bytes(), b'merged video')
-        self.completed.assert_called_once_with(12)
+        self.completed.assert_called_once()
+        self.assertEqual(self.completed.call_args.args[0], 12)
         self.failed.assert_not_called()
 
     def test_silent_video_is_not_reported_as_complete(self):

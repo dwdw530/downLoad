@@ -26,6 +26,8 @@ from downloader.utils.file_utils import (merge_chunks, get_filename_from_url, ca
                                         resolve_download_directory)
 from downloader.browser.security import browser_get, normalize_context, protect, unprotect
 from downloader.core.youtube_downloader import YoutubeDownloader, video_task_url, require_tools, VIDEO_KINDS, CONTEXT_KINDS, video_request_context
+from downloader.core.media_options import (
+    VIDEO_HEIGHTS, normalize_media_options, media_extension)
 
 
 logger = logging.getLogger(__name__)
@@ -527,15 +529,20 @@ class DownloadEngine:
         chunks = self._build_chunks(task_id, total_size, thread_count)
         self.db.create_chunks(task_id, chunks)
 
-    def create_youtube_task(self, url, filename, directory, height=720, kind='youtube', request_context=None):
+    def create_youtube_task(self, url, filename, directory, height=720,
+                            kind='youtube', request_context=None,
+                            media_options=None):
         url = video_task_url(url, kind)
-        context = video_request_context(url, kind, request_context) if kind in CONTEXT_KINDS else None
+        options = normalize_media_options(media_options)
+        context = (video_request_context(url, kind, request_context)
+                   if kind in CONTEXT_KINDS else None)
         require_tools()
-        if height not in (480, 720, 1080):
+        if type(height) is not int or height not in VIDEO_HEIGHTS:
             raise ValueError('不支持的清晰度')
         validate_filename(filename)
-        if os.path.basename(filename) != filename or not filename.lower().endswith('.mp4'):
-            raise ValueError('无效的视频文件名')
+        if (os.path.basename(filename) != filename
+                or not filename.lower().endswith(media_extension(options))):
+            raise ValueError('媒体文件名与所选输出格式不一致')
         task_id = str(uuid.uuid4())
         # directory=None 表示默认分类目录；已解析的显式目录原样使用，不二次分类
         if not directory:
@@ -546,9 +553,12 @@ class DownloadEngine:
             (directory, '下载目录'), (self.config.temp_dir, '临时目录')])
         if not ok:
             raise ValueError(detail)
-        if self.db.create_task_with_chunks(task_id, url, filename, os.path.join(directory, filename),
-                total_size=0, support_range=False, thread_count=1, download_type=kind, video_height=height,
-                browser_context=protect(context) if context else None, reserve_path=True):
+        if self.db.create_task_with_chunks(
+                task_id, url, filename, os.path.join(directory, filename),
+                total_size=0, support_range=False, thread_count=1,
+                download_type=kind, video_height=height,
+                browser_context=protect(context) if context else None,
+                reserve_path=True, media_options=options):
             return task_id
         return None
 
@@ -563,10 +573,19 @@ class DownloadEngine:
                 if self.progress_callback:
                     self.progress_callback(task_id, done, size, speed)
 
-        def complete(size):
+        def complete(size, result):
             if current():
+                self.db.update_media_result(task_id, result)
                 self.db.update_task_size(task_id, size)
                 self._verify_and_finish(task_id, task['save_path'], run_id=run_id)
+
+        def prepare_output(extension, subtitles):
+            if not current():
+                raise InterruptedError('下载会话已停止')
+            path = self.db.reserve_task_path(task_id, extension, subtitles)
+            task['save_path'] = path
+            task['filename'] = os.path.basename(path)
+            return path
 
         def fail(message):
             if current():
@@ -574,7 +593,8 @@ class DownloadEngine:
                 if self.status_callback:
                     self.status_callback(task_id, 'failed', message)
 
-        worker = YoutubeDownloader(task, self.config, progress, complete, fail, current)
+        worker = YoutubeDownloader(
+            task, self.config, progress, complete, fail, current, prepare_output)
         self.cancelled_tasks.discard(task_id)
         self.active_downloaders[task_id] = [worker]
         pool = ThreadPoolExecutor(max_workers=1)

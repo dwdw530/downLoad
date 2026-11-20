@@ -13,6 +13,7 @@ import urllib.request
 import zipfile
 
 from package_release import collect_release_files, sha256
+from downloader.version import APP_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +87,8 @@ def write_payload_include(destination, files):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('version', nargs='?', default='v0.14.1', help='Release version (default: v0.14.1)')
+    parser.add_argument('version', nargs='?', default=f'v{APP_VERSION}',
+                        help=f'Release version (default: v{APP_VERSION})')
     parser.add_argument('--rebuild', action='store_true', help='Rebuild both EXEs in dist before packaging')
     parser.add_argument('--makensis', type=Path, help='Use an existing NSIS 3 Unicode compiler')
     args = parser.parse_args()
@@ -96,6 +98,8 @@ def main():
         parser.error('Expected vMAJOR.MINOR.PATCH')
     if any(int(part) > 65535 for part in args.version[1:].split('.')):
         parser.error('Windows version fields must be at most 65535')
+    if args.version != f'v{APP_VERSION}':
+        parser.error(f'Release tag must match downloader/version.py: v{APP_VERSION}')
     work = ROOT / 'build' / 'installer'
     compiler = find_compiler(work / 'tools', args.makensis)
     if args.rebuild:

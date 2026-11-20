@@ -163,7 +163,7 @@
         rect.top >= innerHeight || rect.left >= innerWidth || getComputedStyle(video).visibility === "hidden") return null;
     const match = /^\/(?:explore|discovery\/item)\/([0-9a-f]{24})\/?$/.exec(location.pathname);
     const noteId = match?.[1] || "";
-    const parsed = xhsNoteVideo(window.__INITIAL_STATE__, noteId, 1080) || xhsPlayerVideo(video, noteId, 1080);
+    const parsed = xhsNoteVideo(window.__INITIAL_STATE__, noteId, 16384) || xhsPlayerVideo(video, noteId, 16384);
     if (!parsed) return null;
     // The visible player must agree with the state entry: same duration when metadata is loaded.
     const duration = video.duration;

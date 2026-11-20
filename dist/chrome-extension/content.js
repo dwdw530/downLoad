@@ -135,8 +135,8 @@
         }
         if (playCandidates.length) {
           const {videoHeight} = await chrome.storage.local.get({videoHeight: 720});
-          const height = [480, 720, 1080].includes(videoHeight) ? videoHeight : 720;
-          const candidates = playCandidates.filter(candidate => candidate.height <= height)
+          const height = [0, 480, 720, 1080, 1440, 2160].includes(videoHeight) ? videoHeight : 720;
+          const candidates = playCandidates.filter(candidate => !height || candidate.height <= height)
             .sort((a, b) => b.height - a.height || b.width - a.width);
           for (const candidate of candidates.slice(0, 8)) {
             const resolved = await resolvePlayEndpoint(candidate);
@@ -356,8 +356,9 @@
       const row = text("div", "", "row");
       const info = text("div", "");
       info.append(text("div", item.name, "name"));
-      const reason = item.protected ? "受保护视频，不支持下载" : ["youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind) ? `最高 ${result.videoHeight || 720}p · MP4 ${["x", "hls", "dash"].includes(item.kind) ? "视频" : "音视频"}`
-        : !["mp4", "webm"].includes(item.kind) ? item.unsupportedReason : item.sizeLabel;
+      const reason = item.protected ? "受保护视频，不支持下载"
+        : ["mp4", "webm", "youtube", "x", "bilibili", "douyin", "xhs", "hls", "dash"].includes(item.kind)
+          ? result.mediaDescription || item.sizeLabel : item.unsupportedReason;
       info.append(text("div", `${item.kindLabel} · ${reason}`, "meta"));
       const button = text("button", "下载", "download");
       button.type = "button";

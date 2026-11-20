@@ -4,12 +4,19 @@
 <body>
   <header><h1>视频下载</h1><label class="toggle"><input id="enabled" type="checkbox" checked><span>识别视频</span></label></header>
   <div class="connection"><span id="connection">正在检查下载器…</span><button id="refresh" type="button" title="刷新资源列表" aria-label="刷新资源列表">↻</button></div>
-  <label class="quality">视频清晰度<select id="quality"><option value="480">最高 480p</option><option value="720" selected>最高 720p</option><option value="1080">最高 1080p</option></select></label>
+  <section class="media-options" aria-label="媒体下载选项">
+    <label class="quality">下载内容<select id="mode"><option value="video">视频</option><option value="audio">仅音频</option></select></label>
+    <label class="quality">音频格式<select id="audioFormat" disabled><option value="best">保留源音频格式</option><option value="mp3">MP3（需要转换）</option></select></label>
+    <label class="quality">视频清晰度<select id="quality"><option value="480">最高 480p</option><option value="720" selected>最高 720p</option><option value="1080">最高 1080p</option><option value="1440">最高 1440p</option><option value="2160">最高 2160p</option><option value="0">最高可用画质</option></select></label>
+    <label class="quality">视频格式<select id="profile"><option value="compatible">MP4 兼容模式</option><option value="source">MKV 源画质优先</option></select></label>
+    <label class="quality">已有字幕<select id="subtitles"><option value="none">不下载字幕</option><option value="zh">中文</option><option value="en">英文</option><option value="zh,en">中文和英文</option><option value="all">全部可用语言</option></select></label>
+    <p class="option-note">画质以源资源为准，不放大或重编码视频。字幕保存为旁挂 SRT；源站没有字幕时会在桌面端提示。</p>
+  </section>
   <main id="items" aria-label="当前标签页的视频"></main>
   <footer id="status" role="status"></footer>
   <section class="link-download" aria-label="链接下载">
     <h2>链接下载</h2>
     <div id="linkStatus" role="status">右键网页链接可发送到 daw 下载器</div>
   </section>
-  <script src="popup.js"></script>
+  <script src="popup.js" type="module"></script>
 </body></html>

@@ -107,7 +107,9 @@ class DouyinTests(unittest.TestCase):
         task = dict(task_id=name, url=URL, download_type='douyin', video_height=720,
                     browser_context=protect(self.context), save_path=str(self.root / (name + '.mp4')))
         with patch(MODULE + '.require_tools', return_value=self.root):
-            worker = YoutubeDownloader(task, self.config, Mock(), completed, failed, lambda: True)
+            worker = YoutubeDownloader(
+                task, self.config, Mock(), completed, failed, lambda: True,
+                lambda _ext, _subs: task['save_path'])
         worker.folder.mkdir(parents=True)
         (worker.folder / 'video.mp4').write_bytes(b'video')
         jars = []
@@ -134,7 +136,9 @@ class DouyinTests(unittest.TestCase):
             self.assertNotIn('unscoped=drop', jar.read_text())
             if launch_error:
                 raise OSError('launch failed')
-            return Mock(stdout=io.StringIO(''), wait=Mock(return_value=0))
+            result = '__DAW_OUTPUT__' + json.dumps(
+                str(worker.folder / 'video.mp4')) + '\n'
+            return Mock(stdout=io.StringIO(result), wait=Mock(return_value=0))
 
         probe = SimpleNamespace(returncode=0, stdout=json.dumps(
             {'streams': [{'codec_type': kind} for kind in streams], 'format': {'duration': duration}}))
@@ -149,7 +153,8 @@ class DouyinTests(unittest.TestCase):
 
     def test_complete_audio_video_and_temporary_cookie_cleanup(self):
         completed, failed, output = self.run_worker('complete', ('video', 'audio'))
-        completed.assert_called_once_with(5)
+        completed.assert_called_once()
+        self.assertEqual(completed.call_args.args[0], 5)
         failed.assert_not_called()
         self.assertTrue(output.is_file())
 

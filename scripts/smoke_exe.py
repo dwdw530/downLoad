@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 from downloader.core.download_engine import DownloadEngine
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
+from downloader.version import APP_VERSION
 
 PAYLOAD = bytes(range(251)) * 1024
 
@@ -267,7 +268,7 @@ def main():
             def launch():
                 nonlocal process
                 process = subprocess.Popen([str(exe)], cwd=launch_dir, startupinfo=startup, stdout=out, stderr=err)
-                window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == 'daw下载器 v1.0'), None))
+                window = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == f'daw下载器 v{APP_VERSION}'), None))
                 time.sleep(0.8)
                 sizes = [window_icon_size(window['hwnd'], kind) for kind in (0, 1)]
                 assert sizes == [(256, 256), (256, 256)], f'Window icons lost source resolution: {sizes}'
@@ -293,13 +294,13 @@ def main():
         print('Test process windows:', app_windows(exe), flush=True)
         print('Task state:', [(t['filename'], t['status'], t['downloaded_size']) for t in db.get_all_tasks()], flush=True)
         for window in app_windows(exe):
-            if window['title'] == 'daw下载器 v1.0':
+            if window['title'] == f'daw下载器 v{APP_VERSION}':
                 capture(window['hwnd'], workspace / 'failure.png')
         raise
     finally:
         if process and process.poll() is None:
             for window in app_windows(exe):
-                if window['title'] == 'daw下载器 v1.0':
+                if window['title'] == f'daw下载器 v{APP_VERSION}':
                     user32.PostMessageW(window['hwnd'], 0x0010, 0, 0)
             process.wait(20)
         server.shutdown()
@@ -309,7 +310,7 @@ def main():
         user32.SetForegroundWindow(original_foreground)
 
 
-def click_toolbar(hwnd, index, expected_buttons=6, design_width=900, bottom=False):
+def click_toolbar(hwnd, index, expected_buttons=7, design_width=900, bottom=False):
     # Restore our own test window before measuring controls; minimized coordinates are -32000.
     user32.ShowWindow(hwnd, 9)
     time.sleep(0.2)
@@ -369,8 +370,8 @@ def run_download_checks(exe, window, db, task_ids, workspace, restart):
     (workspace / 'result.json').write_text(json.dumps({'tasks': db.get_all_tasks(), 'history': db.get_history()},
                                                      ensure_ascii=False, indent=2), encoding='utf-8')
     print('PASS: native buttons, pause/resume, restart recovery, queue, Range/non-Range files, SHA256 and history', flush=True)
-    # 工具栏从左到右：添加、暂停全部、继续全部、重试失败、历史、设置（右侧按钮 pack 越早越靠右）
-    click_toolbar(window['hwnd'], 4)
+    # 添加、暂停、继续、重试、检查更新、历史、设置；右侧按钮按屏幕顺序。
+    click_toolbar(window['hwnd'], 5)
     history = wait_for(lambda: next((w for w in app_windows(exe) if w['title'] == '下载历史'), None))
     time.sleep(0.5)
     click_toolbar(history['hwnd'], 1, expected_buttons=3, design_width=700, bottom=True)

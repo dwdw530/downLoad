@@ -32,7 +32,7 @@ FILE_CATEGORY_LABELS = {
 # 按扩展名归类；未知扩展名统一归 'other'
 FILE_CATEGORY_SUFFIXES = {
     'video': {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts', '.mpg', '.mpeg', '.rmvb', '.3gp'},
-    'audio': {'.mp3', '.flac', '.wav', '.aac', '.m4a', '.ogg', '.wma', '.ape'},
+    'audio': {'.mp3', '.flac', '.wav', '.aac', '.m4a', '.ogg', '.opus', '.alac', '.wma', '.ape'},
     'document': {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.epub', '.mobi', '.csv', '.rtf'},
     'archive': {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.iso', '.tgz'},
     'program': {'.exe', '.msi', '.apk', '.dmg', '.deb', '.rpm', '.appx'},

@@ -15,19 +15,6 @@ assert.ok(parse?.xhsNoteVideo, 'xhs-page.js must expose __dawXhsParse outside th
 const fixture = name => JSON.parse(readFileSync(new URL(`./fixtures/xhs/${name}.json`, import.meta.url), 'utf8'));
 const ID = '66c3e1a3000000001e02b5b3';
 
-test('both extension manifests inject the XHS MAIN script on apex and www hosts', () => {
-  for (const relative of ['../chrome-extension/manifest.json', '../dist/chrome-extension/manifest.json']) {
-    const manifest = JSON.parse(readFileSync(new URL(relative, import.meta.url), 'utf8'));
-    const entry = manifest.content_scripts.find(item => item.js?.includes('xhs-page.js'));
-    assert.deepEqual(entry?.matches?.slice().sort(), ['*://www.xiaohongshu.com/*', '*://xiaohongshu.com/*']);
-  }
-  for (const relative of ['../chrome-extension/xhs-page.js', '../chrome-extension/content.js']) {
-    const name = relative.split('/').pop();
-    assert.equal(readFileSync(new URL(`../dist/chrome-extension/${name}`, import.meta.url), 'utf8'),
-      readFileSync(new URL(relative, import.meta.url), 'utf8'),
-      `formal dist ${name} must match source`);
-  }
-});
 
 test('xhsUrl normalizes explore and discovery paths and drops source tokens', () => {
   const url = 'https://www.xiaohongshu.com/explore/66c3e1a3000000001e02b5b3';

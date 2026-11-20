@@ -6,17 +6,17 @@ Windows 桌面下载器，支持多线程下载、断点续传、任务队列，
 
 ## 下载
 
-当前桌面版为 **v0.14.1**，浏览器扩展为 **0.6.2**。[本版更新说明](docs/releases/v0.14.1.md)记录了移动盘未连接时的错误提示修复。
+当前桌面版为 **v0.15.0**，浏览器扩展为 **0.7.0**。[本版更新说明](docs/releases/v0.15.0.md)介绍了仅音频、已有字幕、高清选项和简洁更新检查。
 
 | 下载项 | 用途 |
 | --- | --- |
-| [Windows 安装包](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-downloader-v0.14.1-windows-x64-setup.exe) | 可选择安装目录，提供快捷方式和系统卸载入口。 |
-| [完整便携版 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-downloader-v0.14.1-windows-x64.zip) | 完整解压后运行 `daw下载器.exe`，不要只复制主程序。 |
-| [浏览器扩展 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.14.1/daw-browser-extension-v0.6.2.zip) | 配合桌面程序使用，需要手动加载扩展。 |
+| [Windows 安装包](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-downloader-v0.15.0-windows-x64-setup.exe) | 可选择安装目录，提供快捷方式和系统卸载入口。 |
+| [完整便携版 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-downloader-v0.15.0-windows-x64.zip) | 完整解压后运行 `daw下载器.exe`，不要只复制主程序。 |
+| [浏览器扩展 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-browser-extension-v0.7.0.zip) | 配合桌面程序使用，需要手动加载扩展。 |
 
 全部版本和校验文件见 [GitHub Releases](https://github.com/dwdw530/downLoad/releases)。GitHub 自动生成的 **Source code** 是源码，不是可直接运行的程序。
 
-升级前完全退出下载器及旧 BrowserBridge，安装版沿用原安装目录，便携版更新完整发布文件。不要删除 `data/`、下载文件或断点；升级后重启下载器和浏览器。v0.14.1 的扩展内容未变，无需重新安装扩展。
+升级前完全退出下载器及旧 BrowserBridge，安装版沿用原安装目录，便携版更新完整发布文件。不要删除 `data/`、下载文件或断点；升级后重启下载器和浏览器。本版扩展有更新，请重新加载同目录扩展并完整刷新视频页面。
 
 ## 主要功能
 
@@ -29,6 +29,16 @@ Windows 桌面下载器，支持多线程下载、断点续传、任务队列，
 - 提供深色/浅色/跟随系统主题、窗口透明度，以及完整/迷你桌面悬浮条。
 - 可设置完成后打开文件或文件夹，以及全部任务成功后退出或关机；默认不执行完成后动作。
 
+以下功能随 v0.15.0 提供，桌面程序、桥接与浏览器扩展需配套更新：
+
+- 主窗口“检查更新”后台读取 GitHub 正式版本、展示更新说明并打开官方下载页面；不会自动下载、安装或覆盖程序。
+  自动查询受限时仅提示可在发布页查看版本，不要求修改代理；失败窗口不显示空白说明框，获取到新版后再展示更新说明和升级提示。
+- 浏览器扩展可选仅音频，保留源音频格式或转换 MP3；选项随任务保存，重启和重试后保持。
+- 已有字幕可选中文、英文、两者或全部语言，保存为媒体文件旁的 SRT；未获取到全部所选字幕时明确提示，不生成字幕。
+- 清晰度增加最高 1440p、2160p 与最高可用画质；MP4 兼容模式保持，MKV 源画质优先不限制 H.264。实际分辨率、编码及字幕结果显示在任务卡片和详情。
+
+新媒体选项需要新桌面端、桥接与扩展配套；如果扩展提示升级，应核对实际运行程序与加载扩展的目录。播放列表批量下载不在本次范围，仍只下载单视频。
+
 ## 快速使用
 
 1. 安装或完整解压发布包，运行 `daw下载器.exe`；源码仓库中的便携入口是 `dist/daw下载器.exe`。
@@ -38,7 +48,7 @@ Windows 桌面下载器，支持多线程下载、断点续传、任务队列，
 
 ## 浏览器扩展
 
-扩展支持 MP4/WebM 视频直链、HLS/DASH 流媒体（分片传输的视频），以及 YouTube、X、B 站、抖音和小红书的普通视频。视频清晰度可选最高 480p、720p、1080p，实际以源视频为准。
+扩展支持 MP4/WebM 视频直链、HLS/DASH 流媒体（分片传输的视频），以及 YouTube、X、B 站、抖音和小红书的普通视频。清晰度可选最高 480p、720p、1080p、1440p、2160p 或最高可用画质；也可选择仅音频和已有字幕，实际以源资源为准。
 
 1. 安装版安装时选择连接浏览器；便携版运行发布目录内的 `install_browser_bridge.cmd`。
 2. 打开 Chrome 的 `chrome://extensions/` 或 Edge 的 `edge://extensions/`，开启开发者模式，加载发布目录内的 `chrome-extension/` 文件夹。

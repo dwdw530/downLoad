@@ -2,7 +2,7 @@
 
 当前正式文件是 `dist/daw下载器.exe`。构建仍复用 `老王下载器.spec` 这一内部配置文件名；无需手动改 spec 路径。历史旧名称的 EXE 不再是当前入口。打包同时包含 `assets/icon.ico`、`assets/icon.png`，供窗口和托盘在冻结环境中加载。
 
-需要可选择安装路径、支持系统卸载的安装包时，运行 `build_installer.bat`，或 `python -B scripts/build_installer.py v0.14.1 --rebuild`。只封装已经验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.14.1-windows-x64-setup.exe`，构建、升级、数据保留与实际安装验收方法见 [Windows 安装包](docs/INSTALLER.md)。
+需要安装包时运行 `build_installer.bat`，或在 py310_env 中执行 `python -B scripts/build_installer.py v0.15.0 --rebuild`。只封装已验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.15.0-windows-x64-setup.exe`，详情见 [Windows 安装包](docs/INSTALLER.md)。版本统一在 `downloader/version.py` 中维护。
 
 艹，想打包成exe双击就能跑？老王我手把手教你！
 
@@ -22,11 +22,12 @@ pip install pyinstaller
 
 ### 2. 打包命令
 
-```bash
-# 进入项目根目录，复用已验证的spec和Tcl/Tk依赖来源
-cd D:\vscode_workspace\downLoad_project
-python scripts/build_exe.py
+```powershell
+# 在项目根目录执行，不依赖手动激活后 python 命令是否切换成功。
+conda run --no-capture-output -n py310_env python -B scripts/build_exe.py
 ```
+
+本机也可直接用 `& "D:\anaconda3\envs\py310_env\python.exe" -B .\scripts\build_exe.py`。构建日志中的 Python 路径必须属于 py310_env；误用 base 导致旧 pathlib 冲突时，不要为此卸载 base 依赖。构建命令只生成文件，不自动打开下载器。
 
 实际运行生成的EXE并验证下载功能：
 

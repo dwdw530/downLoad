@@ -23,6 +23,7 @@ from downloader.browser.security import normalize_context
 from downloader.core.download_engine import DownloadEngine
 from downloader.database.db_manager import DatabaseManager
 from downloader.utils.config import ConfigManager
+from downloader.version import APP_VERSION
 from smoke_exe import app_windows, capture, click_toolbar, user32, wait_for
 from ctypes import wintypes
 
@@ -188,7 +189,7 @@ def main():
         process = subprocess.Popen([str(exe)], cwd=workspace,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
         window = wait_for(lambda: next((w for w in app_windows(exe)
-                                       if w['title'] == 'daw下载器 v1.0'), None), timeout=30)
+                                       if w['title'] == f'daw下载器 v{APP_VERSION}'), None), timeout=30)
         user32.ShowWindow(window['hwnd'], 9)
         time.sleep(0.8)
         capture(window['hwnd'], workspace / 'saved-safe-reason.png')
@@ -244,7 +245,7 @@ def main():
         server.release_unknown.set()
         if process and process.poll() is None:
             for item in app_windows(exe):
-                if item['title'] == 'daw下载器 v1.0':
+                if item['title'] == f'daw下载器 v{APP_VERSION}':
                     user32.PostMessageW(item['hwnd'], 0x0010, 0, 0)
             process.wait(30)
         engine.shutdown()
