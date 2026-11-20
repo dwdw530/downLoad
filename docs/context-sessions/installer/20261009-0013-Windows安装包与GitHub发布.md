@@ -3,8 +3,8 @@
 ## 元信息
 
 - 创建时间：2026-10-09 00:13 +08:00（Asia/Shanghai）
-- 更新时间：2026-11-20（v0.15.0 原 dist、安装包及 ZIP 已构建，进入正式发布）
-- 状态：本地构建与核心验收完成，GitHub 提交发布进行中。
+- 更新时间：2026-11-20（v0.15.0 双分支、标签、Release 与五附件公开下载核验完成）
+- 状态：已完成本地打包、核心验收、GitHub 发布及公开附件核验；物理鼠标验收受锁屏限制。
 - 项目路径：`D:/vscode_workspace/downLoad_project`
 - 用户要求：下载器支持自选安装路径和卸载；提供完整操作说明；将安装包提交 GitHub，并更新进度、Codex 和 Claude Code 本地记忆。
 
@@ -18,7 +18,9 @@
 - 安装包六组验证通过：中文向导与自选中文空格路径、安装后实际下载与单实例、占用保护、同目录升级保留数据、卸载保留数据及其他注册、重装与注册恢复。报告 output/installer-smoke/run-278wjg5r/result.json；原六份运行文件指纹不变、无新增文件，见 user-data-verification.json。
 - 鼠标暂停/继续验收被 LockScreenBackstopFrame 遮挡，未绕过锁屏，也未改成伪造点击通过。该项未完成，保留失败记录；五组真实媒体完成结果及正常退出断点证明独立记录，不将其冒充完整鼠标回归。
 - 便携 ZIP 28 项、扩展 ZIP 14 项 CRC/无重复条目/白名单/逐项内容一致性通过，不包含 data/temp/logs。原发布脚本仍在打包前校验扩展与源码；冒烟窗口版本已统一读取 APP_VERSION，不再固定旧 v1.0。
-- 本地证据、旧 Release 快照与附件哈希位于 output/releases/v0.15.0/。提交、标签与公开 Release 结果在实际完成后补充，不宣称已公开。
+- 源码发布提交为 50aa2a67ce543918c1385b98a5215b51fdb19a7f，main/master 和 annotated 标签 v0.15.0 已原子推送。Release 452270676 于 2026-11-20 12:35:17 +08:00 正式公开，latest 正确；五附件 size/digest/state 与本地逐项一致，22 个历史 Release/附件保留。发布页 https://github.com/dwdw530/downLoad/releases/tag/v0.15.0，证据 verification-remote.json。
+- 五个公开下载 URL 经系统既有代理核验：安装包、便携 ZIP、扩展 ZIP 的 HEAD 200/Content-Length 正确，安装包 .sha256 与 ZIP SHA256SUMS.txt 的 GET 字节与本地一致；均到达 release-assets.githubusercontent.com，未重复完整下载大二进制，未关闭 TLS 或修改系统代理。证据 verification-public-downloads.json。
+- 本轮不使用子代理、不写长期记忆；临时验证脚本已删除，用户配置、数据库、断点与测试输出未提交。发布记录收尾提交只同步文档，不移动 v0.15.0 或修改历史附件。
 
 ## v0.14.1 构建、验收与正式发布（2026-11-10，已完成）
 

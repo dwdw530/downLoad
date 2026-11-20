@@ -65,6 +65,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 正式程序的源音频、MP3、4K 与字幕、1440p 上限、字幕缺失反馈五组实际下载通过，使用隔离数据与本地 HTTP；不代表所有公开网站和登录受限资源均已实网验收。
 - 物理鼠标暂停/继续检查被系统锁屏遮挡，未绕过锁屏，不宣称该项通过。程序正常退出仍保留已暂停的媒体任务、断点与下载选项。
 - 本版详情见 [更新日志](releases/v0.15.0.md)，验收结果留在 `output/releases/v0.15.0/` 与 `output/installer-smoke/run-278wjg5r/`。
+- 已正式公开发布 [v0.15.0](https://github.com/dwdw530/downLoad/releases/tag/v0.15.0)，Release 452270676，源码发布提交 50aa2a6；main/master 与 annotated 标签同步，五附件大小/SHA256/状态及公开下载地址已核验，22 个历史 Release 与附件保持。
 
 ## 2026-11-10 v0.14.1 构建与验收
 
