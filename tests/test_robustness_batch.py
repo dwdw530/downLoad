@@ -382,6 +382,7 @@ class CardPaintTests(unittest.TestCase):
     """悬浮条渲染：圆角必须真有 alpha 过渡（Tk Canvas / 色键都做不到）"""
 
     BUSY = {'speed': 2_350_000, 'downloaded': 41_000_000, 'total': 120_000_000,
+            'current_speed': 2_350_000,
             'filename': 'ubuntu-24.04-desktop-amd64.iso', 'downloading': 1, 'pending': 2,
             'status': 'downloading'}
     IDLE = {'speed': 0, 'downloaded': 0, 'total': 0, 'filename': '',

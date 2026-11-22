@@ -71,6 +71,7 @@ class AppearancePixelTests(unittest.TestCase):
 
     def test_render_matrix_keeps_size_transparent_corners_and_solid_foreground(self):
         state = dict(status='downloading', speed=123456789, downloaded=10, total=20,
+                     current_speed=50_000_000,
                      filename='很长的中文文件名用于验证布局' * 5, downloading=2, pending=1)
         for theme in floating.THEMES.values():
             for mode in ('normal', 'mini'):

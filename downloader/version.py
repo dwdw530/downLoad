@@ -1,3 +1,3 @@
 """Release version shared by the application and packaging commands."""
 
-APP_VERSION = '0.15.0'
+APP_VERSION = '0.16.0'

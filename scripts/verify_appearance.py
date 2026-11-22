@@ -142,6 +142,7 @@ def case(scale, theme, output):
             bar = app.float_bar
             bar._scale = scale
             state = dict(status='downloading', speed=123456789, downloaded=70, total=100,
+                         current_speed=50_000_000,
                          filename='很长的中文文件名：会议录像与学习资料.mp4', downloading=2, pending=1)
             samples = [(1, 20), (2, 12), (3, 31), (4, 22), (5, 26)]
             for background, color in (('dark', '#181a20'), ('light', '#f0f2f5'), ('color', '#36577b')):

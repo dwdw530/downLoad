@@ -2,7 +2,7 @@
 
 当前正式文件是 `dist/daw下载器.exe`。构建仍复用 `老王下载器.spec` 这一内部配置文件名；无需手动改 spec 路径。历史旧名称的 EXE 不再是当前入口。打包同时包含 `assets/icon.ico`、`assets/icon.png`，供窗口和托盘在冻结环境中加载。
 
-需要安装包时运行 `build_installer.bat`，或在 py310_env 中执行 `python -B scripts/build_installer.py v0.15.0 --rebuild`。只封装已验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.15.0-windows-x64-setup.exe`，详情见 [Windows 安装包](docs/INSTALLER.md)。版本统一在 `downloader/version.py` 中维护。
+需要安装包时运行 `build_installer.bat`，或在 py310_env 中执行 `python -B scripts/build_installer.py v0.16.0 --rebuild`。只封装已验证的当前 `dist` 时省略 `--rebuild`。输出为 `dist/daw-downloader-v0.16.0-windows-x64-setup.exe`，详情见 [Windows 安装包](docs/INSTALLER.md)。版本统一在 `downloader/version.py` 中维护。
 
 艹，想打包成exe双击就能跑？老王我手把手教你！
 

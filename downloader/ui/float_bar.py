@@ -21,8 +21,9 @@ from ctypes import wintypes
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
-from downloader.utils.file_utils import format_remaining, format_speed
+from downloader.utils.file_utils import format_remaining, parse_byte_count
 from downloader.utils.config import normalize_opacity
+from downloader.ui.task_presentation import format_task_progress
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +32,11 @@ logger = logging.getLogger(__name__)
 
 BAR_WIDTH = 280
 BAR_HEIGHT = 118
-# 迷你模式：只留速度、百分比和一条底部进度线，放在桌面角落不碍事
+# 迷你模式：总速度为主，进度环与百分比表示当前任务
 MINI_BAR_WIDTH = 158
 MINI_BAR_HEIGHT = 34
-CARD_RADIUS = 14
-MINI_CARD_RADIUS = 10
+CARD_RADIUS = 16
+MINI_CARD_RADIUS = 16
 PAD = 14
 MINI_PAD = 9
 
@@ -52,30 +53,32 @@ SUPERSAMPLE = 4
 
 THEMES = {
     'dark': {
-        'card': '#17191d',
-        'border': '#2b3038',
-        'border_hover': '#3d4551',
+        'card': '#1c2027',
+        'border': '#343d4a',
+        'border_hover': '#526175',
         'highlight': '#31363f',
-        'track': '#262a31',
-        'text': '#eef1f5',
-        'muted': '#8d95a1',
+        'track': '#343d4a',
+        'text': '#f1f5f9',
+        'muted': '#a6b1c1',
         'faint': '#4c525c',
         'accent': '#2fbf7f',
         'accent_dim': '#1c7d55',
         'idle_dot': '#5b6270',
+        'error': '#ec9690',
     },
     'light': {
         'card': '#ffffff',
-        'border': '#d8dde4',
-        'border_hover': '#aab4c0',
+        'border': '#dce3ec',
+        'border_hover': '#a1b0c4',
         'highlight': '#ffffff',
-        'track': '#eceff3',
-        'text': '#1c1f24',
-        'muted': '#6b7280',
+        'track': '#e6ebf2',
+        'text': '#202938',
+        'muted': '#56657a',
         'faint': '#a9b0ba',
         'accent': '#12855c',
         'accent_dim': '#8fcfb4',
         'idle_dot': '#b6bcc5',
+        'error': '#b54747',
     },
 }
 
@@ -96,15 +99,18 @@ FONT_CANDIDATES = {
 _font_cache = {}
 
 
-def _load_font(size_px, bold=False):
+def _load_font(size_px, bold=False, *, numeric=False):
     """按像素加载字体（带缓存：每秒重绘不能反复读字体文件）"""
     size_px = max(6, int(size_px))
-    key = (size_px, bool(bold))
+    key = (size_px, bool(bold), bool(numeric))
     cached = _font_cache.get(key)
     if cached is not None:
         return cached
     font = None
-    for name in FONT_CANDIDATES[bool(bold)]:
+    candidates = FONT_CANDIDATES[bool(bold)]
+    if numeric:
+        candidates = (candidates[-1],) + candidates[:-1]
+    for name in candidates:
         path = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', name)
         try:
             font = ImageFont.truetype(path, size_px)
@@ -145,10 +151,51 @@ def _ellipsize(font, text, max_width):
 
 def bar_progress(state):
     """当前任务进度（0~1）"""
-    total = state.get('total') or 0
-    if total <= 0:
-        return 0.0
-    return min(1.0, max(0.0, (state.get('downloaded') or 0) / total))
+    return format_task_progress(state.get('downloaded'), state.get('total'),
+                                state.get('status', 'idle'))[0]
+
+
+_STATUS_LABELS = {
+    'downloading': '下载中', 'pending': '等待中', 'paused': '已暂停',
+    'verifying': '校验中', 'failed': '下载失败', 'verify_failed': '校验失败',
+    'idle': '就绪',
+}
+
+
+def _speed_parts(speed):
+    """数值和单位分开排版；高速时换单位，不靠缩字号挤进小窗。"""
+    rate = max(0.0, float(speed or 0))
+    unit = 'B/s'
+    for next_unit in ('KB/s', 'MB/s', 'GB/s', 'TB/s'):
+        if rate < 1024:
+            break
+        rate /= 1024
+        unit = next_unit
+    value = f'{rate:.0f}' if unit == 'B/s' else f'{rate:.2f}'
+    if rate >= 1024:
+        value = f'{rate:.2g}'
+    return value, unit
+
+
+def _remaining_text(state):
+    """当前任务的剩余时间只能用当前任务速度，不能用合计速度。"""
+    downloaded = parse_byte_count(state.get('downloaded'))
+    total = parse_byte_count(state.get('total'))
+    if (state.get('status') != 'downloading' or downloaded is None
+            or total is None or total <= downloaded):
+        return '--'
+    return format_remaining(total - downloaded, state.get('current_speed') or 0)
+
+
+def _hint_text(state, scale=1.0):
+    value, unit = _speed_parts(state.get('speed'))
+    _, percent = format_task_progress(state.get('downloaded'), state.get('total'),
+                                     state.get('status', 'idle'))
+    status = _STATUS_LABELS[state.get('status', 'idle')]
+    filename = state.get('filename') or '暂无下载任务'
+    filename = _ellipsize(_load_font(max(10, round(11 * scale))), filename, 250 * scale)
+    return (f'总速度  {value} {unit}\n当前任务  {status} · {percent}\n{filename}\n'
+            '双击显示主窗口 · 右键菜单\n拖动移动 · 松手贴边')
 
 
 def _curve_points(samples, left, right, top, bottom):
@@ -172,18 +219,10 @@ def _curve_points(samples, left, right, top, bottom):
 
 
 def render_bar(*, mode, theme, state, samples, hovered, scale=1.0, opacity=100):
-    """把整条悬浮卡片画成 RGBA 图（4 倍超采样后降采样）
+    """在原窗口尺寸内绘制卡片；总速度和当前任务进度分层表达。
 
-    Args:
-        mode: 'mini' 迷你 / 其它视为完整
-        theme: THEMES 里的一个主题字典
-        state: {speed, downloaded, total, filename, downloading, pending, status}
-        samples: [(秒, 速度)] 速度曲线采样
-        hovered: 鼠标是否悬停（描边变亮）
-        scale: DPI 缩放
-        opacity: 30–100 的背景不透明度，前景保持不透明
-    Returns:
-        PIL.Image（RGBA，物理像素尺寸）
+    state 的 speed 是合计速度，current_speed 是当前任务速度；total 可为 None。
+    背景遵循 opacity，文字、状态图形和已填进度保持不透明。
     """
     mini = mode == 'mini'
     base_w = MINI_BAR_WIDTH if mini else BAR_WIDTH
@@ -194,153 +233,121 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0, opacity=100):
     background_alpha = round(normalize_opacity(opacity, 30) * 255 / 100)
 
     def u(value):
-        """逻辑像素 -> 超采样画布坐标"""
         return round(value * scale * ss)
 
     canvas_image = Image.new('RGBA', (width * ss, height * ss), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas_image)
 
-    def font(size, bold=False):
-        return _load_font(max(6, round(size * scale)) * ss, bold)
+    def font(size, bold=False, numeric=False):
+        return _load_font(max(6, round(size * scale)) * ss, bold, numeric=numeric)
 
-    def text(position, content, fill, font_obj, anchor='lm'):
-        draw.text((round(position[0] * scale * ss), round(position[1] * scale * ss)),
-                  content, font=font_obj, fill=_rgb(fill), anchor=anchor)
+    def text(position, content, fill, font_obj, anchor='ls'):
+        draw.text((u(position[0]), u(position[1])), content, font=font_obj,
+                  fill=_rgb(fill), anchor=anchor)
 
-    border_color = theme['border_hover'] if hovered else theme['border']
     status = state.get('status', 'idle')
-    progress = bar_progress(state)
-    dot_color = {'downloading': theme['accent'],
-                 'pending': theme['muted']}.get(status, theme['idle_dot'])
+    progress, percent_text = format_task_progress(state.get('downloaded'), state.get('total'), status)
+    color = (theme['accent'] if status in ('downloading', 'verifying') else
+             theme['error'] if status in ('failed', 'verify_failed') else theme['muted'])
+    border = theme['border_hover'] if hovered else theme['border']
+    radius = MINI_CARD_RADIUS if mini else CARD_RADIUS
+    draw.rounded_rectangle([u(1), u(1), u(base_w - 1), u(base_h - 1)], radius=u(radius),
+                           fill=_rgb(theme['card'], background_alpha),
+                           outline=_rgb(border, background_alpha), width=max(1, u(1)))
+
+    def status_icon(left, center_y, radius):
+        center_x = left + radius
+        box = [u(left), u(center_y - radius), u(left + radius * 2), u(center_y + radius)]
+        draw.ellipse(box, outline=_rgb(theme['track'], background_alpha), width=max(1, u(1.5)))
+        if status != 'idle' and progress > 0:
+            draw.arc(box, -90, -90 + max(1, round(360 * progress)),
+                     fill=_rgb(color), width=max(1, u(1.5)))
+        stroke = max(1, u(1.3))
+        if status == 'paused':
+            for dx in (-2, 2):
+                draw.line([(u(center_x + dx), u(center_y - 3)),
+                           (u(center_x + dx), u(center_y + 3))], fill=_rgb(color), width=stroke)
+        elif status in ('failed', 'verify_failed'):
+            for direction in (-1, 1):
+                draw.line([(u(center_x - 3), u(center_y - direction * 3)),
+                           (u(center_x + 3), u(center_y + direction * 3))],
+                          fill=_rgb(color), width=stroke)
+        elif status in ('pending', 'verifying'):
+            for dx in (-3, 0, 3):
+                draw.ellipse([u(center_x + dx - 0.7), u(center_y - 0.7),
+                              u(center_x + dx + 0.7), u(center_y + 0.7)], fill=_rgb(color))
+        else:
+            draw.line([(u(center_x), u(center_y - 4)), (u(center_x), u(center_y + 3)),
+                       (u(center_x - 3), u(center_y)), (u(center_x), u(center_y + 3)),
+                       (u(center_x + 3), u(center_y))], fill=_rgb(color), width=stroke, joint='curve')
+
+    def speed_text(left, baseline, size, unit_size):
+        value, unit = _speed_parts(state.get('speed'))
+        number_font = font(size, bold=True, numeric=True)
+        number_color = theme['muted'] if status == 'idle' else theme['text']
+        text((left, baseline), value, number_color, number_font)
+        unit_left = left + _text_width(number_font, value) / (scale * ss) + 4
+        text((unit_left, baseline), unit, theme['muted'], font(unit_size, numeric=True))
 
     if mini:
-        radius = MINI_CARD_RADIUS
-        draw.rounded_rectangle([u(1), u(1), u(base_w - 1), u(base_h - 1)], radius=u(radius),
-                               fill=_rgb(theme['card'], background_alpha), outline=_rgb(border_color, background_alpha),
-                               width=max(1, u(1)))
-        center_y = base_h / 2 - 2
-        dot_r = 2.6
-        draw.ellipse([u(MINI_PAD), u(center_y - dot_r), u(MINI_PAD + dot_r * 2), u(center_y + dot_r)],
-                     fill=_rgb(dot_color))
-
-        bar_left, bar_right = MINI_CARD_RADIUS, base_w - MINI_CARD_RADIUS
-        bar_top, bar_bottom = base_h - 4, base_h - 2
-        draw.rounded_rectangle([u(bar_left), u(bar_top), u(bar_right), u(bar_bottom)],
-                               radius=u(1), fill=_rgb(theme['track'], background_alpha))
-        if status != 'idle' and progress > 0:
-            filled = min(bar_right, bar_left + max(4, (bar_right - bar_left) * progress))
-            draw.rounded_rectangle([u(bar_left), u(bar_top), u(filled), u(bar_bottom)],
-                                   radius=u(1), fill=_rgb(theme['accent']))
-
-        if status == 'idle':
-            speed_text, percent_text = '0 B/s', '--'
+        status_icon(MINI_PAD, 17, 9)
+        speed_text(33, 22, 14, 9)
+        if status == 'downloading':
+            label = '--' if percent_text == '--' else f'{progress * 100:.0f}%'
         else:
-            speed_text = format_speed(state.get('speed') or 0)
-            percent_text = f'{progress * 100:.0f}%'
-
-        percent_font = font(11)
-        text(position=(base_w - MINI_PAD, center_y), content=percent_text,
-             fill=theme['accent'] if status != 'idle' else theme['faint'],
-             font_obj=percent_font, anchor='rm')
-
-        percent_width = _text_width(percent_font, percent_text) / (scale * ss)
-        text_left = MINI_PAD + 8
-        available = (base_w - MINI_PAD) - text_left - percent_width - 6
-        speed_font = font(14, bold=True)
-        if _text_width(speed_font, speed_text) / (scale * ss) > available:
-            speed_font = font(12, bold=True)
-        text(position=(text_left, center_y), content=speed_text,
-             fill=theme['text'] if status != 'idle' else theme['faint'],
-             font_obj=speed_font, anchor='lm')
-
+            label = {'idle': '就绪', 'pending': '等待', 'paused': '暂停',
+                     'verifying': '校验', 'failed': '失败', 'verify_failed': '失败'}[status]
+        text((base_w - MINI_PAD, 21), label, color, font(11), anchor='rs')
         return canvas_image.resize((width, height), Image.LANCZOS)
 
-    # ---------- 完整模式 ----------
-    radius = CARD_RADIUS
-    draw.rounded_rectangle([u(1), u(1), u(base_w - 1), u(base_h - 1)], radius=u(radius),
-                           fill=_rgb(theme['card'], background_alpha), outline=_rgb(border_color, background_alpha),
-                           width=max(1, u(1)))
-
-    # 顶部：状态点 + 标题 + 任务数
-    center_y = 19
-    dot_r = 3
-    draw.ellipse([u(PAD), u(center_y - dot_r), u(PAD + dot_r * 2), u(center_y + dot_r)],
-                 fill=_rgb(dot_color))
+    # 总速度独占主信息行，当前文件及百分比在下一行，不暗示两者属于同一任务。
+    status_icon(PAD, 16, 7.5)
     meta_font = font(10)
-    text(position=(PAD + 11, center_y), content='daw 下载器', fill=theme['muted'],
-         font_obj=meta_font, anchor='lm')
+    text((PAD + 22, 20), '总速度', theme['muted'], meta_font)
     if state.get('downloading'):
         counter = f"下载中 {state['downloading']}"
-    elif state.get('pending'):
-        counter = f"等待 {state['pending']}"
+        if state.get('pending'):
+            counter += f" · 等待 {state['pending']}"
     else:
-        counter = '空闲'
-    text(position=(base_w - PAD, center_y), content=counter, fill=theme['muted'],
-         font_obj=meta_font, anchor='rm')
+        counter = _STATUS_LABELS[status]
+        if state.get('status_count', 0) > 1:
+            counter += f" {state['status_count']}"
+    counter = _ellipsize(meta_font, counter, u(base_w - PAD * 2 - 60))
+    text((base_w - PAD, 20), counter, color, meta_font, anchor='rs')
+    speed_text(PAD, 48, 25, 12)
 
-    # 速度大数字：放不下就降一档字号，绝不截断数字
-    speed_text = '0 B/s' if status == 'idle' else format_speed(state.get('speed') or 0)
-    percent_text = '--' if status == 'idle' else f'{progress * 100:.0f}%'
-    percent_font = font(15, bold=True)
-    percent_width = _text_width(percent_font, percent_text) / (scale * ss)
-    speed_font = font(22, bold=True)
-    available = (base_w - PAD * 2) - percent_width - 10
-    if _text_width(speed_font, speed_text) / (scale * ss) > available:
-        speed_font = font(17, bold=True)
-    speed_color = theme['text'] if status != 'idle' else theme['faint']
-    text(position=(PAD, 47), content=speed_text, fill=speed_color, font_obj=speed_font, anchor='lm')
-    text(position=(base_w - PAD, 47), content=percent_text,
-         fill=theme['accent'] if status != 'idle' else theme['faint'],
-         font_obj=percent_font, anchor='rm')
-
-    # 进度条：克制的背景轨道与单层主色，前景不随背景变淡
-    bar_left, bar_right = PAD, base_w - PAD
-    bar_top, bar_bottom = 64, 70
-    draw.rounded_rectangle([u(bar_left), u(bar_top), u(bar_right), u(bar_bottom)],
-                           radius=u(3), fill=_rgb(theme['track'], background_alpha))
-    if status != 'idle' and progress > 0:
-        filled = min(bar_right, bar_left + max(7, (bar_right - bar_left) * progress))
-        draw.rounded_rectangle([u(bar_left), u(bar_top), u(filled), u(bar_bottom)],
-                               radius=u(3), fill=_rgb(theme['accent']))
-
-    # 文件名 + 剩余时间
-    eta_text = ''
-    if status == 'downloading' and (state.get('total') or 0) > 0 and (state.get('speed') or 0) > 0:
-        remaining = max(0, state['total'] - state['downloaded'])
-        eta_text = '剩余 ' + format_remaining(remaining, state['speed'])
-    eta_width = _text_width(meta_font, eta_text) / (scale * ss)
-    name_max = (bar_right - bar_left) - eta_width - 12
     label_font = font(11)
-    name_text = _ellipsize(label_font, state.get('filename') or '',
-                           max(0, name_max) * scale * ss)
-    if status == 'idle':
-        name_text = '暂无下载任务'
-    text(position=(PAD, 85), content=name_text,
-         fill=theme['text'] if status != 'idle' else theme['faint'],
-         font_obj=label_font, anchor='lm')
-    if eta_text:
-        text(position=(base_w - PAD, 86), content=eta_text, fill=theme['muted'],
-             font_obj=meta_font, anchor='rm')
+    name_text = '暂无下载任务' if status == 'idle' else '当前  ' + (state.get('filename') or '')
+    percent_width = _text_width(label_font, percent_text) / (scale * ss)
+    name_width = (base_w - PAD * 2) - percent_width - 10
+    name_text = _ellipsize(label_font, name_text, name_width * scale * ss)
+    text((PAD, 68), name_text, theme['muted'] if status == 'idle' else theme['text'], label_font)
+    text((base_w - PAD, 68), percent_text, color, label_font, anchor='rs')
 
-    # 最近速度曲线：没有有效数据时只留一条中性基线，不能画成绿色实线
-    curve = _curve_points(samples, u(PAD), u(base_w - PAD), u(95), u(base_h - 9))
+    bar_left, bar_right = PAD, base_w - PAD
+    draw.rounded_rectangle([u(bar_left), u(76), u(bar_right), u(80)], radius=u(2),
+                           fill=_rgb(theme['track'], background_alpha))
+    if status != 'idle' and progress > 0:
+        filled = bar_left + (bar_right - bar_left) * progress
+        draw.rounded_rectangle([u(bar_left), u(76), u(filled), u(80)], radius=u(2), fill=_rgb(color))
+
+    # 曲线和剩余时间各占一块，给真实曲线留出更多高度。
+    curve_right, curve_bottom = base_w - 96, base_h - 9
+    curve = _curve_points(samples, u(PAD), u(curve_right), u(87), u(curve_bottom))
     if curve is None:
-        thickness = max(1, u(1))
-        draw.rounded_rectangle([u(PAD), u(base_h - 9) - thickness, u(base_w - PAD), u(base_h - 9)],
-                               radius=thickness / 2, fill=_rgb(theme['track'], background_alpha))
+        draw.line([(u(PAD), u(curve_bottom)), (u(curve_right), u(curve_bottom))],
+                  fill=_rgb(theme['track'], background_alpha), width=max(1, u(1)))
     else:
-        left, right = u(PAD), u(base_w - PAD)
-        bottom = u(base_h - 9)
-        area = [left, bottom] + curve + [right, bottom]
+        curve_color = theme['accent'] if status == 'downloading' else theme['muted']
+        points = [(curve[i], curve[i + 1]) for i in range(0, len(curve), 2)]
+        area = [(u(PAD), u(curve_bottom))] + points + [(u(curve_right), u(curve_bottom))]
         overlay = Image.new('RGBA', canvas_image.size, (0, 0, 0, 0))
-        ImageDraw.Draw(overlay).polygon(
-            [(area[i], area[i + 1]) for i in range(0, len(area), 2)],
-            fill=_rgb(theme['accent'], round(24 * background_alpha / 255)))
+        ImageDraw.Draw(overlay).polygon(area, fill=_rgb(curve_color, round(18 * background_alpha / 255)))
         canvas_image = Image.alpha_composite(canvas_image, overlay)
         draw = ImageDraw.Draw(canvas_image)
-        points = [(curve[i], curve[i + 1]) for i in range(0, len(curve), 2)]
-        draw.line(points, fill=_rgb(theme['accent']), width=max(1, u(1)), joint='curve')
-
+        draw.line(points, fill=_rgb(curve_color), width=max(1, u(1.2)), joint='curve')
+    text((base_w - PAD, 93), '当前剩余', theme['muted'], font(9), anchor='rs')
+    text((base_w - PAD, 109), _remaining_text(state), theme['text'], font(13, numeric=True), anchor='rs')
     return canvas_image.resize((width, height), Image.LANCZOS)
 
 
@@ -349,6 +356,7 @@ def render_bar(*, mode, theme, state, samples, hovered, scale=1.0, opacity=100):
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER = 0x00
 AC_SRC_ALPHA = 0x01
@@ -575,6 +583,9 @@ class FloatBar:
         self._tick_job = None
         self._destroyed = False
         self._hovered = False
+        self._hint_window: tk.Toplevel | None = None
+        self._hint_label: tk.Label | None = None
+        self._hint_job = None
         self._press = None
         self._dragging = False
         self._samples = deque()  # (单调秒, 总速度)
@@ -582,9 +593,9 @@ class FloatBar:
         self._opacity = normalize_opacity(config.get('ui_float_bar_opacity', 100), 30)
         self._last_push_succeeded = False
         self._state = {
-            'speed': 0.0, 'downloaded': 0, 'total': 0,
+            'speed': 0.0, 'current_speed': 0.0, 'downloaded': 0, 'total': 0,
             'filename': '', 'downloading': 0, 'pending': 0,
-            'status': 'idle',
+            'status': 'idle', 'status_count': 0,
         }
 
         # 独立 Toplevel：CTk 会按 DPI 缩放自己的控件，这里要用物理像素自己算
@@ -690,6 +701,7 @@ class FloatBar:
             logger.warning('保存悬浮条位置失败: %s', error)
 
     def _on_press(self, event):
+        self._hide_hint()
         self._press = (event.x_root, event.y_root, self._pos[0], self._pos[1])
         self._dragging = False
 
@@ -737,11 +749,64 @@ class FloatBar:
 
     def _on_enter(self, _event):
         self._hovered = True
+        self._hide_hint()
+        if not self._press:
+            self.window.configure(cursor='hand2')
+            self._hint_job = self.window.after(600, self._show_hint)
         self._draw()
 
     def _on_leave(self, _event):
         self._hovered = False
+        self._hide_hint()
+        if not self._dragging:
+            self.window.configure(cursor='')
         self._draw()
+
+    def _show_hint(self):
+        """只说明数据口径和既有操作，不抢焦点，也不保存配置。"""
+        self._hint_job = None
+        if self._destroyed or not self._visible or not self._hovered or self._press:
+            return
+        hint = tk.Toplevel(self.window)
+        hint.withdraw()
+        hint.overrideredirect(True)
+        hint.attributes('-topmost', True)
+        hint.configure(bg=self._theme['border'])
+        label = tk.Label(hint, text=_hint_text(self._state, self._scale),
+                         font=('Microsoft YaHei UI', -max(10, round(11 * self._scale))),
+                         fg=self._theme['text'], bg=self._theme['card'], justify='left',
+                         padx=self._px(10), pady=self._px(8), wraplength=self._px(250))
+        label.pack(padx=1, pady=1)
+        hint.update_idletasks()
+        width, height = self._px(274), hint.winfo_reqheight()
+        bounds = self._bounds()
+        x, y = self._pos[0], self._pos[1] - height - self._px(8)
+        if y < bounds[1]:
+            y = self._pos[1] + self._height + self._px(8)
+        x, y = clamp_position(x, y, width, height, bounds)
+        hint.geometry(f'{width}x{height}+{x}+{y}')
+        if self._surface.available:
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetAncestor(hint.winfo_id(), 2) or hint.winfo_id()
+            exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+        self._hint_window, self._hint_label = hint, label
+        hint.deiconify()
+
+    def _hide_hint(self):
+        job, self._hint_job = self._hint_job, None
+        if job is not None:
+            try:
+                self.window.after_cancel(job)
+            except tk.TclError:
+                pass
+        hint, self._hint_window = self._hint_window, None
+        self._hint_label = None
+        if hint is not None:
+            try:
+                hint.destroy()
+            except tk.TclError:
+                pass
 
     # ==================== 右键菜单 ====================
 
@@ -772,6 +837,7 @@ class FloatBar:
         mode = 'mini' if mode == 'mini' else 'normal'
         if mode == self._mode:
             return
+        self._hide_hint()
         self._mode = mode
         self._mini_var.set(mode == 'mini')
         self._apply_mode_metrics()
@@ -797,6 +863,7 @@ class FloatBar:
         return run
 
     def _show_menu(self, event):
+        self._hide_hint()
         state = self._state
         has_active = state['downloading'] > 0 or state['pending'] > 0
         self._menu.entryconfigure('暂停全部', state='normal' if has_active else 'disabled')
@@ -825,6 +892,7 @@ class FloatBar:
         """仅隐藏（保留窗口对象供再次显示）"""
         self._visible = False
         self._cancel_tick()
+        self._hide_hint()
         try:
             self.window.withdraw()
         except tk.TclError:
@@ -845,6 +913,7 @@ class FloatBar:
         """主窗口切换主题后重绘"""
         if self._destroyed:
             return
+        self._hide_hint()
         self._theme = self._resolve_theme()
         self._menu.configure(font=self._menu_font)
         self._draw()
@@ -853,6 +922,7 @@ class FloatBar:
         """销毁窗口并停止定时器"""
         if self._destroyed:
             return
+        self._hide_hint()
         self._destroyed = True
         self._visible = False
         self._cancel_tick()
@@ -888,6 +958,8 @@ class FloatBar:
         try:
             self._refresh_state()
             self._draw()
+            if self._hint_label is not None:
+                self._hint_label.configure(text=_hint_text(self._state, self._scale))
         except tk.TclError:
             # 窗口已销毁，安静退出
             self._destroyed = True
@@ -903,30 +975,31 @@ class FloatBar:
         pending = self.task_manager.get_pending_tasks()
 
         total_speed = sum(max(0.0, float(task.get('speed') or 0)) for task in downloading)
-        current = downloading[0] if downloading else None
-
-        if current:
-            status = 'downloading'
-            filename = current.get('filename') or ''
-            downloaded = int(current.get('downloaded_size') or 0)
-            total = int(current.get('total_size') or 0)
-        elif pending:
-            status = 'pending'
-            filename = pending[0].get('filename') or ''
-            downloaded = int(pending[0].get('downloaded_size') or 0)
-            total = int(pending[0].get('total_size') or 0)
-        else:
-            status = 'idle'
-            filename, downloaded, total = '', 0, 0
-
+        selected = downloading
+        status = 'downloading' if downloading else 'idle'
+        if not downloading:
+            counts = self.task_manager.db.get_status_counts()
+            for candidate in ('verifying', 'pending', 'paused', 'failed', 'verify_failed'):
+                if candidate == 'pending':
+                    tasks = pending
+                elif counts.get(candidate):
+                    tasks = self.task_manager.db.get_all_tasks(status=candidate)
+                else:
+                    continue
+                if tasks:
+                    selected, status = tasks, candidate
+                    break
+        current = selected[0] if selected else {}
         self._state = {
             'speed': total_speed,
-            'downloaded': downloaded,
-            'total': total,
-            'filename': filename,
+            'current_speed': max(0.0, float(current.get('speed') or 0)) if downloading else 0.0,
+            'downloaded': current.get('downloaded_size') or 0,
+            'total': current.get('total_size'),
+            'filename': current.get('filename') or '',
             'downloading': len(downloading),
             'pending': len(pending),
             'status': status,
+            'status_count': len(selected),
         }
 
         # 采样：同一秒只保留最新值，和主窗口速度曲线口径一致

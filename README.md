@@ -6,24 +6,25 @@ Windows 桌面下载器，支持多线程下载、断点续传、任务队列，
 
 ## 下载
 
-当前桌面版为 **v0.15.0**，浏览器扩展为 **0.7.0**。[本版更新说明](docs/releases/v0.15.0.md)介绍了仅音频、已有字幕、高清选项和简洁更新检查。
+当前桌面版为 **v0.16.0**，浏览器扩展保持 **0.7.0**。[本版更新说明](docs/releases/v0.16.0.md)介绍了悬浮条重设计、预计完成时刻、批量复制链接和主窗主题稳定性修复。
 
 | 下载项 | 用途 |
 | --- | --- |
-| [Windows 安装包](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-downloader-v0.15.0-windows-x64-setup.exe) | 可选择安装目录，提供快捷方式和系统卸载入口。 |
-| [完整便携版 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-downloader-v0.15.0-windows-x64.zip) | 完整解压后运行 `daw下载器.exe`，不要只复制主程序。 |
-| [浏览器扩展 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.15.0/daw-browser-extension-v0.7.0.zip) | 配合桌面程序使用，需要手动加载扩展。 |
+| [Windows 安装包](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-downloader-v0.16.0-windows-x64-setup.exe) | 可选择安装目录，提供快捷方式和系统卸载入口。 |
+| [完整便携版 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-downloader-v0.16.0-windows-x64.zip) | 完整解压后运行 `daw下载器.exe`，不要只复制主程序。 |
+| [浏览器扩展 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-browser-extension-v0.7.0.zip) | 配合桌面程序使用，需要手动加载扩展。 |
 
 全部版本和校验文件见 [GitHub Releases](https://github.com/dwdw530/downLoad/releases)。GitHub 自动生成的 **Source code** 是源码，不是可直接运行的程序。
 
-升级前完全退出下载器及旧 BrowserBridge，安装版沿用原安装目录，便携版更新完整发布文件。不要删除 `data/`、下载文件或断点；升级后重启下载器和浏览器。本版扩展有更新，请重新加载同目录扩展并完整刷新视频页面。
+升级前完全退出下载器及旧 BrowserBridge，安装版沿用原安装目录，便携版更新完整发布文件。不要删除 `data/`、下载文件或断点；升级后重启下载器。本版扩展内容未改，已使用 0.7.0 的用户无需更新扩展；从更早版本升级时应加载配套 0.7.0 并完整刷新视频页面。
 
 ## 主要功能
 
 - 支持 1–16 线程分块下载、暂停续传、并发队列和失败分块重试。
 - 支持多行批量添加、任务搜索、按状态/文件类型/站点筛选，以及勾选后的批量操作。
 - 支持按文件类型自动建立保存子目录，也可手动指定保存位置。
-- 显示进度、速度和剩余时间，双击任务卡片可查看详情与速度曲线。
+- 显示进度、速度、剩余时间和预计完成时刻，双击任务卡片可查看详情与速度曲线。
+- 支持复制当前筛选列表中勾选任务的下载链接，保留原链接和签名参数，不改变任务或断点。
 - 支持 MD5/SHA256 文件校验，用于检查下载文件是否与预期一致；保存时不覆盖已有文件。
 - 支持代理、速度限制、下载历史、剪贴板监视和系统托盘。
 - 提供深色/浅色/跟随系统主题、窗口透明度，以及完整/迷你桌面悬浮条。
