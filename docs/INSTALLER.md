@@ -64,6 +64,7 @@ conda run --no-capture-output -n py310_env python -B scripts/smoke_installer.py 
 - 版本/任务界面 24 项检查通过；悬浮条源码阶段 76 项回归及 6 组实际 Win32 检查保留。打包后的版本与四个 UI 模块代码和源码一致，实际 EXE 的完整/迷你悬浮窗、启动和正常退出已验证。
 - 正式 EXE 的鼠标按钮、下载、暂停/重启续传、Range/non-Range、SHA256、历史与清空确认通过；安装包六组生命周期通过，包括中文自选路径、安装后真实下载、占用保护、升级、卸载、重装及注册恢复。
 - 原根目录及 dist 的 8 份运行文件指纹不变，具体结果见 `output/releases/v0.16.0/`，安装报告为 `output/installer-smoke/run-lhqc0ycy/result.json`。未重新跑全仓库套件、物理混合显示器 DPI 或公开站点长期下载。
+- 已正式公开 [v0.16.0](https://github.com/dwdw530/downLoad/releases/tag/v0.16.0)，Release 454299255，源码发布提交 25b4f72；main/master 与 annotated 标签同步。五附件大小、SHA256 与上传状态及公开下载核验通过，23 个旧 Release/附件保持；发布记录收尾提交不移动版本标签。
 
 ## v0.15.0 构建与验收
 
