@@ -6,6 +6,8 @@
 
 本模块不导入 Tk、不查库、不联网，只做文本识别与数值换算。
 """
+from datetime import datetime, timedelta
+import math
 import re
 from typing import Tuple
 
@@ -176,6 +178,28 @@ def describe_task_problem(status: str, message: str, download_type: str = 'file'
         return problem
     return ('下载遇到异常',
             '未能确定具体原因，请检查网络、磁盘或下载组件后重试。')
+
+
+def format_estimated_completion(downloaded_size, total_size, speed, status: str, now=None) -> str:
+    """按当前速度估算传输完成时刻；不计后续处理，无法估算时返回占位文案。"""
+    placeholder = '预计 --'
+    downloaded = parse_byte_count(downloaded_size)
+    total = parse_byte_count(total_size)
+    if (status != 'downloading' or downloaded is None or total is None
+            or total <= downloaded):
+        return placeholder
+    try:
+        rate = float(speed or 0)
+        if not math.isfinite(rate) or rate <= 0:
+            return placeholder
+        current = datetime.now() if now is None else now
+        finish = current + timedelta(seconds=(total - downloaded) / rate)
+    except (TypeError, ValueError, OverflowError):
+        return placeholder
+
+    days = (finish.date() - current.date()).days
+    day_text = '今天' if days == 0 else '明天' if days == 1 else finish.strftime(' %m/%d')
+    return f'预计{day_text} {finish:%H:%M}'
 
 
 def is_empty_file_completed(downloaded_size, total_size, status: str) -> bool:

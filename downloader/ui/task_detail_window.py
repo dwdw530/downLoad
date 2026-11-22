@@ -9,7 +9,8 @@ import customtkinter as ctk
 import tkinter as tk
 
 from downloader.ui.ctk_helpers import SafeToplevelMixin
-from downloader.ui.task_presentation import describe_task_problem, format_task_progress
+from downloader.ui.task_presentation import (describe_task_problem, format_task_progress,
+                                             format_estimated_completion)
 from downloader.utils.file_utils import format_progress_texts, format_speed, parse_byte_count
 from downloader.core.media_options import describe_media_result
 
@@ -87,6 +88,10 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
 
         self.stats_label = ctk.CTkLabel(self, text="", font=("Arial", 12), anchor="w", justify="left")
         self.stats_label.pack(fill="x", padx=14, pady=(0, 4))
+
+        self.estimated_label = ctk.CTkLabel(
+            self, text="", font=("Arial", 12), anchor="w", text_color="gray")
+        self.estimated_label.pack(fill="x", padx=14, pady=(0, 4))
 
         self.media_label = ctk.CTkLabel(
             self, text='', anchor='w', justify='left', wraplength=520)
@@ -194,6 +199,9 @@ class TaskDetailWindow(SafeToplevelMixin, ctk.CTkToplevel):
             self._downloaded, self._total, self._speed, self._status)
         self.stats_label.configure(
             text=f"状态 {get_status_text(self._status)}    {size_text}    {eta_text}    {speed_text}")
+        estimated = format_estimated_completion(
+            self._downloaded, self._total, self._speed, self._status)
+        self.estimated_label.configure(text=f'{estimated} · 按当前速度估算，不含后续处理耗时')
         progress, percent_text = format_task_progress(
             self._downloaded, self._total, self._status)
         self.progress_bar.set(progress)

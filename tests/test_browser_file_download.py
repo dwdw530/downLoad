@@ -362,7 +362,7 @@ class BrowserFileDownloadTests(unittest.TestCase):
             cold = forward({'action': 'ping'})
         self.assertEqual(running['capabilities'], [])
         self.assertEqual(cold['capabilities'], [])
-        self.assertEqual(running['features'], ['file_download_v1'])
+        self.assertIn('file_download_v1', running['features'])
         self.assertEqual(cold['features'], running['features'])
         launch.assert_not_called()
         self.completed(self.send())

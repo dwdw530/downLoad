@@ -20,7 +20,8 @@ from downloader.utils.file_utils import (format_speed, format_progress_texts, gu
 from downloader.utils.url_utils import extract_clipboard_url, host_from_url, host_is_ignored
 from downloader.ui.tray_manager import TrayManager
 from downloader.ui.task_detail_window import TaskDetailWindow, get_status_text
-from downloader.ui.task_presentation import describe_task_problem, format_task_progress
+from downloader.ui.task_presentation import (describe_task_problem, format_task_progress,
+                                             format_estimated_completion)
 from downloader.ui.clipboard_dialog import ClipboardLinkDialog
 from downloader.ui.ctk_helpers import SafeToplevelMixin
 from downloader.ui.typography import SIDEBAR_HEADING_FONT, SIDEBAR_ITEM_FONT, scale_sidebar_font
@@ -57,7 +58,7 @@ SIDEBAR_PALETTE = {
 }
 
 
-class MainWindow(ctk.CTk):
+class MainWindow(SafeToplevelMixin, ctk.CTk):
     """主窗口"""
 
     def __init__(self, task_manager: TaskManager):
@@ -1008,6 +1009,11 @@ class MainWindow(ctk.CTk):
                                    command=lambda: self._on_delete_task(task_id))
         delete_btn.pack(side="left", padx=5)
 
+        # 利用按钮行右侧空白，不挤占原大小/剩余时间/速度/状态信息行。
+        estimated_label = ctk.CTkLabel(
+            button_frame, text="预计 --", width=190, anchor="e", text_color="gray")
+        estimated_label.pack(side="right", padx=5)
+
         # 双击卡片空白处打开详情窗（按钮区不绑，避免和单击命令打架）
         self._bind_task_double_click(task_frame, task_id)
         # 右键菜单：开始/暂停、打开、复制链接、上移/置顶、删除
@@ -1028,6 +1034,7 @@ class MainWindow(ctk.CTk):
             'cancel_btn': cancel_btn,
             'delete_btn': delete_btn,
             'location_btn': location_btn,
+            'estimated_label': estimated_label,
             'select_box': select_box,
             'select_var': select_var,
             # 过滤用的缓存，避免每次输入都查库
@@ -1501,6 +1508,23 @@ class MainWindow(ctk.CTk):
         self.clipboard_clear()
         self.clipboard_append(url)
 
+    def _on_copy_selected_links(self):
+        """按可见列表顺序复制选择快照；只读操作，不经过任务调度。"""
+        if self._task_actions_blocked():
+            return
+        urls = [widgets['url'] for task_id, widgets in self.task_widgets.items()
+                if task_id in self._selected_task_ids
+                and widgets.get('visible', True) and widgets.get('url')]
+        if not urls:
+            return
+        try:
+            # 沿用单条复制的监视抑制，原样保留签名参数和重复地址。
+            self._copy_task_url('\n'.join(urls))
+        except tkinter.TclError:
+            self._flash_status('复制失败，请重试')
+            return
+        self._flash_status(f'已复制 {len(urls)} 条下载链接')
+
     def _open_task_file(self, save_path: str):
         """打开已下载的文件"""
         try:
@@ -1543,6 +1567,14 @@ class MainWindow(ctk.CTk):
         if self._batch_busy:
             for index in (0, 6, 7, 9):
                 menu.entryconfigure(index, state='disabled')
+        # 追加到末尾，保持上述既有菜单项索引与批量保护不变。
+        selected_count = sum(
+            1 for tid, item in self.task_widgets.items()
+            if tid in self._selected_task_ids and item.get('visible', True) and item.get('url'))
+        menu.add_separator()
+        menu.add_command(
+            label=f'复制选中链接（{selected_count}条）', command=self._on_copy_selected_links,
+            state='normal' if selected_count and not self._batch_busy and not self._exiting else 'disabled')
         return menu
 
     def _show_task_menu(self, event, task_id: str):
@@ -1887,6 +1919,8 @@ class MainWindow(ctk.CTk):
         widgets['size_label'].configure(text=size_text)
         widgets['eta_label'].configure(text=eta_text)
         widgets['speed_label'].configure(text=speed_text)
+        widgets['estimated_label'].configure(text=format_estimated_completion(
+            downloaded_size, total_size, speed, widgets.get('status')))
         widgets['downloaded'] = parse_byte_count(downloaded_size)
         widgets['total'] = parse_byte_count(total_size)
         widgets['speed'] = float(speed or 0)
