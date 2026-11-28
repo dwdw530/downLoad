@@ -13,13 +13,14 @@
 import ctypes
 import logging
 import os
+import sys
 import time
 import tkinter as tk
 from collections import deque
 from ctypes import wintypes
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from downloader.utils.file_utils import format_remaining, parse_byte_count
 from downloader.utils.config import normalize_opacity
@@ -110,6 +111,8 @@ def _load_font(size_px, bold=False, *, numeric=False):
     candidates = FONT_CANDIDATES[bool(bold)]
     if numeric:
         candidates = (candidates[-1],) + candidates[:-1]
+    if sys.platform == 'darwin':
+        candidates = ('/System/Library/Fonts/PingFang.ttc', '/System/Library/Fonts/Helvetica.ttc')
     for name in candidates:
         path = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', name)
         try:
@@ -607,12 +610,18 @@ class FloatBar:
         self.window.configure(bg='#000000')
 
         self._surface = LayeredSurface()
+        if sys.platform == 'darwin':
+            self.window.attributes('-transparent', True)
+            self.window.configure(bg='systemTransparent')
+            self._canvas = tk.Canvas(self.window, bg='systemTransparent', highlightthickness=0, bd=0)
+            self._canvas.pack(fill='both', expand=True)
+            self._canvas_image = self._canvas.create_image(0, 0, anchor='nw')
         self._scale = self._detect_scale()
         self._mode = 'mini' if config.get('ui_float_bar_mode') == 'mini' else 'normal'
         self._apply_mode_metrics()
 
         self._theme = self._resolve_theme()
-        self._menu_font = ('Microsoft YaHei UI', -max(10, round(12 * self._scale)))
+        self._menu_font = ('PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI', -max(10, round(12 * self._scale)))
         self._build_menu()
         self._bind_events()
 
@@ -744,6 +753,9 @@ class FloatBar:
         self.window.bind('<ButtonRelease-1>', self._on_release)
         self.window.bind('<Double-Button-1>', self._on_double_click)
         self.window.bind('<Button-3>', self._show_menu)
+        if sys.platform == 'darwin':
+            self.window.bind('<Button-2>', self._show_menu)
+            self.window.bind('<Control-Button-1>', self._show_menu)
         self.window.bind('<Enter>', self._on_enter)
         self.window.bind('<Leave>', self._on_leave)
 
@@ -1036,6 +1048,11 @@ class FloatBar:
             logger.warning('悬浮条绘制失败: %s', error)
             return
         self._image = image
+        if sys.platform == 'darwin':
+            self._tk_image = ImageTk.PhotoImage(image, master=self.window)
+            self._canvas.itemconfigure(self._canvas_image, image=self._tk_image)
+            self._last_push_succeeded = True
+            return
         hwnd = getattr(self, '_hwnd', None)
         if hwnd:
             self._last_push_succeeded = self._surface.push(hwnd, image)

@@ -61,10 +61,15 @@ def forward(message):
             return {'ok': False, 'error': '下载器未启动', 'installed': True,
                     'capabilities': capabilities, 'features': list(FEATURES)}
         root = Path(get_app_root())
-        command = ([str(root / 'daw下载器.exe')] if getattr(sys, 'frozen', False)
-                   else [sys.executable, str(root / 'main.py')])
+        frozen = getattr(sys, 'frozen', False)
+        if frozen:
+            command = [sys.executable] if sys.platform == 'darwin' else [str(root / 'daw下载器.exe')]
+        else:
+            command = [sys.executable, str(root / 'main.py')]
         subprocess.Popen(command, cwd=str(root), stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=sys.platform == 'darwin',
+                         env={**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'} if frozen else None,
                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         for _ in range(120):
             time.sleep(0.25)

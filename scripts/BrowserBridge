@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "$(dirname "$0")/../MacOS/daw下载器" --native-host "$@"

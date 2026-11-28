@@ -7,7 +7,9 @@
 不修改全局字体、Tk scaling 或系统 DPI。标题只加粗，不额外放大。
 """
 
-UI_FONT_FAMILY = "Microsoft YaHei UI"
+import sys
+
+UI_FONT_FAMILY = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei UI'
 
 # 分类项（全部/下载中/视频…）与分组标题（分类/状态/类型/站点）
 SIDEBAR_ITEM_FONT = (UI_FONT_FAMILY, -13)

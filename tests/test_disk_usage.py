@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from downloader.utils.file_utils import publish_download
+from downloader.utils.file_utils import _rename_exclusive, publish_download
 from test_features import FeatureFixture
 from test_download_regressions import PAYLOAD
 
@@ -22,7 +22,7 @@ class PublishDownloadTests(unittest.TestCase):
         self.source = self.root / 'source.bin'
         self.destination = self.root / 'out' / 'result.bin'
         self.source.write_bytes(PAYLOAD)
-        self.rename = os.rename
+        self.rename = _rename_exclusive
 
     def cross_volume_rename(self, source, destination):
         if Path(source) == self.source:
@@ -36,7 +36,7 @@ class PublishDownloadTests(unittest.TestCase):
         with patch('downloader.utils.file_utils.open', side_effect=AssertionError('unexpected file copy')), \
                 patch('downloader.utils.file_utils.tempfile.NamedTemporaryFile',
                       side_effect=AssertionError('unexpected staging file')), \
-                patch('downloader.utils.file_utils.os.rename', wraps=self.rename) as rename:
+                patch('downloader.utils.file_utils._rename_exclusive', wraps=self.rename) as rename:
             self.assertTrue(publish_download(str(self.source), str(self.destination)))
         self.assertEqual(rename.call_count, 1)
         self.assertFalse(self.source.exists())
@@ -54,7 +54,7 @@ class PublishDownloadTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), PAYLOAD)
 
     def test_permission_failure_does_not_fall_back_to_copy(self):
-        with patch('downloader.utils.file_utils.os.rename', side_effect=PermissionError(errno.EACCES, 'denied')), \
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=PermissionError(errno.EACCES, 'denied')), \
                 patch('downloader.utils.file_utils.tempfile.NamedTemporaryFile') as staging:
             with self.assertRaises(PermissionError):
                 publish_download(str(self.source), str(self.destination))
@@ -71,7 +71,7 @@ class PublishDownloadTests(unittest.TestCase):
                 self.assertEqual(Path(source).read_bytes(), PAYLOAD)
                 self.assertFalse(self.destination.exists())
             return self.cross_volume_rename(source, destination)
-        with patch('downloader.utils.file_utils.os.rename', side_effect=rename):
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=rename):
             self.assertTrue(publish_download(str(self.source), str(self.destination)))
         self.assertEqual(len(calls), 2)
         self.assertEqual(self.destination.read_bytes(), PAYLOAD)
@@ -83,7 +83,7 @@ class PublishDownloadTests(unittest.TestCase):
             if Path(source) != self.source:
                 self.destination.write_bytes(b'concurrent user file')
             return self.cross_volume_rename(source, destination)
-        with patch('downloader.utils.file_utils.os.rename', side_effect=rename):
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=rename):
             with self.assertRaises(FileExistsError):
                 publish_download(str(self.source), str(self.destination))
         self.assertEqual(self.destination.read_bytes(), b'concurrent user file')
@@ -101,7 +101,7 @@ class PublishDownloadTests(unittest.TestCase):
         def rename(source, destination):
             self.rename(source, destination)
             active[0] = False
-        with patch('downloader.utils.file_utils.os.rename', side_effect=rename):
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=rename):
             with self.assertRaises(InterruptedError):
                 publish_download(str(self.source), str(self.destination), lambda: active[0])
         self.assertEqual(self.source.read_bytes(), PAYLOAD)
@@ -112,7 +112,7 @@ class PublishDownloadTests(unittest.TestCase):
         def current():
             checks[0] += 1
             return checks[0] < 4  # 预检查、首次改名、第一块写入后停止
-        with patch('downloader.utils.file_utils.os.rename', side_effect=self.cross_volume_rename):
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=self.cross_volume_rename):
             with self.assertRaises(InterruptedError):
                 publish_download(str(self.source), str(self.destination), current)
         self.assertEqual(self.source.read_bytes(), PAYLOAD)
@@ -126,7 +126,7 @@ class PublishDownloadTests(unittest.TestCase):
             with named_temporary_file(**kwargs) as stream:
                 with patch.object(stream, 'write', side_effect=OSError(errno.ENOSPC, 'disk full')):
                     yield stream
-        with patch('downloader.utils.file_utils.os.rename', side_effect=self.cross_volume_rename), \
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=self.cross_volume_rename), \
                 patch('downloader.utils.file_utils.tempfile.NamedTemporaryFile', side_effect=full_disk):
             with self.assertRaises(OSError) as error:
                 publish_download(str(self.source), str(self.destination))
@@ -141,7 +141,7 @@ class PublishDownloadTests(unittest.TestCase):
             if Path(path) == self.source:
                 raise PermissionError(errno.EACCES, 'source temporarily locked')
             remove(path)
-        with patch('downloader.utils.file_utils.os.rename', side_effect=self.cross_volume_rename), \
+        with patch('downloader.utils.file_utils._rename_exclusive', side_effect=self.cross_volume_rename), \
                 patch('downloader.utils.file_utils.os.remove', side_effect=cleanup):
             self.assertTrue(publish_download(str(self.source), str(self.destination)))
         self.assertEqual(self.source.read_bytes(), PAYLOAD)

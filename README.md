@@ -1,8 +1,8 @@
 # daw下载器
 
-Windows 桌面下载器，支持多线程下载、断点续传、任务队列，以及浏览器视频和普通文件链接下载。
+桌面下载器，支持多线程下载、断点续传、任务队列，以及浏览器视频和普通文件链接下载。
 
-> **目前仅支持 64 位 Windows。** 使用安装包或便携版无需安装 Python。
+> GitHub v0.16.0 附件仍为 Windows x64；Intel Mac 本机构建与使用见 [macOS 说明](docs/MACOS.md)。两种桌面包均不需要用户安装 Python。
 
 ## 下载
 
@@ -70,7 +70,7 @@ Windows 桌面下载器，支持多线程下载、断点续传、任务队列，
 
 ## 源码开发与文档
 
-源码运行需要 Windows 和 Python 3.10+，项目构建与 GUI 验证使用 `py310_env` 环境。在项目根目录执行：
+Windows 源码环境需要 Python 3.10+；macOS 请使用带 Tk 的 Intel Python，见上述构建说明。在项目根目录执行：
 
 ```bash
 pip install -r requirements.txt

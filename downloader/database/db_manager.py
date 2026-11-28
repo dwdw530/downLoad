@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import threading
-from downloader.utils.config import get_app_root
+from downloader.utils.config import get_state_root
 from downloader.core.youtube_downloader import VIDEO_KINDS
 from downloader.utils.file_utils import available_download_path
 from downloader.core.media_options import normalize_media_options
@@ -28,7 +28,7 @@ class DatabaseManager:
         Args:
             db_path: 数据库文件路径
         """
-        self.db_path = db_path if db_path is not None else os.path.join(get_app_root(), 'data', 'downloads.db')
+        self.db_path = db_path if db_path is not None else os.path.join(get_state_root(), 'data', 'downloads.db')
         self._lock = threading.Lock()  # 艹，多线程访问必须加锁
         self._ensure_db_dir()
         self._init_database()

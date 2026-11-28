@@ -240,11 +240,11 @@ class CoreFeatures(FeatureFixture):
 
 class TimingFeatures(unittest.TestCase):
     def test_default_database_location_is_independent_of_working_directory(self):
-        from downloader.utils.config import get_app_root
+        from downloader.utils.config import get_state_root
         with patch.object(DatabaseManager, '_ensure_db_dir'), \
                 patch.object(DatabaseManager, '_init_database'):
             database = DatabaseManager()
-        self.assertEqual(Path(database.db_path), Path(get_app_root()) / 'data' / 'downloads.db')
+        self.assertEqual(Path(database.db_path), Path(get_state_root()) / 'data' / 'downloads.db')
 
     def test_speed_limit_does_not_credit_time_already_spent_waiting(self):
         clock = [0.0]

@@ -125,6 +125,17 @@ class TrayManager:
 
     def start(self):
         """启动托盘图标（在单独线程中运行）"""
+        if sys.platform == 'darwin':
+            if not self._running:
+                try:
+                    from downloader.ui.macos_status import MacStatusItem
+                    self.icon = MacStatusItem(str(Path(icon_path()).with_suffix('.png')),
+                                              self._on_show_window, self._on_exit)
+                    self._running = self.available = True
+                except Exception as error:
+                    self.available = False
+                    logger.warning('菜单栏不可用，改用 Dock：%s', error)
+            return
         if not HAS_TRAY_SUPPORT:
             logger.info("托盘功能不可用，跳过启动")
             return
@@ -168,6 +179,14 @@ class TrayManager:
             message: 通知内容
             timeout: 显示时长（秒）
         """
+        if sys.platform == 'darwin':
+            from Foundation import NSBundle, NSUserNotification, NSUserNotificationCenter
+            if NSBundle.mainBundle().bundleIdentifier():
+                note = NSUserNotification.alloc().init()
+                note.setTitle_(title)
+                note.setInformativeText_(message)
+                NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(note)
+            return
         if not HAS_NOTIFICATION:
             logger.info("通知 %s: %s", title, message)
             return

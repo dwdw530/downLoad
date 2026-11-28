@@ -223,15 +223,21 @@ def xhs_request_context(url, context, height=None):
     return result
 
 
+def tool_name(name):
+    return name if sys.platform == 'darwin' else name + '.exe'
+
+
 def tools_directory():
     root = Path(get_app_root())
+    if sys.platform == 'darwin':
+        return root.parent / 'Helpers' if getattr(sys, 'frozen', False) else root / 'vendor/macos-x86_64'
     return root / 'video-tools' if getattr(sys, 'frozen', False) else root / 'vendor' / 'video'
 
 
 def require_tools(directory=None):
     directory = Path(directory or tools_directory())
     if not all((directory / name).is_file() and (directory / name).stat().st_size > 0
-               for name in ('yt-dlp.exe', 'ffmpeg.exe', 'ffprobe.exe', 'node.exe')):
+               for name in map(tool_name, ('yt-dlp', 'ffmpeg', 'ffprobe', 'node'))):
         raise ValueError('视频下载组件缺失，请安装包含 video-tools 的完整更新包')
     return directory
 
@@ -315,7 +321,7 @@ class YoutubeDownloader:
         else:
             selection = (f'bv{limit}[vcodec^=avc1]+ba[ext=m4a]/'
                          f'b{limit}[ext=mp4]')
-        command = [str(self.tools / 'yt-dlp.exe'), '--ignore-config',
+        command = [str(self.tools / tool_name('yt-dlp')), '--ignore-config',
                    '--no-playlist', '--no-cache-dir', '--no-update',
                    '--no-colors', '--newline', '--progress',
                    '--progress-delta', '0.5', '--match-filters', '!is_live',
@@ -323,7 +329,7 @@ class YoutubeDownloader:
                    str(self.config.timeout), '--retries',
                    str(self.config.retry_times), '--fragment-retries',
                    str(self.config.retry_times), '--js-runtimes',
-                   'node:' + str(self.tools / 'node.exe'),
+                   'node:' + str(self.tools / tool_name('node')),
                    '--ffmpeg-location', str(self.tools), '--format', selection,
                    '--output', str(self.folder / 'video.%(ext)s'),
                    '--print', 'after_move:__DAW_OUTPUT__%(filepath)j',
@@ -435,6 +441,7 @@ class YoutubeDownloader:
                 self.prepare_video_info()
                 self.process = subprocess.Popen(self.command(), stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
+                    start_new_session=sys.platform == 'darwin',
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             for line in self.process.stdout:
                 if line.startswith('__DAW_OUTPUT__'):
@@ -468,7 +475,7 @@ class YoutubeDownloader:
             if expected and output.suffix != expected:
                 raise ValueError('输出文件格式与所选格式不一致')
             probe = subprocess.run(
-                [str(self.tools / 'ffprobe.exe'), '-v', 'error',
+                [str(self.tools / tool_name('ffprobe')), '-v', 'error',
                  '-show_entries',
                  'stream=codec_type,codec_name,width,height:format=duration',
                  '-of', 'json', str(output)], capture_output=True,
@@ -569,6 +576,12 @@ class YoutubeDownloader:
                     subprocess.run([os.path.join(os.environ['SystemRoot'], 'System32', 'taskkill.exe'),
                                     '/PID', str(process.pid), '/T', '/F'], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+                elif sys.platform == 'darwin':
+                    import signal
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 else:
                     process.terminate()
 

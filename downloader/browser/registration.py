@@ -17,6 +17,26 @@ def extension_id(manifest):
 
 
 def register(uninstall=False):
+    if sys.platform == 'darwin':
+        if not getattr(sys, 'frozen', False):
+            raise RuntimeError('请从已安装的 daw下载器.app 连接浏览器')
+        bundle = Path(sys.executable).resolve().parent.parent
+        host = bundle / 'Resources/BrowserBridge'
+        extension_dir = bundle / 'Resources/chrome-extension'
+        extension = json.loads((extension_dir / 'manifest.json').read_text(encoding='utf-8'))
+        manifest = {'name': HOST_NAME, 'description': 'daw 下载器', 'path': str(host),
+                    'type': 'stdio', 'allowed_origins': [f'chrome-extension://{extension_id(extension)}/']}
+        for browser in ('Google/Chrome', 'Microsoft Edge'):
+            path = Path.home() / 'Library/Application Support' / browser / 'NativeMessagingHosts' / (HOST_NAME + '.json')
+            if uninstall:
+                path.unlink(missing_ok=True)
+            else:
+                import tempfile
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as stream:
+                    json.dump(manifest, stream, ensure_ascii=True)
+                os.replace(stream.name, path)
+        return
     if os.name != 'nt':
         raise RuntimeError('Only Windows is supported')
     import winreg

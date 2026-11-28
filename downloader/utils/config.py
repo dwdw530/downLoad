@@ -44,6 +44,13 @@ def get_app_root() -> str:
         return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def get_state_root() -> str:
+    if sys.platform == 'darwin':
+        from downloader.utils.macos import support_dir
+        return str(support_dir())
+    return get_app_root()
+
+
 class ConfigManager:
     """配置管理器"""
 
@@ -72,7 +79,7 @@ class ConfigManager:
         "ui_float_bar_enabled": False,  # 桌面悬浮条：默认关闭，不打扰存量用户
         "ui_float_bar_mode": "normal",  # 悬浮条样式：normal 完整 / mini 迷你（只显示速度与进度）
         "ui_float_bar_pos": [],  # 悬浮条上次位置（物理像素 [x, y]，空表示首次放在右下角）
-        "clipboard_monitor_enabled": True,  # 剪贴板监视：复制链接时弹出添加提示
+        "clipboard_monitor_enabled": sys.platform != 'darwin',  # Mac 首次启动不读取系统剪贴板
         "clipboard_ignore_hosts": [],  # 剪贴板监视忽略的站点域名列表
         "after_download": {  # 下载完成后的动作，默认全部关闭
             "open_file": False,  # 打开文件
@@ -90,7 +97,7 @@ class ConfigManager:
         """
         if config_path is None:
             # 使用应用根目录下的data/config.json
-            config_path = os.path.join(get_app_root(), "data", "config.json")
+            config_path = os.path.join(get_state_root(), "data", "config.json")
         self.config_path = config_path
         self._config = {}
         self._ensure_config_dir()
@@ -196,7 +203,7 @@ class ConfigManager:
         temp_dir = os.path.expandvars(os.path.expanduser(temp_dir))
         # 如果是相对路径，转换为应用根目录下的绝对路径
         if not os.path.isabs(temp_dir):
-            temp_dir = os.path.join(get_app_root(), temp_dir)
+            temp_dir = os.path.join(get_state_root(), temp_dir)
         return os.path.abspath(temp_dir)
 
     @temp_dir.setter

@@ -1,0 +1,16 @@
+daw 下载器 · 本地 Intel 构建依赖（SHA-256 为签名前的上游文件）
+
+FFmpeg / FFprobe 6.0-tessus x86_64, GPL-3.0-or-later
+Upstream: https://ffmpeg.org/releases/ffmpeg-6.0.tar.xz
+Binary provider: https://evermeet.cx/ffmpeg/
+Transport: https://pypi.org/project/ffmpeg-binaries/1.1.0/ (macOS wheel)
+Wheel SHA256: a3e5a57dbd29d9739b0f42f8342739966a069b6f0ac48ab72a75d9a0625808a5
+ffmpeg SHA256: cfe20936c83ecf5d68e424b87e8cc45b24dd6be81787810123bb964a0df686f9
+ffprobe SHA256: 30391ba3d662a6fac1c2f7c21fdd3120422377892a090e654936a0aaedba0c53
+
+Standalone yt-dlp_macos 2026.08.19: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+SHA256: 0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202
+Standalone executable includes separately licensed components; see upstream release and https://github.com/yt-dlp/yt-dlp#licensing.
+
+Node.js v24.4.1 x64: https://nodejs.org/dist/v24.4.1/
+node SHA256: fe51680a70cf9074070afcb8e4a5bdb3dce7000205724d73c91cf2bb74a49c12

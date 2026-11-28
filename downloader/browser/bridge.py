@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import threading
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -30,6 +31,9 @@ def instance_key():
 
 
 def endpoint_file():
+    if sys.platform == 'darwin':
+        from downloader.utils.macos import support_dir
+        return support_dir() / 'ipc' / 'desktop.bridge'
     root = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'LaoWangDownloader'
     return root / (instance_key() + '.bridge')
 
@@ -38,6 +42,15 @@ class InstanceGuard:
     def __init__(self):
         self.handle = None
         self.primary = True
+        if sys.platform == 'darwin':
+            import fcntl
+            lock = endpoint_file().with_suffix('.lock')
+            lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.handle = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.primary = False
         if os.name == 'nt':
             self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
             self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
@@ -49,13 +62,22 @@ class InstanceGuard:
             self.primary = ctypes.get_last_error() != 183
 
     def close(self):
+        if sys.platform == 'darwin' and self.handle is not None:
+            os.close(self.handle)
+            self.handle = None
+            return
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
 
 
+def _read_endpoint(path):
+    text = path.read_text(encoding='ascii')
+    return json.loads(text) if sys.platform == 'darwin' else unprotect(text)
+
+
 def call_desktop(message, path=None, timeout=90):
-    endpoint = unprotect(Path(path or endpoint_file()).read_text(encoding='ascii'))
+    endpoint = _read_endpoint(Path(path or endpoint_file()))
     connection = http.client.HTTPConnection('127.0.0.1', int(endpoint['port']), timeout=timeout)
     try:
         body = json.dumps(message, ensure_ascii=True).encode('utf-8')
@@ -167,11 +189,13 @@ class BridgeServer:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def start(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = protect({'port': self.server.server_port, 'token': self.token})
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        endpoint = {'port': self.server.server_port, 'token': self.token}
+        data = json.dumps(endpoint) if sys.platform == 'darwin' else protect(endpoint)
         temporary = self.path.with_suffix('.' + secrets.token_hex(4) + '.tmp')
         try:
-            temporary.write_text(data, encoding='ascii')
+            with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='ascii') as stream:
+                stream.write(data)
             try:
                 os.replace(temporary, self.path)
             except OSError as error:
@@ -309,7 +333,7 @@ class BridgeServer:
         with self.lock:
             pass
         try:
-            if unprotect(self.path.read_text(encoding='ascii'))['token'] == self.token:
+            if _read_endpoint(self.path)['token'] == self.token:
                 self.path.unlink()
         except (OSError, ValueError):
             pass

@@ -59,7 +59,7 @@ def main():
     # 创建并启动GUI
     logger.info("启动图形界面...")
     app = MainWindow(task_manager)
-    bridge = BridgeServer(task_manager, app._show_from_tray) if os.name == 'nt' else None
+    bridge = BridgeServer(task_manager, app._show_from_tray) if os.name == 'nt' or sys.platform == 'darwin' else None
     try:
         try:
             if bridge:

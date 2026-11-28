@@ -8,6 +8,7 @@ import logging
 import math
 import re
 import os
+import sys
 import shutil
 import hashlib
 import tempfile
@@ -300,6 +301,12 @@ def available_download_path(path: str, occupied=()) -> str:
     raise ValueError('同名文件过多，无法分配保存路径')
 
 
+if sys.platform == 'darwin':
+    from downloader.utils.macos import rename_exclusive as _rename_exclusive, volume_online
+else:
+    _rename_exclusive = os.rename
+
+
 def publish_download(source: str, destination: str, is_current=lambda: True) -> bool:
     """Windows 下同卷改名、跨卷才复制；最终改名不覆盖已有目标。
 
@@ -309,11 +316,10 @@ def publish_download(source: str, destination: str, is_current=lambda: True) -> 
     def rename_if_current(src, dst):
         if not is_current():
             raise InterruptedError('下载会话已停止')
-        # Windows 的 rename 在目标已存在时失败，不使用会覆盖的 replace/move。
-        os.rename(src, dst)
+        _rename_exclusive(src, dst)
         if not is_current():
             # 停止恰好发生在改名期间，退回原临时路径供下次续传。
-            os.rename(dst, src)
+            _rename_exclusive(dst, src)
             raise InterruptedError('下载会话已停止')
 
     if not is_current():
@@ -368,6 +374,10 @@ def check_download_volumes(directories) -> tuple:
     """检查下载所用磁盘是否在线；不存在的普通子目录仍可在下载时创建。"""
     checked = set()
     for directory, label in directories:
+        if sys.platform == 'darwin':
+            if not volume_online(directory):
+                return False, f'{label}所在卷未挂载，请重新连接存储设备后重试'
+            continue
         drive = os.path.splitdrive(os.path.abspath(directory))[0]
         root = os.path.normcase(drive + os.sep)
         if root in checked:
@@ -402,6 +412,11 @@ def check_free_space(requirements) -> tuple:
             continue
         absolute = _existing_ancestor(path)
         key = os.path.splitdrive(absolute)[0].lower() or absolute
+        if sys.platform == 'darwin':
+            try:
+                key = os.stat(absolute).st_dev
+            except OSError:
+                continue
         needed[key] = needed.get(key, 0) + need_bytes
         probes.setdefault(key, absolute)
         names = labels.setdefault(key, [])
@@ -426,6 +441,8 @@ def check_free_space(requirements) -> tuple:
 
 def ensure_dir(directory: str):
     """确保目录存在"""
+    if sys.platform == 'darwin' and not volume_online(directory):
+        raise OSError(errno.ENODEV, '目标卷已卸载', directory)
     if not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
 

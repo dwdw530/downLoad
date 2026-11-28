@@ -3,6 +3,7 @@ import base64
 import ctypes
 import json
 import os
+import sys
 from contextlib import contextmanager
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -97,6 +98,9 @@ class _Blob(ctypes.Structure):
 
 
 def _crypt(data, decrypt=False):
+    if sys.platform == 'darwin':
+        from downloader.utils.macos import crypt_context
+        return crypt_context(data, decrypt)
     if os.name != 'nt':
         raise RuntimeError('Browser integration currently requires Windows DPAPI')
     buffer = ctypes.create_string_buffer(data)

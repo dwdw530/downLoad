@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from downloader.core.youtube_downloader import (YoutubeDownloader, require_tools, youtube_url, x_url, bilibili_url,
-                                                video_page_url, sanitize_output, failure_message)
+                                                video_page_url, sanitize_output, failure_message, tool_name)
 from downloader.browser.bridge import BridgeServer, video_filename
 from downloader.core.download_engine import DownloadEngine
 from downloader.core.task_manager import TaskManager
@@ -29,6 +29,8 @@ class YoutubeTests(unittest.TestCase):
         self.tools.mkdir(parents=True)
         for name in VIDEO_FILES:
             (self.tools / name).write_bytes(b'test fixture')
+        for name in ('yt-dlp', 'node', 'ffmpeg', 'ffprobe'):
+            (self.tools / tool_name(name)).write_bytes(b'test fixture')
         self.config = SimpleNamespace(temp_dir=str(self.root / 'parts'), timeout=3, retry_times=1,
                                       speed_limit=1234, proxies={'https': 'http://127.0.0.1:7890'})
         self.task = {'task_id': 'test-task', 'url': URL + '&t=1s', 'video_height': 720,
@@ -191,7 +193,7 @@ class YoutubeTests(unittest.TestCase):
         self.assertIn('height<=720', command[command.index('--format') + 1])
         self.assertEqual(command[command.index('--proxy') + 1], self.config.proxies['https'])
         self.assertEqual(command[command.index('--limit-rate') + 1], '1234')
-        self.assertIn('node:' + str(self.tools / 'node.exe'), command)
+        self.assertIn('node:' + str(self.tools / tool_name('node')), command)
         self.assertIn('--ignore-config', command)
         self.assertIn('!is_live', command)
         self.assertFalse(any('cookie' in arg.lower() for arg in command))
@@ -303,6 +305,7 @@ class YoutubeTests(unittest.TestCase):
         (self.tools / 'node.exe').write_bytes(b'')
         with self.assertRaises(RuntimeError):
             video_tool_files(self.root)
+        (self.tools / tool_name('node')).write_bytes(b'')
         with self.assertRaises(ValueError):
             require_tools(self.tools)
 

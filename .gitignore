@@ -10,6 +10,8 @@ __pycache__/
 *.py[cod]
 .serena/
 /build/
+/dist-macos/
+/vendor/macos-x86_64/
 /dist/data/
 /dist/temp/
 /dist/downloads/

@@ -25,7 +25,7 @@ class MediaDownloadTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        with patch('downloader.utils.config.get_app_root',
+        with patch('downloader.utils.config.get_state_root',
                    return_value=str(self.root)):
             self.config = ConfigManager()
         self.config.temp_dir = str(self.root / 'parts')

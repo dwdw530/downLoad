@@ -29,11 +29,13 @@ def safe_error(error, sensitive=False):
 
 def log_directory(root=None):
     """返回可写日志目录：优先程序目录，装到只读位置时回退用户本地目录"""
-    if root is None:
-        # 延迟导入，避免与 config 形成循环依赖
-        from downloader.utils.config import get_app_root
-        root = get_app_root()
-    candidates = [Path(root) / 'logs']
+    if root is None and sys.platform == 'darwin':
+        candidates = [Path.home() / 'Library/Logs/daw下载器']
+    else:
+        if root is None:
+            from downloader.utils.config import get_app_root
+            root = get_app_root()
+        candidates = [Path(root) / 'logs']
     local_app_data = os.environ.get('LOCALAPPDATA')
     if local_app_data:
         candidates.append(Path(local_app_data) / 'LaoWangDownloader' / 'logs')

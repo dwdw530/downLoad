@@ -6,6 +6,7 @@ GUI主窗口
 import customtkinter as ctk
 import logging
 import os
+import sys
 import subprocess
 import threading
 import time
@@ -95,7 +96,8 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
         self.title(f"daw下载器 v{APP_VERSION}")
         from downloader.ui.tray_manager import icon_path
         window_icon = icon_path()
-        self.iconbitmap(default=window_icon)
+        if os.name == 'nt':
+            self.iconbitmap(default=window_icon)
         # Keep the full-resolution image; Tk's ICO loader blurs it at high DPI.
         self._window_icon_photo = PhotoImage(master=self, file=os.path.splitext(window_icon)[0] + '.png')
         self.iconphoto(True, self._window_icon_photo)
@@ -146,6 +148,15 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
 
         # 初始化系统托盘
         self._init_tray()
+        if sys.platform == 'darwin':
+            self.createcommand('tk::mac::ReopenApplication', self._show_from_tray)
+            self.createcommand('tk::mac::Quit', self._exit_app)
+            bar = Menu(self)
+            integrations = Menu(bar, tearoff=False)
+            integrations.add_command(label='连接 Chrome / Edge…', command=self._connect_mac_browser)
+            integrations.add_command(label='断开浏览器连接', command=lambda: self._connect_mac_browser(True))
+            bar.add_cascade(label='浏览器', menu=integrations)
+            self.tk.call(self._w, 'configure', '-menu', bar)
 
         # 桌面悬浮条（默认关闭，随配置自动恢复）
         self.float_bar = None
@@ -153,7 +164,8 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
 
         # 剪贴板监视：启动时先记下现有内容，避免冷启动就弹窗
         try:
-            self._clipboard_last_seen = self.clipboard_get()
+            if self.task_manager.engine.config.clipboard_monitor_enabled:
+                self._clipboard_last_seen = self.clipboard_get()
         except Exception:
             self._clipboard_last_seen = None
         self.after(1000, self._poll_clipboard)
@@ -162,6 +174,22 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
         # 不管主题是哪条路径改的，最多 0.5 秒后侧栏颜色都会跟上。
         self._last_appearance_mode = ctk.get_appearance_mode()
         self.after(500, self._watch_appearance_mode)
+
+    def _connect_mac_browser(self, remove=False):
+        from downloader.browser.registration import register
+        try:
+            register(uninstall=remove)
+            if remove:
+                messagebox.showinfo('浏览器', '已断开连接；下载记录不受影响。', parent=self)
+                return
+            from pathlib import Path
+            directory = Path(sys.executable).resolve().parents[1] / 'Resources/chrome-extension'
+            self.clipboard_clear()
+            self.clipboard_append(str(directory))
+            messagebox.showinfo('浏览器', '已注册本机桥接并复制扩展目录。打开浏览器扩展管理页，开启开发者模式，选择“加载已解压的扩展程序”。在选择框按 ⌘⇧G，粘贴路径并确认。', parent=self)
+        except (OSError, RuntimeError, ValueError) as error:
+            messagebox.showerror('浏览器连接失败', str(error), parent=self)
+
 
     def _on_updates(self):
         dialog = getattr(self, '_update_dialog', None)
@@ -1478,12 +1506,13 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
         try:
             if os.path.exists(file_path):
                 # 定位并选中文件
-                subprocess.Popen(["explorer", "/select,", file_path])
+                subprocess.Popen(['/usr/bin/open', '-R', file_path] if sys.platform == 'darwin'
+                                 else ['explorer', '/select,', file_path])
                 return
 
             folder = os.path.dirname(file_path)
             if folder and os.path.exists(folder):
-                os.startfile(folder)
+                self._open_path(folder)
             else:
                 messagebox.showerror("错误", "保存目录不存在！")
         except Exception as e:
@@ -1495,7 +1524,9 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
         """递归绑定右键菜单；CTk 控件的 bind 会转发到内部画布，所以不再深入其子控件"""
         if isinstance(widget, (ctk.CTkButton, ctk.CTkCheckBox)):
             return
-        widget.bind("<Button-3>", lambda event, tid=task_id: self._show_task_menu(event, tid), add="+")
+        sequences = ('<Button-2>', '<Control-Button-1>') if sys.platform == 'darwin' else ('<Button-3>',)
+        for sequence in sequences:
+            widget.bind(sequence, lambda event, tid=task_id: self._show_task_menu(event, tid), add='+')
         if isinstance(widget, ctk.CTkFrame):
             for child in widget.winfo_children():
                 self._bind_task_right_click(child, task_id)
@@ -1525,11 +1556,19 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
             return
         self._flash_status(f'已复制 {len(urls)} 条下载链接')
 
+    @staticmethod
+    def _open_path(path):
+        if sys.platform == 'darwin':
+            subprocess.Popen(['/usr/bin/open', path])
+        else:
+            os.startfile(path)
+
+
     def _open_task_file(self, save_path: str):
         """打开已下载的文件"""
         try:
             if save_path and os.path.exists(save_path):
-                os.startfile(save_path)
+                self._open_path(save_path)
         except Exception as e:
             messagebox.showerror("错误", f"打开文件失败: {e}")
 
@@ -1621,7 +1660,7 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
 
         if actions['open_file'] and save_path and os.path.exists(save_path):
             try:
-                os.startfile(save_path)
+                self._open_path(save_path)
             except Exception as e:
                 logger.warning("完成后打开文件失败: %s", e)
 
@@ -1762,6 +1801,9 @@ class MainWindow(SafeToplevelMixin, ctk.CTk):
             return
         logger.info("全部下载完成，执行关机命令")
         try:
+            if sys.platform == 'darwin':
+                subprocess.run(['/usr/bin/osascript', '-e', 'tell application "System Events" to shut down'], check=True)
+                return
             subprocess.Popen(
                 ["shutdown", "/s", "/t", "0"],
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
