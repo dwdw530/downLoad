@@ -1,16 +1,32 @@
-daw 下载器 · 本地 Intel 构建依赖（SHA-256 为签名前的上游文件）
+daw 下载器 · Intel Mac 公共预览版 v0.16.0-macos-intel.2
 
-FFmpeg / FFprobe 6.0-tessus x86_64, GPL-3.0-or-later
-Upstream: https://ffmpeg.org/releases/ffmpeg-6.0.tar.xz
-Binary provider: https://evermeet.cx/ffmpeg/
-Transport: https://pypi.org/project/ffmpeg-binaries/1.1.0/ (macOS wheel)
-Wheel SHA256: a3e5a57dbd29d9739b0f42f8342739966a069b6f0ac48ab72a75d9a0625808a5
-ffmpeg SHA256: cfe20936c83ecf5d68e424b87e8cc45b24dd6be81787810123bb964a0df686f9
-ffprobe SHA256: 30391ba3d662a6fac1c2f7c21fdd3120422377892a090e654936a0aaedba0c53
+用户安装：只下载同一发布页中的 .dmg。无需另装媒体工具。
+发行件及第三方对应源码：https://github.com/dwdw530/downLoad/releases/tag/v0.16.0-macos-intel.2
+同页提供 daw-downloader-v0.16.0-macos-intel.2-third-party-sources.tar.gz 和 SHA256SUMS.txt。
 
-Standalone yt-dlp_macos 2026.08.19: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
-SHA256: 0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202
-Standalone executable includes separately licensed components; see upstream release and https://github.com/yt-dlp/yt-dlp#licensing.
+1. FFmpeg、FFprobe：从 FFmpeg 9.1 原版源码编译，GPL-3.0-or-later 配置。
+   https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
+   源码 SHA256：1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433
+   MP3 编码器 LAME 4.0：https://sourceforge.net/projects/lame/files/lame/4.0/
+   源码 SHA256：3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb
+   两个原始源码归档与完整构建脚本 scripts/build_macos_media.sh 随源码附件提供。
+   禁用外部库自动探测；除 LAME 外仅使用 Apple 系统库。本版不分发此前本机测试的 6.0-tessus 二进制。
 
-Node.js v24.4.1 x64: https://nodejs.org/dist/v24.4.1/
-node SHA256: fe51680a70cf9074070afcb8e4a5bdb3dce7000205724d73c91cf2bb74a49c12
+2. yt-dlp_macos 2026.08.19（程序自身 Unlicense，独立可执行文件包含 GPLv3+ 和其他许可组件）：
+   https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+   上游二进制 SHA256：0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202
+   原版源码、macOS 构建工作流、依赖锁文件和依赖源码见第三方源码附件。
+   在应用内见 Licenses/yt-dlp-THIRD_PARTY_LICENSES.txt（上游完整文本）。
+
+3. Node.js v24.4.1 darwin-x64： https://nodejs.org/dist/v24.4.1/
+   上游 node 二进制 SHA256：fe51680a70cf9074070afcb8e4a5bdb3dce7000205724d73c91cf2bb74a49c12
+   node-v24.4.1.tar.xz 的源码和依赖声明见附件，应用内保留上游 node-LICENSE。
+
+4. 桌面运行时：CPython 3.11.13（python-build-standalone 20251007，Intel macOS）。
+   https://github.com/astral-sh/python-build-standalone/releases/tag/20251007
+   Python-runtime/ 和 Python-packages/ 为实际构建所用运行时和 Python 依赖的许可声明。
+   精确版本、源码 URL 与 SHA256 见源码附件 metadata/；应用打包脚本一并提供。
+   CustomTkinter 携带的 Roboto Regular、Medium：Copyright 2011 Google Inc. All Rights Reserved.
+   Licensed under the Apache License, Version 2.0（同目录保留 Apache 2.0 全文）。
+
+应用内的许可目录为 Contents/Resources/Licenses/。HELPER-SHA256SUMS.txt 记录实际纳入包中的四个媒体组件签名前的摘要；对外分发的 DMG 校验请使用发布页的 SHA256SUMS.txt。

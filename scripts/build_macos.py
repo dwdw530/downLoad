@@ -1,5 +1,7 @@
 """Assemble a local, self-contained Intel .app; never overwrite an installed app."""
 import argparse
+import hashlib
+from importlib import metadata
 import os
 import platform
 import plistlib
@@ -13,6 +15,42 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from downloader.version import APP_VERSION
 NAME = 'daw下载器'
+
+
+def copy_python_notices(destination, extra):
+    """Copy notices for the actual build environment, including vendored wheel libraries."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    lines = (ROOT / 'requirements.txt').read_text(encoding='utf-8').splitlines()
+    pending = [Requirement(s) for s in [*lines, 'PyInstaller', 'setuptools']
+               if s.strip() and not s.lstrip().startswith('#')]
+    seen = set()
+    while pending:
+        requirement = pending.pop()
+        name = canonicalize_name(requirement.name)
+        if name in seen or (requirement.marker and not requirement.marker.evaluate({'extra': ''})):
+            continue
+        seen.add(name)
+        dist = metadata.distribution(name)
+        target = destination / f'{name}-{dist.version}'
+        found = False
+        for member in dist.files or ():
+            if member.is_absolute() or '..' in member.parts:
+                continue
+            if not (member.name.lower().startswith(('license', 'copying', 'notice', 'copyright'))
+                    or '.dist-info/licenses/' in str(member).lower()):
+                continue
+            if member.suffix.lower() in ('.py', '.pyc') or not dist.locate_file(member).is_file():
+                continue
+            path = target / member
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(dist.locate_file(member), path)
+            found = True
+        if not found:
+            # Some wheels (e.g. pyobjc-core) carry only an SPDX identifier.
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(extra / (name + '-LICENSE.txt'), target / 'LICENSE.txt')
+        pending.extend(Requirement(s) for s in dist.requires or ())
 
 
 def main():
@@ -55,11 +93,17 @@ def main():
         bridge.chmod(0o755)
         shutil.copytree(ROOT / 'chrome-extension', resources / 'chrome-extension')
         licenses = resources / 'Licenses'
-        licenses.mkdir()
+        shutil.copytree(args.tools / 'notices/python-runtime', licenses / 'Python-runtime')
+        copy_python_notices(licenses / 'Python-packages', args.tools / 'notices')
         shutil.copyfile(ROOT / 'LICENSE', licenses / 'daw-Apache-2.0.txt')
         shutil.copy2(ROOT / 'docs/MACOS_COMPONENTS.txt', licenses / 'SOURCES.txt')
-        for name in ('yt-dlp-LICENSE', 'ffmpeg-GPLv3.txt', 'node-LICENSE'):
-            shutil.copy2(args.tools / name, licenses / name)
+        for name in ('yt-dlp-LICENSE', 'yt-dlp-THIRD_PARTY_LICENSES.txt', 'node-LICENSE',
+                     'ffmpeg-GPLv3.txt', 'lame-COPYING.txt', 'lame-LICENSE.txt'):
+            shutil.copyfile(args.tools / name, licenses / name)
+        with (licenses / 'HELPER-SHA256SUMS.txt').open('w', encoding='ascii') as sums:
+            for name in tools:
+                with (args.tools / name).open('rb') as stream:
+                    sums.write(f'{hashlib.file_digest(stream, "sha256").hexdigest()}  {name}\n')
         for name in tools:
             binary = media / name
             shutil.copy2(args.tools / name, binary)

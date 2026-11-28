@@ -2,7 +2,7 @@
 
 桌面下载器，支持多线程下载、断点续传、任务队列，以及浏览器视频和普通文件链接下载。
 
-> GitHub v0.16.0 附件仍为 Windows x64；Intel Mac 本机构建与使用见 [macOS 说明](docs/MACOS.md)。两种桌面包均不需要用户安装 Python。
+> **Intel Mac** 用户下载下方 DMG；**Windows x64** 用户仍用 v0.16.0 安装包。两者都不需要自行安装 Python、Node 或 FFmpeg。
 
 ## 下载
 
@@ -12,6 +12,7 @@
 | --- | --- |
 | [Windows 安装包](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-downloader-v0.16.0-windows-x64-setup.exe) | 可选择安装目录，提供快捷方式和系统卸载入口。 |
 | [完整便携版 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-downloader-v0.16.0-windows-x64.zip) | 完整解压后运行 `daw下载器.exe`，不要只复制主程序。 |
+| [Intel Mac 安装镜像（DMG）](https://github.com/dwdw530/downLoad/releases/download/v0.16.0-macos-intel.2/daw-downloader-v0.16.0-macos-intel.2.dmg) | Intel macOS 13.7 起：打开镜像，把 `daw下载器.app` 拖到 `Applications`。此预览版未经 Apple 公证，见 [Mac 安装说明](docs/MACOS.md)。 |
 | [浏览器扩展 ZIP](https://github.com/dwdw530/downLoad/releases/download/v0.16.0/daw-browser-extension-v0.7.0.zip) | 配合桌面程序使用，需要手动加载扩展。 |
 
 全部版本和校验文件见 [GitHub Releases](https://github.com/dwdw530/downLoad/releases)。GitHub 自动生成的 **Source code** 是源码，不是可直接运行的程序。
@@ -66,7 +67,7 @@
 - 普通文件总限速对所有普通任务合计生效，视频任务仍按单任务限速；速度也受网络和服务器限制。
 - 无大小或零字节普通文件可在下载器内添加，浏览器普通文件入口仍会拒绝这类文件。
 - 批量删除只移除任务记录，不删除下载文件或断点；单任务删除可选择同时删除文件。
-- 配置和数据库位于程序目录的 `data/`，日志默认位于 `logs/app.log`；不可写时日志回退到 `%LOCALAPPDATA%\LaoWangDownloader\logs\app.log`。反馈问题时请提供报错和相关日志，并遮蔽链接或凭据。
+- Windows 配置及数据库位于程序目录的 `data/`，日志默认位于 `logs/app.log`；Intel Mac 的数据位于 `~/Library/Application Support/daw下载器/`，日志位于 `~/Library/Logs/daw下载器/app.log`。反馈时请遮蔽链接或凭据。
 
 ## 源码开发与文档
 
